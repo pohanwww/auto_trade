@@ -1,7 +1,6 @@
 """Data models for auto trading system."""
 
 from .account import Action, Balance, FuturePosition, Margin, Position
-from .exit_reason import ExitReason
 from .market import EMAData, EMAList, KBar, KBarList, MACDData, MACDList, Quote
 from .order import (
     Deal,
@@ -10,6 +9,7 @@ from .order import (
     FuturesTrade,
     OrderStatus,
 )
+from .position_record import ExitReason
 from .strategy import StrategyInput, TradingSignal
 
 __all__ = [

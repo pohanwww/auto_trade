@@ -2,8 +2,18 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 
 from auto_trade.models.account import Action
+
+
+class ExitReason(Enum):
+    """出場原因"""
+
+    TRAILING_STOP = "TrailingStop"  # 移動停損
+    TAKE_PROFIT = "TakeProfit"  # 獲利了結
+    STOP_LOSS = "StopLoss"  # 停損
+    HOLD = "Hold"  # 持倉中
 
 
 @dataclass
