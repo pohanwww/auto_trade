@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Automated trading system with Shioaji integration"
 readme = "README.md"
 authors = [
-    { name = "PIC-pohanwu", email = "pohanwu@pic.net.tw" }
+    { name = "Po Han Wu", email = "pohanwww@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
