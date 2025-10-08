@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data files
+data/
+*.json
+!pyproject.json
+
+# Logs
+logs/
+*.log
+
+# Trading records
+position_records.json
+
+# Credentials and environment
+credentials/
+.env
+*.pfx
+*.pem

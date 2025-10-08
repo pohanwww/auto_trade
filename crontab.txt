@@ -1,0 +1,15 @@
+# 期貨交易程式 Cron Job 設定
+# 市場時間: 8:45~13:45 (日盤), 15:00~隔天5:00 (夜盤)
+
+# 日盤開始前15分鐘啟動 (週一到週五 8:30)
+30 8 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh
+
+# 日盤結束時停止程式 (週一到週五 13:45)
+45 13 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
+
+# 夜盤開始前15分鐘啟動 (週一到週五 14:45)
+45 14 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh
+
+# 夜盤結束時停止程式 (週二到週六 5:00)
+0 5 * * 2-6 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
+

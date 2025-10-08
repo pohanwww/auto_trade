@@ -1,0 +1,397 @@
+"""記錄服務 - 整合本地記錄和 Google Sheets"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+from auto_trade.core.config import Config
+from auto_trade.models import ExitReason
+from auto_trade.models.position_record import PositionRecord
+
+
+class RecordService:
+    """記錄服務 - 管理本地持倉記錄和 Google Sheets 記錄"""
+
+    def __init__(
+        self,
+        record_file: str = "data/position_records.json",
+    ):
+        """初始化
+
+        Args:
+            record_file: 本地記錄文件路徑（相對於項目根目錄）
+        """
+        self.record_file = Path(record_file)
+        self._ensure_file_exists()
+
+        # 從 Config 讀取 Google Sheets 設定
+        config = Config()
+        google_credentials_file = config.google_credentials_path
+        google_spreadsheet_name = config.google_spreadsheet_name
+
+        # 初始化 Google Sheets（可選）
+        self.sheets_service = None
+        if google_credentials_file and google_spreadsheet_name:
+            try:
+                import gspread
+                from google.oauth2.service_account import Credentials
+
+                # 設定權限範圍
+                scopes = [
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ]
+
+                # 使用服務帳號憑證
+                credentials = Credentials.from_service_account_file(
+                    google_credentials_file, scopes=scopes
+                )
+
+                # 建立客戶端
+                client = gspread.authorize(credentials)
+                self.spreadsheet = client.open(google_spreadsheet_name)
+                self.sheets_service = True
+                print(f"✅ Google Sheets 已啟用: {google_spreadsheet_name}")
+
+            except Exception as e:
+                print(f"⚠️  Google Sheets 未啟用: {e}")
+                self.sheets_service = None
+
+    def _ensure_file_exists(self):
+        """確保記錄文件和目錄存在"""
+        # 創建目錄
+        self.record_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # 創建文件
+        if not self.record_file.exists():
+            self.record_file.write_text("{}")
+
+    # ==================== 本地持倉記錄 ====================
+
+    def save_position(self, record: PositionRecord):
+        """保存持倉記錄
+
+        Args:
+            record: 持倉記錄
+        """
+        try:
+            # 讀取現有記錄
+            records = self._load_records()
+
+            # 使用 sub_symbol 作為 key
+            records[record.sub_symbol] = record.to_dict()
+
+            # 保存
+            self.record_file.write_text(
+                json.dumps(records, indent=2, ensure_ascii=False)
+            )
+            print(f"持倉記錄已保存: {record.sub_symbol}")
+
+            # 記錄開倉到 Google Sheets
+            self.log_trade(
+                trade_date=record.entry_time,
+                symbol=record.sub_symbol,
+                timeframe=record.timeframe,
+                direction="Buy",
+                quantity=record.quantity,
+                entry_price=record.entry_price,
+                stop_loss_price=record.stop_loss_price,
+                exit_price=0,
+                exit_reason=ExitReason.HOLD,
+            )
+
+        except Exception as e:
+            print(f"保存持倉記錄失敗: {e}")
+
+    def get_position(self, sub_symbol: str) -> PositionRecord | None:
+        """獲取持倉記錄
+
+        Args:
+            sub_symbol: 子商品代碼
+
+        Returns:
+            持倉記錄，如果不存在則返回 None
+        """
+        try:
+            records = self._load_records()
+
+            if sub_symbol in records:
+                return PositionRecord.from_dict(records[sub_symbol])
+
+            return None
+
+        except Exception as e:
+            print(f"讀取持倉記錄失敗: {e}")
+            return None
+
+    def remove_position(
+        self, sub_symbol: str, exit_price: float, exit_reason: ExitReason
+    ):
+        """移除持倉記錄並記錄平倉資訊
+
+        Args:
+            sub_symbol: 子商品代碼
+            exit_price: 出場價格
+            exit_reason: 出場原因
+        """
+        try:
+            records = self._load_records()
+
+            if sub_symbol in records:
+                # 獲取持倉記錄用於記錄到 Google Sheets
+                position_record = PositionRecord.from_dict(records[sub_symbol])
+
+                # 記錄平倉到 Google Sheets
+                self.log_trade(
+                    trade_date=position_record.entry_time,
+                    symbol=position_record.sub_symbol,
+                    timeframe=position_record.timeframe,
+                    direction="Buy",
+                    quantity=position_record.quantity,
+                    entry_price=position_record.entry_price,
+                    stop_loss_price=position_record.stop_loss_price,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                )
+
+                # 刪除本地記錄
+                del records[sub_symbol]
+                self.record_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False)
+                )
+                print(f"持倉記錄已移除: {sub_symbol}")
+
+        except Exception as e:
+            print(f"移除持倉記錄失敗: {e}")
+
+    def update_stop_loss(
+        self,
+        sub_symbol: str,
+        stop_loss_price: float,
+        trailing_stop_active: bool = False,
+    ):
+        """更新停損價格
+
+        Args:
+            sub_symbol: 子商品代碼
+            stop_loss_price: 新的停損價格
+            trailing_stop_active: 移動停損是否啟動
+        """
+        try:
+            records = self._load_records()
+
+            if sub_symbol in records:
+                records[sub_symbol]["stop_loss_price"] = stop_loss_price
+                records[sub_symbol]["trailing_stop_active"] = trailing_stop_active
+                self.record_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False)
+                )
+
+        except Exception as e:
+            print(f"更新停損價格失敗: {e}")
+
+    def list_all_positions(self) -> list[PositionRecord]:
+        """列出所有持倉記錄
+
+        Returns:
+            持倉記錄列表
+        """
+        try:
+            records = self._load_records()
+            return [PositionRecord.from_dict(data) for data in records.values()]
+        except Exception as e:
+            print(f"列出持倉記錄失敗: {e}")
+            return []
+
+    def _load_records(self) -> dict:
+        """載入所有持倉記錄"""
+        try:
+            return json.loads(self.record_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def _remove_position_without_log(self, sub_symbol: str):
+        """移除持倉記錄但不記錄到 Google Sheets（用於清理不同步的記錄）
+
+        Args:
+            sub_symbol: 子商品代碼
+        """
+        try:
+            records = self._load_records()
+
+            if sub_symbol in records:
+                del records[sub_symbol]
+                self.record_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False)
+                )
+                print(f"持倉記錄已清理: {sub_symbol}")
+
+        except Exception as e:
+            print(f"清理持倉記錄失敗: {e}")
+
+    # ==================== Google Sheets 記錄 ====================
+
+    def log_trade(
+        self,
+        trade_date: datetime,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        exit_price: float,
+        exit_reason: ExitReason,
+    ):
+        """記錄完整交易到 Google Sheets
+
+        欄位順序：
+        1-8: 公式欄位（No, 勝率, 平均盈虧點, 總盈利點, 總虧損點, 總盈虧點, 盈虧比, 總盈虧）
+        9-19: 資料欄位（交易日期, 商品, 數量, 時間尺度, 多空, 進場價格, 停損價格, 出場價格, 出場原因, 盈虧點數[公式], 盈虧新台幣[公式]）
+
+        Args:
+            trade_date: 交易日期
+            symbol: 商品代碼
+            timeframe: 時間尺度 (例如: 30m)
+            direction: 多空 (Buy/Sell)
+            quantity: 數量
+            entry_price: 進場價格
+            stop_loss_price: 停損價格
+            exit_price: 出場價格
+            exit_reason: 出場原因 (ExitReason 枚舉)
+        """
+        if not self.sheets_service:
+            return
+
+        try:
+            worksheet = self._get_or_create_worksheet("交易記錄")
+
+            # 取得現有資料
+            all_values = worksheet.get_all_values()
+
+            # 設定標題（如果工作表為空或第一行不是標題）
+            if len(all_values) == 0:
+                headers = [
+                    "No.",
+                    "勝率",
+                    "平均盈虧點",
+                    "總盈利點",
+                    "總虧損點",
+                    "總盈虧點",
+                    "盈虧比",
+                    "總盈虧",
+                    "交易日期",
+                    "商品",
+                    "數量",  # 新增數量欄位
+                    "時間尺度",
+                    "多空",
+                    "進場價格",
+                    "停損價格",
+                    "出場價格",
+                    "出場原因",
+                    "盈虧（點數）",
+                    "盈虧（新台幣）",
+                ]
+                worksheet.append_row(headers)
+                print("✅ 已創建標題行")
+                # 重新取得資料（包含剛剛添加的標題）
+                all_values = worksheet.get_all_values()
+
+            # 取得下一列的行號
+            next_row = len(worksheet.get_all_values()) + 1
+            prev_row = next_row - 1
+
+            # 前 8 個統計公式欄位
+            if next_row == 2:  # 第一筆資料（第2行，因為第1行是標題）
+                formulas = [
+                    "1",  # No: 第一筆
+                    '=COUNTIF(R2:R2,">0")/COUNTA(R2:R2)',  # 勝率（R欄是盈虧點數）
+                    "=AVERAGE(R2:R2)",  # 平均盈虧點
+                    '=SUMIF(R2:R2,">0",R2:R2)',  # 總盈利點
+                    '=SUMIF(R2:R2,"<0",R2:R2)',  # 總虧損點
+                    "=SUM(R2:R2)",  # 總盈虧點
+                    "=ABS(D2/E2)",  # 盈虧比
+                    "=SUM(S2:S2)",  # 總盈虧（S欄是盈虧新台幣）
+                ]
+            else:
+                formulas = [
+                    f"=A{prev_row}+1",  # No: 累計編號
+                    f'=COUNTIF(R$2:R{next_row},">0")/COUNTA(R$2:R{next_row})',  # 勝率
+                    f"=AVERAGE(R$2:R{next_row})",  # 平均盈虧點
+                    f'=SUMIF(R$2:R{next_row},">0",R$2:R{next_row})',  # 總盈利點
+                    f'=SUMIF(R$2:R{next_row},"<0",R$2:R{next_row})',  # 總虧損點
+                    f"=SUM(R$2:R{next_row})",  # 總盈虧點
+                    f"=ABS(D{next_row}/E{next_row})",  # 盈虧比
+                    f"=SUM(S$2:S{next_row})",  # 總盈虧
+                ]
+
+            # 資料欄位（9-17 欄）
+            data = [
+                trade_date.strftime("%Y-%m-%d %H:%M:%S"),  # I 欄：交易日期
+                symbol,  # J 欄：商品
+                quantity,  # K 欄：數量
+                timeframe,  # L 欄：時間尺度
+                direction,  # M 欄：多空
+                entry_price,  # N 欄：進場價格
+                stop_loss_price,  # O 欄：停損價格
+                exit_price if exit_price != 0 else "",  # P 欄：出場價格（0改為空）
+                exit_reason.value,  # Q 欄：出場原因（使用枚舉的值）
+            ]
+
+            # 盈虧公式（18-19 欄）
+            # R 欄：盈虧（點數）= 出場價格 - 進場價格（做多）
+            # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
+            if exit_reason == ExitReason.HOLD or exit_price == 0:
+                # 持倉中，盈虧公式為空
+                pnl_formulas = ["", ""]
+            else:
+                # 已平倉，使用公式計算
+                if direction == "Buy":
+                    pnl_formulas = [
+                        f"=P{next_row}-N{next_row}",  # R 欄：出場價格 - 進場價格
+                        f"=K{next_row}*R{next_row}*50",  # S 欄：數量 * 盈虧點數 * 50
+                    ]
+                else:  # Sell
+                    pnl_formulas = [
+                        f"=N{next_row}-P{next_row}",  # R 欄：進場價格 - 出場價格
+                        f"=K{next_row}*R{next_row}*50",  # S 欄：數量 * 盈虧點數 * 50
+                    ]
+
+            # 合併：統計公式 + 資料 + 盈虧公式
+            row = formulas + data + pnl_formulas
+
+            worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+            # 根據是否有盈虧資料顯示不同訊息
+            if exit_reason == ExitReason.HOLD or exit_price == 0:
+                print(f"✅ 交易記錄已寫入 Google Sheets (持倉中，數量: {quantity})")
+            else:
+                print(
+                    f"✅ 交易記錄已寫入 Google Sheets (數量: {quantity}，出場原因: {exit_reason.value})"
+                )
+
+        except Exception as e:
+            print(f"❌ 寫入交易記錄失敗: {e}")
+
+    def _get_or_create_worksheet(self, title: str):
+        """取得或創建工作表
+
+        Args:
+            title: 工作表名稱
+
+        Returns:
+            工作表對象
+        """
+        if not self.sheets_service:
+            return None
+
+        try:
+            import gspread
+
+            # 嘗試取得現有工作表
+            worksheet = self.spreadsheet.worksheet(title)
+        except gspread.exceptions.WorksheetNotFound:
+            # 工作表不存在，創建新的（19 欄，1000 行）
+            worksheet = self.spreadsheet.add_worksheet(title=title, rows=1000, cols=19)
+
+        return worksheet
