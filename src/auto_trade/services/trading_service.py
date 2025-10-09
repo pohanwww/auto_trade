@@ -580,14 +580,8 @@ class TradingService:
                     symbol, sub_symbol
                 )
                 if not quote:
-                    print("無法取得即時報價")
-                    if self.current_position:
-                        wait_seconds(self.position_check_interval)
-                    else:
-                        calculate_and_wait_to_next_execution(
-                            current_time, self.signal_check_interval, True
-                        )
-                    continue
+                    raise Exception("無法取得即時報價")
+                    
 
                 current_price = quote.price
 
@@ -686,4 +680,5 @@ class TradingService:
                 break
             except Exception as e:
                 print(f"執行錯誤: {str(e)}")
-                time.sleep(60)  # 發生錯誤時等待1分鐘再繼續
+                print("結束程式")
+                break

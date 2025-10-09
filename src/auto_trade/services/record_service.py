@@ -87,8 +87,8 @@ class RecordService:
             )
             print(f"持倉記錄已保存: {record.sub_symbol}")
 
-            # 記錄開倉到 Google Sheets
-            self.log_trade(
+            # 記錄開倉到 Google Sheets，並保存行號
+            row_number = self.log_trade_open(
                 trade_date=record.entry_time,
                 symbol=record.sub_symbol,
                 timeframe=record.timeframe,
@@ -96,8 +96,13 @@ class RecordService:
                 quantity=record.quantity,
                 entry_price=record.entry_price,
                 stop_loss_price=record.stop_loss_price,
-                exit_price=0,
-                exit_reason=ExitReason.HOLD,
+            )
+
+            # 更新記錄中的行號
+            record.sheets_row_number = row_number
+            records[record.sub_symbol] = record.to_dict()
+            self.record_file.write_text(
+                json.dumps(records, indent=2, ensure_ascii=False)
             )
 
         except Exception as e:
@@ -146,15 +151,9 @@ class RecordService:
                 # 獲取持倉記錄用於記錄到 Google Sheets
                 position_record = PositionRecord.from_dict(records[sub_symbol])
 
-                # 記錄平倉到 Google Sheets
-                self.log_trade(
-                    trade_date=position_record.entry_time,
-                    symbol=position_record.sub_symbol,
-                    timeframe=position_record.timeframe,
-                    direction="Buy",
-                    quantity=position_record.quantity,
-                    entry_price=position_record.entry_price,
-                    stop_loss_price=position_record.stop_loss_price,
+                # 更新 Google Sheets 中的同一筆記錄
+                self.log_trade_close(
+                    row_number=position_record.sheets_row_number,
                     exit_price=exit_price,
                     exit_reason=exit_reason,
                     strategy_params=strategy_params,
@@ -237,7 +236,7 @@ class RecordService:
 
     # ==================== Google Sheets 記錄 ====================
 
-    def log_trade(
+    def log_trade_open(
         self,
         trade_date: datetime,
         symbol: str,
@@ -246,30 +245,14 @@ class RecordService:
         quantity: int,
         entry_price: float,
         stop_loss_price: float,
-        exit_price: float,
-        exit_reason: ExitReason,
-        strategy_params: dict | None = None,
-    ):
-        """記錄完整交易到 Google Sheets
+    ) -> int:
+        """記錄開倉到 Google Sheets
 
-        欄位順序：
-        1-8: 公式欄位（No, 勝率, 平均盈虧點, 總盈利點, 總虧損點, 總盈虧點, 盈虧比, 總盈虧）
-        9-20: 資料欄位（交易日期, 商品, 數量, 時間尺度, 多空, 進場價格, 停損價格, 出場價格, 出場原因, 盈虧點數[公式], 盈虧新台幣[公式], 策略）
-
-        Args:
-            trade_date: 交易日期
-            symbol: 商品代碼
-            timeframe: 時間尺度 (例如: 30m)
-            direction: 多空 (Buy/Sell)
-            quantity: 數量
-            entry_price: 進場價格
-            stop_loss_price: 停損價格
-            exit_price: 出場價格
-            exit_reason: 出場原因 (ExitReason 枚舉)
-            strategy_params: 策略參數字典（包含 stop_loss_points, start_trailing_stop_points, trailing_stop_points, take_profit_points）
+        Returns:
+            int: 在 Google Sheets 中的行號
         """
         if not self.sheets_service:
-            return
+            return 0
 
         try:
             worksheet = self._get_or_create_worksheet("交易記錄")
@@ -299,28 +282,27 @@ class RecordService:
                     "出場原因",
                     "盈虧（點數）",
                     "盈虧（新台幣）",
-                    "策略",  # 新增策略欄位
+                    "策略",
                 ]
                 worksheet.append_row(headers)
                 print("✅ 已創建標題行")
-                # 重新取得資料（包含剛剛添加的標題）
                 all_values = worksheet.get_all_values()
 
             # 取得下一列的行號
-            next_row = len(worksheet.get_all_values()) + 1
+            next_row = len(all_values) + 1
             prev_row = next_row - 1
 
             # 前 8 個統計公式欄位
-            if next_row == 2:  # 第一筆資料（第2行，因為第1行是標題）
+            if next_row == 2:  # 第一筆資料
                 formulas = [
                     "1",  # No: 第一筆
-                    '=COUNTIF(R2:R2,">0")/COUNTA(R2:R2)',  # 勝率（R欄是盈虧點數）
+                    '=COUNTIF(R2:R2,">0")/COUNTA(R2:R2)',  # 勝率
                     "=AVERAGE(R2:R2)",  # 平均盈虧點
                     '=SUMIF(R2:R2,">0",R2:R2)',  # 總盈利點
                     '=SUMIF(R2:R2,"<0",R2:R2)',  # 總虧損點
                     "=SUM(R2:R2)",  # 總盈虧點
                     "=ABS(D2/E2)",  # 盈虧比
-                    "=SUM(S2:S2)",  # 總盈虧（S欄是盈虧新台幣）
+                    "=SUM(S2:S2)",  # 總盈虧
                 ]
             else:
                 formulas = [
@@ -343,56 +325,76 @@ class RecordService:
                 direction,  # M 欄：多空
                 entry_price,  # N 欄：進場價格
                 stop_loss_price,  # O 欄：停損價格
-                exit_price if exit_price != 0 else "",  # P 欄：出場價格（0改為空）
-                exit_reason.value,  # Q 欄：出場原因（使用枚舉的值）
+                "",  # P 欄：出場價格（開倉時為空）
+                ExitReason.HOLD.value,  # Q 欄：出場原因（Hold）
             ]
 
-            # 盈虧公式（18-19 欄）
-            # R 欄：盈虧（點數）= 出場價格 - 進場價格（做多）
-            # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
-            if exit_reason == ExitReason.HOLD or exit_price == 0:
-                # 持倉中，盈虧公式為空
-                pnl_formulas = ["", ""]
-            else:
-                # 已平倉，使用公式計算
-                if direction == "Buy":
-                    pnl_formulas = [
-                        f"=P{next_row}-N{next_row}",  # R 欄：出場價格 - 進場價格
-                        f"=K{next_row}*R{next_row}*50",  # S 欄：數量 * 盈虧點數 * 50
-                    ]
-                else:  # Sell
-                    pnl_formulas = [
-                        f"=N{next_row}-P{next_row}",  # R 欄：進場價格 - 出場價格
-                        f"=K{next_row}*R{next_row}*50",  # S 欄：數量 * 盈虧點數 * 50
-                    ]
+            # 盈虧公式（18-19 欄）- 開倉時為空
+            pnl_formulas = ["", ""]
 
-            # 策略參數（20 欄）- T 欄：策略
-            if strategy_params and (exit_reason != ExitReason.HOLD and exit_price != 0):
-                # 只有在平倉時才記錄策略參數
-                strategy_info = (
-                    f"停損:{strategy_params.get('stop_loss_points', 0)} "
-                    f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} "
-                    f"移停:{strategy_params.get('trailing_stop_points', 0)} "
-                    f"獲利:{strategy_params.get('take_profit_points', 0)}"
-                )
-            else:
-                strategy_info = ""
+            # 策略參數（20 欄）- 開倉時為空
+            strategy_info = ""
 
             # 合併：統計公式 + 資料 + 盈虧公式 + 策略
             row = formulas + data + pnl_formulas + [strategy_info]
 
             worksheet.append_row(row, value_input_option="USER_ENTERED")
+            print(f"✅ 開倉記錄已寫入 Google Sheets 第 {next_row} 行")
 
-            # 根據是否有盈虧資料顯示不同訊息
-            if exit_reason == ExitReason.HOLD or exit_price == 0:
-                print(f"✅ 交易記錄已寫入 Google Sheets (持倉中，數量: {quantity})")
-            else:
-                print(
-                    f"✅ 交易記錄已寫入 Google Sheets (數量: {quantity}，出場原因: {exit_reason.value})"
-                )
+            return next_row
 
         except Exception as e:
-            print(f"❌ 寫入交易記錄失敗: {e}")
+            print(f"❌ 寫入開倉記錄失敗: {e}")
+            return 0
+
+    def log_trade_close(
+        self,
+        row_number: int,
+        exit_price: float,
+        exit_reason: ExitReason,
+        strategy_params: dict | None = None,
+    ):
+        """更新 Google Sheets 中的交易記錄為平倉狀態"""
+        if not self.sheets_service or not row_number:
+            return
+
+        try:
+            worksheet = self._get_or_create_worksheet("交易記錄")
+
+            # 更新出場價格（P 欄）
+            worksheet.update_cell(row_number, 16, exit_price)
+
+            # 更新出場原因（Q 欄）
+            worksheet.update_cell(row_number, 17, exit_reason.value)
+
+            # 更新盈虧公式（R 欄和 S 欄）
+            if exit_reason != ExitReason.HOLD:
+                # R 欄：盈虧（點數）= 出場價格 - 進場價格（做多）
+                pnl_formula = f"=P{row_number}-N{row_number}"
+                worksheet.update_cell(
+                    row_number, 18, pnl_formula, value_input_option="USER_ENTERED"
+                )
+
+                # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
+                twd_formula = f"=K{row_number}*R{row_number}*50"
+                worksheet.update_cell(
+                    row_number, 19, twd_formula, value_input_option="USER_ENTERED"
+                )
+
+            # 更新策略參數（T 欄）
+            if strategy_params:
+                strategy_info = (
+                    f"停損:{strategy_params.get('stop_loss_points', 0)} \n"
+                    f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} \n"
+                    f"移停:{strategy_params.get('trailing_stop_points', 0)} \n"
+                    f"獲利:{strategy_params.get('take_profit_points', 0)} \n"
+                )
+                worksheet.update_cell(row_number, 20, strategy_info)
+
+            print(f"✅ 平倉記錄已更新 Google Sheets 第 {row_number} 行")
+
+        except Exception as e:
+            print(f"❌ 更新平倉記錄失敗: {e}")
 
     def _get_or_create_worksheet(self, title: str):
         """取得或創建工作表

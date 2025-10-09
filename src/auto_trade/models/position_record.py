@@ -29,6 +29,7 @@ class PositionRecord:
     stop_loss_price: float | None  # 停損價格
     timeframe: str = "30m"  # 時間尺度 (e.g., "30m", "5m")
     trailing_stop_active: bool = False  # 移動停損是否啟動
+    sheets_row_number: int | None = None  # Google Sheets 中的行號
 
     def to_dict(self) -> dict:
         """轉換為字典"""
@@ -42,6 +43,7 @@ class PositionRecord:
             "stop_loss_price": self.stop_loss_price,
             "timeframe": self.timeframe,
             "trailing_stop_active": self.trailing_stop_active,
+            "sheets_row_number": self.sheets_row_number,
         }
 
     @classmethod
@@ -57,4 +59,5 @@ class PositionRecord:
             stop_loss_price=data["stop_loss_price"],
             timeframe=data.get("timeframe", "30m"),  # 向後兼容，默認 30m
             trailing_stop_active=data.get("trailing_stop_active", False),
+            sheets_row_number=data.get("sheets_row_number"),  # 向後兼容
         )
