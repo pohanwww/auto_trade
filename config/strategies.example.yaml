@@ -1,0 +1,62 @@
+# 交易策略配置範例
+# 複製此檔案為 strategies.yaml 並修改您的設定
+# cp config/strategies.example.yaml config/strategies.yaml
+
+# === 當前啟用的策略 ===
+active_strategy: "default"  # 可選: default, aggressive, conservative, 或自訂策略名稱
+
+
+# === 商品設定 ===
+symbol:
+  current: "MXF"           # 商品代碼
+  contract: "MXF202511"    # 合約月份（記得定期更新）
+  name: "小台指期貨"
+  exchange: "TAIFEX"
+
+
+# === 策略定義 ===
+
+# 預設策略（平衡型）
+default:
+  trading:
+    order_quantity: 1                 # 下單數量
+    timeframe: "30m"                  # K線時間尺度
+    stop_loss_points: 80              # 初始停損點數
+    start_trailing_stop_points: 200   # 啟動移動停損的獲利點數
+    trailing_stop_points: 200         # 移動停損點數
+    take_profit_points: 500           # 獲利了結點數
+  
+  monitoring:
+    signal_check_interval: 5          # 訊號檢測間隔 (分鐘)
+    position_check_interval: 3        # 持倉檢測間隔 (秒)
+
+
+# 激進策略（高風險高報酬）
+aggressive:
+  trading:
+    order_quantity: 2
+    timeframe: "15m"
+    stop_loss_points: 50
+    start_trailing_stop_points: 100
+    trailing_stop_points: 100
+    take_profit_points: 300
+  
+  monitoring:
+    signal_check_interval: 3
+    position_check_interval: 2
+
+
+# 保守策略（低風險低報酬）
+conservative:
+  trading:
+    order_quantity: 1
+    timeframe: "30m"
+    stop_loss_points: 100
+    start_trailing_stop_points: 300
+    trailing_stop_points: 250
+    take_profit_points: 800
+  
+  monitoring:
+    signal_check_interval: 10
+    position_check_interval: 5
+

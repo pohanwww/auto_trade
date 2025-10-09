@@ -43,6 +43,7 @@ class FuturePosition:
     price: float  # 平均價格
     last_price: float  # 目前價格
     pnl: float  # 損益
+    sub_symbol: str = ""  # 子商品代碼 (e.g., MXF202511)，手動設定
 
 
 @dataclass

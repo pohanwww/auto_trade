@@ -9,21 +9,12 @@ from auto_trade.services.trading_service import TradingService
 
 def main():
     """主程式入口"""
-    # 載入配置
-    symbol = "MXF"
-    sub_symbol = "MXF202511"  # 2025年11月合約
+    # 載入統一配置（環境變數 + 交易策略）
+    # 策略選擇在 config/strategies.yaml 的 active_strategy 中設定
     config = Config()
 
-    # 交易參數設定
-    trading_params = {
-        "start_trailing_stop_points": 250,  # 啟動移動停損的獲利點數
-        "trailing_stop_points": 250,  # 移動停損點數
-        "order_quantity": 1,  # 下單數量
-        "stop_loss_points": 80,  # 初始停損點數
-        "take_profit_points": 500,  # 獲利了結點數
-        "signal_check_interval": 5,  # 訊號檢測間隔 (分鐘)
-        "position_check_interval": 3,  # 持倉檢測間隔 (秒)
-    }
+    # 顯示配置摘要
+    print(config)
 
     # 建立API客戶端
     api_client = create_api_client(
@@ -45,11 +36,11 @@ def main():
         api_client, account_service, market_service, order_service, strategy_service
     )
 
-    # 設定交易參數
-    trading_service.set_trading_params(trading_params)
+    # 設定交易參數（從統一配置中取得）
+    trading_service.set_trading_params(config.get_trading_params())
 
     # 執行策略循環
-    trading_service.run_strategy(symbol, sub_symbol)
+    trading_service.run_strategy(config.symbol, config.sub_symbol)
 
 
 if __name__ == "__main__":

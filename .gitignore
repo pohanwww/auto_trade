@@ -26,3 +26,6 @@ credentials/
 .env
 *.pfx
 *.pem
+
+# Personal configuration (use .example.yaml as template)
+config/strategies.yaml

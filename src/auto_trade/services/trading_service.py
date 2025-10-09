@@ -360,6 +360,8 @@ class TradingService:
             for pos in positions:
                 print(f"檢查持倉: code={pos.code}, quantity={pos.quantity}")
                 if pos.code == contract_code and pos.quantity != 0:
+                    # 設定 sub_symbol 以便後續使用
+                    pos.sub_symbol = sub_symbol
                     print(f"找到持倉: {pos}")
                     return pos
             return None
