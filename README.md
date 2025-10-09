@@ -23,10 +23,10 @@ vim .env
 
 ```bash
 # 複製策略配置範例檔
-cp config/strategies.example.yaml config/strategies.yaml
+cp config/strategy.example.yaml config/strategy.yaml
 
 # 編輯策略配置（選擇策略、商品、參數等）
-vim config/strategies.yaml
+vim config/strategy.yaml
 ```
 
 ### 3. 執行程式
@@ -43,8 +43,8 @@ uv run main
 ```
 auto_trade/
 ├── config/
-│   ├── strategies.example.yaml  # 策略配置範例（提交到 Git）
-│   └── strategies.yaml          # 實際配置（.gitignore）
+│   ├── strategy.example.yaml    # 策略配置範例（提交到 Git）
+│   └── strategy.yaml            # 實際配置（.gitignore）
 ├── credentials/
 │   ├── Sinopac.pfx             # 永豐憑證（.gitignore）
 │   └── google_credentials.json # Google API 憑證（.gitignore）
@@ -70,18 +70,18 @@ auto_trade/
 
 ### 切換策略
 
-直接編輯 `config/strategies.yaml` 的第一行：
+直接編輯 `config/strategy.yaml` 的第一行：
 
 ```yaml
 # === 當前啟用的策略 ===
-active_strategy: "default"  # 改為 "aggressive" 或 "conservative"
+active_strategy: "default"  # 改為 "higher" 或 "middle"
 ```
 
 **無需修改程式碼！**程式會自動讀取 `active_strategy` 的設定。
 
 ### 切換交易商品
 
-編輯 `config/strategies.yaml` 的 `symbol` 區塊：
+編輯 `config/strategy.yaml` 的 `symbol` 區塊：
 
 ```yaml
 # === 商品設定 ===
@@ -134,7 +134,7 @@ print(config)  # 顯示當前策略摘要
 
 ### 方法 1：修改現有策略
 
-直接編輯 `config/strategies.yaml`，例如修改預設策略：
+直接編輯 `config/strategy.yaml`，例如修改預設策略：
 
 ```yaml
 default:
@@ -153,7 +153,7 @@ default:
 
 ### 方法 2：新增自訂策略
 
-在 `config/strategies.yaml` 中新增一個策略區塊：
+在 `config/strategy.yaml` 中新增一個策略區塊：
 
 ```yaml
 # 自訂策略
@@ -270,7 +270,7 @@ aggressive:
    - 憑證路徑
    - Simulation mode
 
-2. **YAML 配置檔案** (`strategies.yaml`) - 第二優先級
+2. **YAML 配置檔案** (`strategy.yaml`) - 第二優先級
    - 策略選擇 (`active_strategy`)
    - 交易商品設定 (`symbol`)
    - 策略參數 (`default`/`aggressive`/`conservative`)
@@ -290,18 +290,18 @@ git clone https://github.com/pohanwww/auto_trade.git
 cd auto_trade
 
 # 複製配置範例檔
-cp config/strategies.example.yaml config/strategies.yaml
+cp config/strategy.example.yaml config/strategy.yaml
 cp .env.example .env
 
 # 編輯您的個人設定
-vim config/strategies.yaml
+vim config/strategy.yaml
 vim .env
 
 # 安裝依賴並執行
 uv run main
 ```
 
-**重要**: `config/strategies.yaml` 和 `.env` 不會被提交到 Git，保護您的個人設定。
+**重要**: `config/strategy.yaml` 和 `.env` 不會被提交到 Git，保護您的個人設定。
 
 ### 多環境配置
 
@@ -309,10 +309,10 @@ uv run main
 
 ```bash
 # 生產環境
-cp config/strategies.yaml config/strategies.prod.yaml
+cp config/strategy.yaml config/strategy.prod.yaml
 
 # 開發環境
-cp config/strategies.yaml config/strategies.dev.yaml
+cp config/strategy.yaml config/strategy.dev.yaml
 
 # 使用環境變數切換（需修改 config.py 支援）
 export CONFIG_FILE="strategies.prod.yaml"

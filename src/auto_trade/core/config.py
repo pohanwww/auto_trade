@@ -44,7 +44,7 @@ class Config:
         """載入交易策略配置"""
         # 找到 config 資料夾路徑
         config_dir = Path(__file__).parent.parent.parent.parent / "config"
-        strategies_file = config_dir / "strategies.yaml"
+        strategies_file = config_dir / "strategy.yaml"
 
         # 載入完整配置
         with open(strategies_file, encoding="utf-8") as f:
@@ -72,7 +72,6 @@ class Config:
         self.symbol: str = symbol_config["current"]
         self.sub_symbol: str = symbol_config["contract"]
         self.symbol_name: str = symbol_config.get("name", "")
-        self.exchange: str = symbol_config.get("exchange", "TAIFEX")
 
         # 交易參數（已整合風險管理）
         trading = strategy_data["trading"]
@@ -114,7 +113,7 @@ class Config:
         """返回配置摘要"""
         return (
             f"Config(\n"
-            f"  環境: {'生產' if self.is_production else '模擬'}\n"
+            f"  環境: {'prod' if self.is_production else 'simulation'}\n"
             f"  策略: {self.strategy_name}\n"
             f"  商品: {self.symbol_name} ({self.sub_symbol})\n"
             f"  停損: {self.stop_loss_points}點\n"
