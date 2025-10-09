@@ -125,7 +125,11 @@ class RecordService:
             return None
 
     def remove_position(
-        self, sub_symbol: str, exit_price: float, exit_reason: ExitReason
+        self,
+        sub_symbol: str,
+        exit_price: float,
+        exit_reason: ExitReason,
+        strategy_params: dict | None = None,
     ):
         """移除持倉記錄並記錄平倉資訊
 
@@ -133,6 +137,7 @@ class RecordService:
             sub_symbol: 子商品代碼
             exit_price: 出場價格
             exit_reason: 出場原因
+            strategy_params: 策略參數字典（包含 stop_loss_points, start_trailing_stop_points, trailing_stop_points, take_profit_points）
         """
         try:
             records = self._load_records()
@@ -152,6 +157,7 @@ class RecordService:
                     stop_loss_price=position_record.stop_loss_price,
                     exit_price=exit_price,
                     exit_reason=exit_reason,
+                    strategy_params=strategy_params,
                 )
 
                 # 刪除本地記錄
@@ -242,12 +248,13 @@ class RecordService:
         stop_loss_price: float,
         exit_price: float,
         exit_reason: ExitReason,
+        strategy_params: dict | None = None,
     ):
         """記錄完整交易到 Google Sheets
 
         欄位順序：
         1-8: 公式欄位（No, 勝率, 平均盈虧點, 總盈利點, 總虧損點, 總盈虧點, 盈虧比, 總盈虧）
-        9-19: 資料欄位（交易日期, 商品, 數量, 時間尺度, 多空, 進場價格, 停損價格, 出場價格, 出場原因, 盈虧點數[公式], 盈虧新台幣[公式]）
+        9-20: 資料欄位（交易日期, 商品, 數量, 時間尺度, 多空, 進場價格, 停損價格, 出場價格, 出場原因, 盈虧點數[公式], 盈虧新台幣[公式], 策略）
 
         Args:
             trade_date: 交易日期
@@ -259,6 +266,7 @@ class RecordService:
             stop_loss_price: 停損價格
             exit_price: 出場價格
             exit_reason: 出場原因 (ExitReason 枚舉)
+            strategy_params: 策略參數字典（包含 stop_loss_points, start_trailing_stop_points, trailing_stop_points, take_profit_points）
         """
         if not self.sheets_service:
             return
@@ -282,7 +290,7 @@ class RecordService:
                     "總盈虧",
                     "交易日期",
                     "商品",
-                    "數量",  # 新增數量欄位
+                    "數量",
                     "時間尺度",
                     "多空",
                     "進場價格",
@@ -291,6 +299,7 @@ class RecordService:
                     "出場原因",
                     "盈虧（點數）",
                     "盈虧（新台幣）",
+                    "策略",  # 新增策略欄位
                 ]
                 worksheet.append_row(headers)
                 print("✅ 已創建標題行")
@@ -357,8 +366,20 @@ class RecordService:
                         f"=K{next_row}*R{next_row}*50",  # S 欄：數量 * 盈虧點數 * 50
                     ]
 
-            # 合併：統計公式 + 資料 + 盈虧公式
-            row = formulas + data + pnl_formulas
+            # 策略參數（20 欄）- T 欄：策略
+            if strategy_params and (exit_reason != ExitReason.HOLD and exit_price != 0):
+                # 只有在平倉時才記錄策略參數
+                strategy_info = (
+                    f"停損:{strategy_params.get('stop_loss_points', 0)} "
+                    f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} "
+                    f"移停:{strategy_params.get('trailing_stop_points', 0)} "
+                    f"獲利:{strategy_params.get('take_profit_points', 0)}"
+                )
+            else:
+                strategy_info = ""
+
+            # 合併：統計公式 + 資料 + 盈虧公式 + 策略
+            row = formulas + data + pnl_formulas + [strategy_info]
 
             worksheet.append_row(row, value_input_option="USER_ENTERED")
 
@@ -391,7 +412,7 @@ class RecordService:
             # 嘗試取得現有工作表
             worksheet = self.spreadsheet.worksheet(title)
         except gspread.exceptions.WorksheetNotFound:
-            # 工作表不存在，創建新的（19 欄，1000 行）
-            worksheet = self.spreadsheet.add_worksheet(title=title, rows=1000, cols=19)
+            # 工作表不存在，創建新的（20 欄，1000 行）
+            worksheet = self.spreadsheet.add_worksheet(title=title, rows=1000, cols=20)
 
         return worksheet

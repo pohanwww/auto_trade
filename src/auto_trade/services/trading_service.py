@@ -411,7 +411,15 @@ class TradingService:
                     exit_reason = ExitReason.OTHER
 
                 # 移除本地持倉記錄並記錄平倉資訊
-                self.record_service.remove_position(sub_symbol, fill_price, exit_reason)
+                strategy_params = {
+                    "stop_loss_points": self.stop_loss_points,
+                    "start_trailing_stop_points": self.start_trailing_stop_points,
+                    "trailing_stop_points": self.trailing_stop_points,
+                    "take_profit_points": self.take_profit_points,
+                }
+                self.record_service.remove_position(
+                    sub_symbol, fill_price, exit_reason, strategy_params
+                )
 
                 # 重置狀態
                 self.current_position = None
