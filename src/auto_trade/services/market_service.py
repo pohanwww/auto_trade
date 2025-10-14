@@ -32,6 +32,25 @@ class MarketService:
         self.api_client = api_client
 
     @staticmethod
+    def is_trading_time():
+        """檢查是否在交易時間"""
+        now = datetime.now()
+        if now.weekday() in [1, 2, 3, 4]:
+            return (
+                (now.strftime("%H:%M") < "13:45" and now.strftime("%H:%M") >= "08:45")
+                or now.strftime("%H:%M") >= "15:00"
+                or now.strftime("%H:%M") < "05:00"
+            )
+        elif now.weekday() == 0:
+            return (
+                now.strftime("%H:%M") < "13:45" and now.strftime("%H:%M") >= "08:45"
+            ) or now.strftime("%H:%M") >= "15:00"
+        elif now.weekday() == 5:
+            return now.strftime("%H:%M") < "05:00"
+        else:
+            return False
+
+    @staticmethod
     def convert_timestamp_to_datetime(ts: int, use_start_time: bool = True) -> datetime:
         """
         將納秒timestamp轉換為datetime
@@ -79,6 +98,18 @@ class MarketService:
             start=start_date.strftime("%Y-%m-%d"),
             end=end_date.strftime("%Y-%m-%d"),
         )
+        if (
+            self.convert_timestamp_to_datetime(
+                kbars.ts[-1], use_start_time=True
+            ).strftime("%H:%M")
+            < datetime.now().strftime("%H:%M")
+            and self.is_trading_time()
+        ):
+            kbars.ts.append(kbars.ts[-1] + 60000000000)
+            kbars.Open.append(kbars.Open[-1])
+            kbars.High.append(kbars.High[-1])
+            kbars.Low.append(kbars.Low[-1])
+            kbars.Close.append(kbars.Close[-1])
 
         return self._format_kbar_data(kbars, symbol, "1m")
 
@@ -131,7 +162,9 @@ class MarketService:
 
         if not morning_df.empty:
             morning_resampled = (
-                morning_df.resample(pandas_freq, origin="start")
+                morning_df.resample(
+                    pandas_freq, origin="08:45", closed="left", label="left"
+                )
                 .agg(
                     {
                         "open": "first",  # 開盤價取第一個
@@ -154,7 +187,9 @@ class MarketService:
         evening_df = df[evening_mask & ~night_mask]
         if not evening_df.empty:
             evening_resampled = (
-                evening_df.resample(pandas_freq, origin="start")
+                evening_df.resample(
+                    pandas_freq, origin="15:00", closed="left", label="left"
+                )
                 .agg(
                     {
                         "open": "first",
@@ -172,7 +207,9 @@ class MarketService:
         night_df = df[night_mask]
         if not night_df.empty:
             night_resampled = (
-                night_df.resample(pandas_freq, origin="start")
+                night_df.resample(
+                    pandas_freq, origin="00:00", closed="left", label="left"
+                )
                 .agg(
                     {
                         "open": "first",
@@ -265,3 +302,21 @@ class MarketService:
         df = pd.DataFrame({**ticks})
         df["ts"] = pd.to_datetime(df["ts"])
         return df[["ts", "close", "volume", "bid_price", "ask_price"]]
+
+
+if __name__ == "__main__":
+    from auto_trade.core.client import create_api_client
+    from auto_trade.core.config import Config
+
+    config = Config()
+
+    api = create_api_client(
+        config.api_key,
+        config.secret_key,
+        simulation=True,
+    )
+    market_service = MarketService(api)
+    kbars = market_service.get_futures_kbars_with_timeframe(
+        symbol="MXF", sub_symbol="MXF202511", timeframe="30m"
+    )
+    print(kbars)

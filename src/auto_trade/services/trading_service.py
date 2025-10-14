@@ -408,7 +408,7 @@ class TradingService:
                         f"停損觸發! 當前價格: {current_price}, 停損價格: {self.stop_loss_price}, 成交價格: {fill_price}"
                     )
                 else:
-                    exit_reason = ExitReason.OTHER
+                    exit_reason = ExitReason.STOP_LOSS
 
                 # 移除本地持倉記錄並記錄平倉資訊
                 strategy_params = {
@@ -581,7 +581,6 @@ class TradingService:
                 )
                 if not quote:
                     raise Exception("無法取得即時報價")
-                    
 
                 current_price = quote.price
 

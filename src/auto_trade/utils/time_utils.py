@@ -49,7 +49,7 @@ def calculate_and_wait_to_next_execution(
             minute=next_interval_minute, second=0, microsecond=0
         )
 
-    wait_seconds = (next_time - current_time).total_seconds() + 5
+    wait_seconds = (next_time - current_time).total_seconds()
 
     if wait_seconds > 0:
         if verbose:

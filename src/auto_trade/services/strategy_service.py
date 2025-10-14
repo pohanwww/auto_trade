@@ -121,8 +121,8 @@ class StrategyService:
         current_macd = latest_macd[-2]
         previous_macd = latest_macd[-3]
 
-        print(f"current_macd: {current_macd.macd_line:.1f}")
-        print(f"current_signal: {current_macd.signal_line:.1f}")
+        print(f"latest_macd: {latest_macd[-1].macd_line:.1f}")
+        print(f"latest_signal: {latest_macd[-1].signal_line:.1f}")
         current_signal = current_macd.signal_line
         previous_signal = previous_macd.signal_line
 

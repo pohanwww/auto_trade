@@ -371,15 +371,11 @@ class RecordService:
             if exit_reason != ExitReason.HOLD:
                 # R 欄：盈虧（點數）= 出場價格 - 進場價格（做多）
                 pnl_formula = f"=P{row_number}-N{row_number}"
-                worksheet.update_cell(
-                    row_number, 18, pnl_formula, value_input_option="USER_ENTERED"
-                )
+                worksheet.update_cell(row_number, 18, pnl_formula)
 
                 # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
                 twd_formula = f"=K{row_number}*R{row_number}*50"
-                worksheet.update_cell(
-                    row_number, 19, twd_formula, value_input_option="USER_ENTERED"
-                )
+                worksheet.update_cell(row_number, 19, twd_formula)
 
             # 更新策略參數（T 欄）
             if strategy_params:
