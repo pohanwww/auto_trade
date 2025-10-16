@@ -17,6 +17,9 @@ dependencies = [
     "ruff>=0.1.0",
     "gspread>=6.2.1",
     "google-auth>=2.41.1",
+    "line-bot-sdk>=3.5.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
 ]
 
 [project.scripts]

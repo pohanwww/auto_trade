@@ -392,6 +392,56 @@ class RecordService:
         except Exception as e:
             print(f"❌ 更新平倉記錄失敗: {e}")
 
+    def get_latest_row_data(self, worksheet_title: str = "持倉記錄") -> dict | None:
+        """獲取 Google Sheet 最新行數據
+
+        Args:
+            worksheet_title: 工作表名稱，預設為 "持倉記錄"
+
+        Returns:
+            dict: 最新行的數據字典，如果沒有數據則返回 None
+        """
+        if not self.sheets_service:
+            print("⚠️ Google Sheets 服務未啟用")
+            return None
+
+        try:
+            import gspread
+
+            # 取得工作表
+            worksheet = self.spreadsheet.worksheet(worksheet_title)
+
+            # 獲取所有數據
+            all_values = worksheet.get_all_values()
+
+            if not all_values:
+                print(f"📊 工作表 '{worksheet_title}' 沒有數據")
+                return None
+
+            # 獲取標題行（第一行）
+            headers = all_values[0]
+
+            # 獲取最新行數據（最後一行）
+            latest_row = all_values[-1]
+
+            # 將標題和數據組合成字典
+            latest_data = {}
+            for i, header in enumerate(headers):
+                if i < len(latest_row):
+                    latest_data[header] = latest_row[i]
+                else:
+                    latest_data[header] = ""
+
+            print(f"✅ 成功獲取工作表 '{worksheet_title}' 最新行數據")
+            return latest_data
+
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"❌ 工作表 '{worksheet_title}' 不存在")
+            return None
+        except Exception as e:
+            print(f"❌ 獲取最新行數據失敗: {e}")
+            return None
+
     def _get_or_create_worksheet(self, title: str):
         """取得或創建工作表
 

@@ -19,6 +19,7 @@ class TradingSignal:
     confidence: float = 1.0  # 訊號信心度 (0-1)
     reason: str = ""  # 訊號原因
     timestamp: datetime | None = None
+    stop_loss_price: float | None = None  # 計算好的停損價格
 
 
 @dataclass
@@ -29,3 +30,4 @@ class StrategyInput:
     kbars: pd.DataFrame  # OHLCV資料
     current_price: float  # 即時價格
     timestamp: datetime
+    stop_loss_points: int = 80  # 停損點數

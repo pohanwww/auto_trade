@@ -96,14 +96,24 @@ class StrategyService:
         )
 
     def generate_signal(self, input_data: StrategyInput) -> TradingSignal:
-        """生成MACD金叉策略訊號"""
+        """生成MACD金叉策略訊號並計算停損價格"""
         if len(input_data.kbars) < 30:
             return TradingSignal(
                 action=Action.Hold,
                 symbol=input_data.symbol,
                 price=input_data.current_price,
                 reason="Insufficient data for MACD calculation",
+                stop_loss_price=None,
             )
+
+        # 計算前30根K線的最低點並設定停損價格
+        try:
+            lowest_price = min(kbar.low for kbar in input_data.kbars[-31:])
+            stop_loss_price = lowest_price - input_data.stop_loss_points
+        except Exception:
+            stop_loss_price = (
+                input_data.current_price - input_data.stop_loss_points
+            )  # 預設值
 
         # 計算MACD
         macd_list = self.calculate_macd(input_data.kbars)
@@ -116,6 +126,7 @@ class StrategyService:
                 symbol=input_data.symbol,
                 price=input_data.current_price,
                 reason="Insufficient MACD data",
+                stop_loss_price=stop_loss_price,
             )
 
         current_macd = latest_macd[-2]
@@ -141,6 +152,7 @@ class StrategyService:
                 confidence=0.8,
                 reason=f"MACD Golden Cross: MACD({current_macd.macd_line:.2f}) > Signal({current_signal:.2f})",
                 timestamp=datetime.now(),
+                stop_loss_price=stop_loss_price,
             )
 
         return TradingSignal(
@@ -149,6 +161,7 @@ class StrategyService:
             price=current_price,
             reason=f"No signal: MACD({current_macd.macd_line:.2f}), Signal({current_signal:.2f})",
             timestamp=datetime.now(),
+            stop_loss_price=stop_loss_price,
         )
 
 

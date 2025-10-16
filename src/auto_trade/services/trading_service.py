@@ -12,6 +12,7 @@ from auto_trade.models import (
 )
 from auto_trade.models.position_record import PositionRecord
 from auto_trade.services.account_service import AccountService
+from auto_trade.services.line_bot_service import LineBotService
 from auto_trade.services.market_service import MarketService
 from auto_trade.services.order_service import OrderService
 from auto_trade.services.record_service import RecordService
@@ -29,12 +30,14 @@ class TradingService:
         market_service: MarketService,
         order_service: OrderService,
         strategy_service: StrategyService,
+        line_bot_service: LineBotService = None,
     ):
         self.api_client = api_client
         self.account_service = account_service
         self.market_service = market_service
         self.order_service = order_service
         self.strategy_service = strategy_service
+        self.line_bot_service = line_bot_service
 
         # 記錄服務（自動從 Config 讀取 Google Sheets 設定）
         self.record_service = RecordService()
@@ -432,6 +435,22 @@ class TradingService:
                 self.trailing_stop_active = False
                 self.stop_loss_price = 0.0
                 self.entry_price = 0.0
+
+                # 獲取 Google Sheets 最新數據並發送 Line 通知
+                if self.line_bot_service:
+                    try:
+                        latest_data = self.record_service.get_latest_row_data()
+                        if latest_data:
+                            self.line_bot_service.send_close_position_message(
+                                symbol=self.symbol,
+                                sub_symbol=self.sub_symbol,
+                                price=fill_price,
+                                exit_reason=exit_reason.value,
+                                latest_data=latest_data,
+                            )
+                    except Exception as e:
+                        print(f"❌ 發送平倉通知失敗: {e}")
+
             return True
         return False
 
@@ -544,6 +563,7 @@ class TradingService:
                         last_deal = latest_trade.status.deals[-1]
                         fill_price = last_deal.price
                         print(f"成交價格: {fill_price} (成交時間: {last_deal.time})")
+
                         return fill_price
                     else:
                         print("警告: 未找到成交價格資訊")
@@ -626,47 +646,33 @@ class TradingService:
                     print(
                         f"\n[{current_time.strftime('%H:%M:%S')}] 當前價格: {current_price:.1f}"
                     )
-                    # 取得K線資料
                     kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
                         self.symbol, self.sub_symbol, "30m", days=30
                     )
-                    input_data = StrategyInput(
-                        symbol=self.sub_symbol,
-                        kbars=kbars_30m,
-                        current_price=current_price,
-                        timestamp=datetime.now(),
+                    signal = self.strategy_service.generate_signal(
+                        StrategyInput(
+                            symbol=self.sub_symbol,
+                            kbars=kbars_30m,
+                            current_price=current_price,
+                            timestamp=datetime.now(),
+                            stop_loss_points=self.stop_loss_points,
+                        )
                     )
-                    signal = self.strategy_service.generate_signal(input_data)
-                    # 檢查是否有交易訊號
                     if signal.action == Action.Buy:
                         print(f"收到交易訊號: {signal.action}")
-
-                        # 使用整合函數下市價單開倉
                         fill_price = self._place_market_order_and_wait(
                             self.symbol, self.sub_symbol, signal.action, "Open"
                         )
-                        if fill_price is not None:
-                            # 設定停損點位
-                            if self.current_position:
-                                self.entry_price = fill_price  # 使用實際成交價格
-                                self.trailing_stop_active = False
-                                try:
-                                    lowest_price = min(
-                                        kbar.low for kbar in kbars_30m[-31:]
-                                    )
-                                except Exception as e:
-                                    print(f"取得前31根K線最低點失敗: {str(e)}")
-                                    lowest_price = fill_price - 50
+                        if fill_price is not None and self.current_position:
+                            self.entry_price = fill_price
+                            self.trailing_stop_active = False
+                            self.stop_loss_price = signal.stop_loss_price
 
-                                self.stop_loss_price = (
-                                    lowest_price - self.stop_loss_points
-                                )
-                                print(f"開倉成交價格: {fill_price}")
-                                print(f"前30根K線最低點: {lowest_price}")
-                                print(f"停損點位已設定: {self.stop_loss_price}")
+                            print(f"開倉成交價格: {fill_price}")
+                            print(f"停損點位已設定: {self.stop_loss_price}")
 
-                                # 保存持倉記錄到本地
-                                position_record = PositionRecord(
+                            self.record_service.save_position(
+                                PositionRecord(
                                     symbol=self.symbol,
                                     sub_symbol=self.sub_symbol,
                                     direction=signal.action,
@@ -677,8 +683,17 @@ class TradingService:
                                     timeframe=self.timeframe,
                                     trailing_stop_active=False,
                                 )
-                                self.record_service.save_position(position_record)
+                            )
 
+                            if self.line_bot_service:
+                                self.line_bot_service.send_open_position_message(
+                                    symbol=self.symbol,
+                                    sub_symbol=self.sub_symbol,
+                                    price=fill_price,
+                                    quantity=self.order_quantity,
+                                    action=signal.action,
+                                    stop_loss_price=self.stop_loss_price,
+                                )
                         else:
                             print("開倉失敗")
                             time.sleep(60)
