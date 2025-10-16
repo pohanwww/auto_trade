@@ -378,82 +378,6 @@ class TradingService:
             print(f"取得持倉失敗: {str(e)}")
             return None
 
-    def _check_close_position_trigger(
-        self, symbol: str, sub_symbol: str, current_price: float
-    ) -> bool:
-        """
-        檢查是否觸發了停損或獲利了結，如果觸發則立即下市價單平倉
-
-        Returns:
-            bool: 是否觸發了停損或獲利了結
-        """
-        if not self.current_position or self.stop_loss_price == 0.0:
-            return False
-
-        # 計算當前獲利點數（只支持做多）
-        current_profit = current_price - self.entry_price
-        stop_triggered = current_price <= self.stop_loss_price
-        profit_triggered = current_profit >= self.take_profit_points
-        # 檢查是否觸發停損或獲利了結
-        if stop_triggered or profit_triggered:
-            # 平倉（賣出）
-            fill_price = self._place_market_order_and_wait(
-                symbol, sub_symbol, Action.Sell, "Close"
-            )
-
-            if fill_price is not None:
-                # 確定出場原因
-                if profit_triggered:
-                    exit_reason = ExitReason.TAKE_PROFIT
-                    print(
-                        f"獲利了結觸發! 當前獲利: {current_profit:.1f} 點 >= {self.take_profit_points} 點, 成交價格: {fill_price}"
-                    )
-                elif stop_triggered:
-                    if self.trailing_stop_active:
-                        exit_reason = ExitReason.TRAILING_STOP
-                    else:
-                        exit_reason = ExitReason.STOP_LOSS
-                    print(
-                        f"停損觸發! 當前價格: {current_price}, 停損價格: {self.stop_loss_price}, 成交價格: {fill_price}"
-                    )
-                else:
-                    exit_reason = ExitReason.STOP_LOSS
-
-                # 移除本地持倉記錄並記錄平倉資訊
-                strategy_params = {
-                    "stop_loss_points": self.stop_loss_points,
-                    "start_trailing_stop_points": self.start_trailing_stop_points,
-                    "trailing_stop_points": self.trailing_stop_points,
-                    "take_profit_points": self.take_profit_points,
-                }
-                self.record_service.remove_position(
-                    sub_symbol, fill_price, exit_reason, strategy_params
-                )
-
-                # 重置狀態
-                self.current_position = None
-                self.trailing_stop_active = False
-                self.stop_loss_price = 0.0
-                self.entry_price = 0.0
-
-                # 獲取 Google Sheets 最新數據並發送 Line 通知
-                if self.line_bot_service:
-                    try:
-                        latest_data = self.record_service.get_latest_row_data()
-                        if latest_data:
-                            self.line_bot_service.send_close_position_message(
-                                symbol=self.symbol,
-                                sub_symbol=self.sub_symbol,
-                                price=fill_price,
-                                exit_reason=exit_reason.value,
-                                latest_data=latest_data,
-                            )
-                    except Exception as e:
-                        print(f"❌ 發送平倉通知失敗: {e}")
-
-            return True
-        return False
-
     def _update_trailing_stop(self, current_price: float) -> bool:
         """更新移動停損 - 檢查是否啟動移動停損並更新停損價格"""
         if not self.current_position:
@@ -620,10 +544,60 @@ class TradingService:
                 current_price = quote.price
 
                 if self.current_position:
-                    # 檢查停損觸發
-                    if self._check_close_position_trigger(
-                        self.symbol, self.sub_symbol, current_price
-                    ):
+                    current_profit = current_price - self.entry_price
+                    stop_triggered = current_profit <= self.stop_loss_price
+                    profit_triggered = current_profit >= self.take_profit_points
+                    if stop_triggered or profit_triggered:  # 檢查是否觸發停損或獲利了結
+                        # 平倉（賣出）
+                        fill_price = self._place_market_order_and_wait(
+                            self.symbol, self.sub_symbol, Action.Sell, "Close"
+                        )
+                        if fill_price is not None:
+                            exit_reason = (
+                                ExitReason.TAKE_PROFIT
+                                if profit_triggered
+                                else ExitReason.TRAILING_STOP
+                                if self.trailing_stop_active
+                                else ExitReason.STOP_LOSS
+                            )
+                            print(f"觸發平倉，成交價格: {fill_price}")
+
+                            # 重置狀態
+                            self.current_position = None
+                            self.trailing_stop_active = False
+                            self.stop_loss_price = 0.0
+                            self.entry_price = 0.0
+
+                            # 移除本地持倉記錄並記錄平倉資訊
+                            self.record_service.remove_position(
+                                self.sub_symbol,
+                                fill_price,
+                                exit_reason,
+                                {
+                                    "stop_loss_points": self.stop_loss_points,
+                                    "start_trailing_stop_points": self.start_trailing_stop_points,
+                                    "trailing_stop_points": self.trailing_stop_points,
+                                    "take_profit_points": self.take_profit_points,
+                                },
+                            )
+
+                            # 獲取 Google Sheets 最新數據並發送 Line 通知
+                            if self.line_bot_service:
+                                try:
+                                    latest_data = (
+                                        self.record_service.get_latest_row_data()
+                                    )
+                                    if latest_data:
+                                        self.line_bot_service.send_close_position_message(
+                                            symbol=self.symbol,
+                                            sub_symbol=self.sub_symbol,
+                                            price=fill_price,
+                                            exit_reason=exit_reason.value,
+                                            latest_data=latest_data,
+                                        )
+                                except Exception as e:
+                                    print(f"❌ 發送平倉通知失敗: {e}")
+
                         calculate_and_wait_to_next_execution(
                             current_time, self.signal_check_interval, True
                         )
