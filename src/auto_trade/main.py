@@ -40,7 +40,7 @@ def main():
     trading_service.set_trading_params(config.get_trading_params())
 
     # 執行策略循環
-    trading_service.run_strategy(config.symbol, config.sub_symbol)
+    trading_service.run_strategy()
 
 
 if __name__ == "__main__":

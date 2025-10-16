@@ -380,10 +380,10 @@ class RecordService:
             # 更新策略參數（T 欄）
             if strategy_params:
                 strategy_info = (
-                    f"停損:{strategy_params.get('stop_loss_points', 0)} \n"
+                    f"初始停損:{strategy_params.get('stop_loss_points', 0)} \n"
                     f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} \n"
-                    f"移停:{strategy_params.get('trailing_stop_points', 0)} \n"
-                    f"獲利:{strategy_params.get('take_profit_points', 0)} \n"
+                    f"移停點數:{strategy_params.get('trailing_stop_points', 0)} \n"
+                    f"獲利點數:{strategy_params.get('take_profit_points', 0)} \n"
                 )
                 worksheet.update_cell(row_number, 20, strategy_info)
 

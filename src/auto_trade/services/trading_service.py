@@ -58,6 +58,11 @@ class TradingService:
         self.signal_check_interval: int = 5  # 訊號檢測間隔 (分鐘)
         self.position_check_interval: int = 5  # 持倉檢測間隔 (秒)
 
+        # 交易商品信息
+        self.symbol: str | None = None
+        self.sub_symbol: str | None = None
+        self.contract_code: str | None = None
+
     def set_trading_params(self, params: dict):
         """設定交易參數"""
         self.trailing_stop_points = params.get("trailing_stop_points", 200)
@@ -71,7 +76,40 @@ class TradingService:
         self.signal_check_interval = params.get("signal_check_interval", 5)
         self.position_check_interval = params.get("position_check_interval", 5)
 
+        # 處理 symbol 和 sub_symbol
+        self.symbol = params.get("symbol")
+        self.sub_symbol = params.get("sub_symbol")
+
+        if self.symbol and self.sub_symbol:
+            # 直接獲取合約代碼
+            try:
+                # 如果 sub_symbol 是字符串，使用原來的查找邏輯
+                product_info = self.market_service.get_futures_product_info(self.symbol)
+                if product_info and "contracts" in product_info:
+                    contracts = product_info["contracts"]
+                    # 現在 contracts 的 key 是 sub_symbol，直接查找
+                    if self.sub_symbol in contracts:
+                        contract_info = contracts[self.sub_symbol]
+                        self.contract_code = contract_info.get("code")
+                        print(
+                            f"✅ 設置合約代碼: {self.sub_symbol} → {self.contract_code}"
+                        )
+                    else:
+                        print(
+                            f"⚠️ 在 {self.symbol} 中找不到 sub_symbol: {self.sub_symbol}"
+                        )
+                else:
+                    print(f"⚠️ 無法獲取 {self.symbol} 的商品信息")
+            except Exception as e:
+                print(f"❌ 獲取合約代碼失敗: {e}")
+
         print("交易參數已設定:")
+        if self.symbol:
+            print(f"  商品代碼: {self.symbol}")
+        if self.sub_symbol:
+            print(f"  子商品代碼: {self.sub_symbol}")
+        if self.contract_code:
+            print(f"  合約代碼: {self.contract_code}")
         print(f"  移動停損點數: {self.trailing_stop_points}")
         print(f"  啟動移動停損點數: {self.start_trailing_stop_points}")
         print(f"  下單數量: {self.order_quantity}")
@@ -80,38 +118,6 @@ class TradingService:
         print(f"  K線時間尺度: {self.timeframe}")
         print(f"  訊號檢測間隔: {self.signal_check_interval} 分鐘")
         print(f"  持倉檢測間隔: {self.position_check_interval} 秒")
-
-    def _convert_sub_symbol_to_contract_code(self, sub_symbol: str) -> str:
-        """將 sub_symbol (如 MXF202510) 轉換為合約代碼 (如 MXFJ5)
-
-        Shioaji 期貨月份代碼映射（與標準略有不同）：
-        A=1月, B=2月, C=3月, D=4月, E=5月, F=6月,
-        G=7月, H=8月, I=9月, J=10月, K=11月, L=12月
-        """
-        if len(sub_symbol) < 8:
-            return sub_symbol
-        commodity = sub_symbol[:3]
-        year = sub_symbol[3:7]
-        month = sub_symbol[7:9]
-        # Shioaji 使用的月份代碼（與國際標準不同）
-        month_codes = {
-            "01": "A",
-            "02": "B",
-            "03": "C",
-            "04": "D",
-            "05": "E",
-            "06": "F",
-            "07": "G",
-            "08": "H",
-            "09": "I",
-            "10": "J",
-            "11": "K",
-            "12": "L",
-        }
-        year_code = year[-1]
-        month_code = month_codes.get(month, month)
-        contract_code = f"{commodity}{month_code}{year_code}"
-        return contract_code
 
     def _get_latest_trade(self, trades: list[FuturesTrade]) -> FuturesTrade | None:
         """根據成交時間獲取最新的交易記錄
@@ -271,12 +277,11 @@ class TradingService:
             try:
                 print(f"查詢交易記錄: symbol={symbol}, sub_symbol={sub_symbol}")
 
-                # 使用轉換後的合約代碼查詢
-                contract_code = self._convert_sub_symbol_to_contract_code(sub_symbol)
-                print(f"轉換後的合約代碼: {contract_code}")
+                # 使用合約代碼查詢
+                print(f"使用合約代碼: {self.contract_code}")
 
                 trades = self.order_service.check_order_status(
-                    symbol=symbol, sub_symbol=contract_code
+                    symbol=symbol, sub_symbol=self.contract_code
                 )
 
                 print(f"找到 {len(trades)} 筆交易記錄")
@@ -354,12 +359,13 @@ class TradingService:
         """取得當前持倉"""
         try:
             positions = self.account_service.get_future_positions()
-            contract_code = self._convert_sub_symbol_to_contract_code(sub_symbol)
-            print(f"查找持倉: sub_symbol={sub_symbol} → contract_code={contract_code}")
+            print(
+                f"查找持倉: sub_symbol={sub_symbol} → contract_code={self.contract_code}"
+            )
 
             for pos in positions:
                 print(f"檢查持倉: code={pos.code}, quantity={pos.quantity}")
-                if pos.code == contract_code and pos.quantity != 0:
+                if pos.code == self.contract_code and pos.quantity != 0:
                     # 設定 sub_symbol 以便後續使用
                     pos.sub_symbol = sub_symbol
                     print(f"找到持倉: {pos}")
@@ -513,7 +519,7 @@ class TradingService:
             while datetime.now() - start_time < timedelta(minutes=timeout_minutes):
                 trades = self.order_service.check_order_status(
                     symbol=symbol,
-                    sub_symbol=self._convert_sub_symbol_to_contract_code(sub_symbol),
+                    sub_symbol=self.contract_code,
                 )
                 filled_trades = [
                     t
@@ -552,22 +558,31 @@ class TradingService:
             print(f"下單或等待成交失敗: {str(e)}")
             return None
 
-    def run_strategy(self, symbol: str, sub_symbol: str):
+    def run_strategy(self):
         """執行策略循環 - 支持自適應檢測頻率"""
-        print(f"開始交易策略: {symbol} {sub_symbol}")
+        # 早期失敗檢查
+        if not all([self.symbol, self.sub_symbol, self.contract_code]):
+            print(
+                f"❌ 錯誤: 未設置 {', '.join([k for k, v in {'symbol': self.symbol, 'sub_symbol': self.sub_symbol, 'contract_code': self.contract_code}.items() if not v])}，請先調用 set_trading_params"
+            )
+            return
+
+        print(
+            f"開始交易策略: {self.symbol} {self.sub_symbol} (合約代碼: {self.contract_code})"
+        )
 
         print("首次啟動，同步持倉狀態...")
-        self.current_position = self._get_current_position(sub_symbol)
+        self.current_position = self._get_current_position(self.sub_symbol)
 
         # 如果有現有持倉，初始化停損信息
         if self.current_position:
             print(
                 f"發現現有持倉: {self.current_position.direction} {self.current_position.quantity} @ {self.current_position.price}"
             )
-            self._initialize_existing_position(symbol, sub_symbol)
+            self._initialize_existing_position(self.symbol, self.sub_symbol)
         else:
             # 清理可能不同步的本地記錄（不記錄到 Google Sheets）
-            self.record_service._remove_position_without_log(sub_symbol)
+            self.record_service._remove_position_without_log(self.sub_symbol)
 
         # 按固定間隔執行策略
         print_flag = False
@@ -577,7 +592,7 @@ class TradingService:
 
                 # 取得即時報價
                 quote = self.market_service.get_futures_realtime_quote(
-                    symbol, sub_symbol
+                    self.symbol, self.sub_symbol
                 )
                 if not quote:
                     raise Exception("無法取得即時報價")
@@ -587,7 +602,7 @@ class TradingService:
                 if self.current_position:
                     # 檢查停損觸發
                     if self._check_close_position_trigger(
-                        symbol, sub_symbol, current_price
+                        self.symbol, self.sub_symbol, current_price
                     ):
                         calculate_and_wait_to_next_execution(
                             current_time, self.signal_check_interval, True
@@ -613,10 +628,10 @@ class TradingService:
                     )
                     # 取得K線資料
                     kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
-                        symbol, sub_symbol, "30m", days=30
+                        self.symbol, self.sub_symbol, "30m", days=30
                     )
                     input_data = StrategyInput(
-                        symbol=sub_symbol,
+                        symbol=self.sub_symbol,
                         kbars=kbars_30m,
                         current_price=current_price,
                         timestamp=datetime.now(),
@@ -628,7 +643,7 @@ class TradingService:
 
                         # 使用整合函數下市價單開倉
                         fill_price = self._place_market_order_and_wait(
-                            symbol, sub_symbol, signal.action, "Open"
+                            self.symbol, self.sub_symbol, signal.action, "Open"
                         )
                         if fill_price is not None:
                             # 設定停損點位
@@ -652,8 +667,8 @@ class TradingService:
 
                                 # 保存持倉記錄到本地
                                 position_record = PositionRecord(
-                                    symbol=symbol,
-                                    sub_symbol=sub_symbol,
+                                    symbol=self.symbol,
+                                    sub_symbol=self.sub_symbol,
                                     direction=signal.action,
                                     quantity=self.order_quantity,
                                     entry_price=fill_price,

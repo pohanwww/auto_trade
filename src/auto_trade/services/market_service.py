@@ -303,6 +303,122 @@ class MarketService:
         df["ts"] = pd.to_datetime(df["ts"])
         return df[["ts", "close", "volume", "bid_price", "ask_price"]]
 
+    def list_all_futures_products(self) -> dict:
+        """
+        列出所有可用的期貨商品
+
+        Returns:
+            dict: 包含所有期貨商品的字典，格式為 {symbol: [sub_symbol1, sub_symbol2, ...]}
+        """
+        try:
+            futures_products = {}
+
+            # 遍歷所有期貨合約
+            for symbol_obj in self.api_client.Contracts.Futures:
+                # symbol_obj 可能是一個 StreamMultiContract 對象，需要獲取其代碼
+                try:
+                    if hasattr(symbol_obj, "code"):
+                        symbol = symbol_obj.code
+                    else:
+                        symbol = str(symbol_obj)
+                except Exception:
+                    symbol = str(symbol_obj)
+
+                sub_symbols = []
+
+                # 獲取該商品的所有子合約
+                try:
+                    sub_contracts = self.api_client.Contracts.Futures[symbol]
+                    if sub_contracts is None:
+                        print(f"⚠️ {symbol} 的子合約為 None，跳過")
+                        continue
+
+                    for sub_symbol in sub_contracts:
+                        try:
+                            # 嘗試不同的方式獲取代碼
+                            if hasattr(sub_symbol, "code"):
+                                code = sub_symbol.code
+                            elif hasattr(sub_symbol, "__str__"):
+                                code = str(sub_symbol)
+                            else:
+                                code = repr(sub_symbol)
+
+                            sub_symbols.append(code)
+                        except Exception as e:
+                            print(f"處理子合約時出錯: {e}, 合約: {sub_symbol}")
+                            continue
+                except Exception as e:
+                    print(f"獲取 {symbol} 的子合約時出錯: {e}")
+                    continue
+
+                if sub_symbols:
+                    # 確保所有元素都是字符串再排序
+                    futures_products[symbol] = sorted(
+                        [str(code) for code in sub_symbols]
+                    )
+
+            return futures_products
+
+        except Exception as e:
+            print(f"❌ 獲取期貨商品列表失敗: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return {}
+
+    def get_futures_product_info(self, symbol: str) -> dict:
+        """
+        獲取特定期貨商品的詳細信息
+
+        Args:
+            symbol: 商品代碼 (例如: MXF, TXF)
+
+        Returns:
+            dict: 包含商品詳細信息的字典
+        """
+        try:
+            # 檢查symbol是否存在於Futures中
+            try:
+                sub_contracts = self.api_client.Contracts.Futures[symbol]
+                if sub_contracts is None:
+                    print(f"❌ 商品 {symbol} 的子合約為 None")
+                    return {}
+            except Exception as e:
+                print(f"❌ 無法找到商品 {symbol}: {e}")
+                return {}
+
+            product_info = {"symbol": symbol, "sub_symbols": [], "contracts": {}}
+
+            # 獲取所有子合約信息
+            for contract in sub_contracts:
+                try:
+                    # sub_symbol 是一個 StreamMultiContract 對象，需要獲取其 code 屬性
+                    if hasattr(contract, "symbol"):
+                        sub_symbol = contract.symbol
+                    else:
+                        sub_symbol = str(contract)
+
+                    product_info["sub_symbols"].append(sub_symbol)
+                    product_info["contracts"][sub_symbol] = {
+                        "code": getattr(contract, "code", sub_symbol),
+                        "name": getattr(contract, "name", ""),
+                        "exchange": getattr(contract, "exchange", ""),
+                        "delivery_month": getattr(contract, "delivery_month", ""),
+                        "delivery_date": getattr(contract, "delivery_date", ""),
+                    }
+                except Exception as e:
+                    print(f"處理子合約 {sub_symbol} 時出錯: {e}")
+                    continue
+
+            return product_info
+
+        except Exception as e:
+            print(f"❌ 獲取期貨商品信息失敗: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return {}
+
 
 if __name__ == "__main__":
     from auto_trade.core.client import create_api_client
@@ -316,7 +432,32 @@ if __name__ == "__main__":
         simulation=True,
     )
     market_service = MarketService(api)
-    kbars = market_service.get_futures_kbars_with_timeframe(
-        symbol="MXF", sub_symbol="MXF202511", timeframe="30m"
-    )
-    print(kbars)
+
+    # print("📊 測試列出所有期貨商品:")
+    # products = market_service.list_all_futures_products()
+    # print(products)
+
+    print("\n📈 測試獲取MXF商品信息:")
+    mxf_info = market_service.get_futures_product_info("TXF")
+    # print(mxf_info)
+    for sub_symbol in mxf_info["sub_symbols"]:
+        print(sub_symbol)
+    for item in mxf_info["contracts"].items():
+        print(item[0])
+        print(item[1])
+
+    # from auto_trade.core.client import create_api_client
+    # from auto_trade.core.config import Config
+
+    # config = Config()
+
+    # api = create_api_client(
+    #     config.api_key,
+    #     config.secret_key,
+    #     simulation=True,
+    # )
+    # market_service = MarketService(api)
+    # kbars = market_service.get_futures_kbars_with_timeframe(
+    #     symbol="MXF", sub_symbol="MXF202511", timeframe="30m"
+    # )
+    # print(kbars)

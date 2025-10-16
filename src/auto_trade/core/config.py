@@ -55,7 +55,7 @@ class Config:
 
         # 取得所有可用的策略（排除 active_strategy 和 symbol）
         available_strategies = [
-            k for k in config_data.keys() if k not in ["active_strategy", "symbol"]
+            k for k in config_data if k not in ["active_strategy", "symbol"]
         ]
 
         # 驗證策略是否存在
@@ -99,6 +99,8 @@ class Config:
     def get_trading_params(self) -> dict:
         """取得交易參數字典（用於傳遞給 TradingService）"""
         return {
+            "symbol": self.symbol,
+            "sub_symbol": self.sub_symbol,
             "timeframe": self.timeframe,
             "stop_loss_points": self.stop_loss_points,
             "start_trailing_stop_points": self.start_trailing_stop_points,

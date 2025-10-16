@@ -1,6 +1,13 @@
 """Data models for auto trading system."""
 
 from .account import Action, Balance, FuturePosition, Margin, Position
+from .backtest import (
+    BacktestConfig,
+    BacktestPosition,
+    BacktestResult,
+    BacktestTrade,
+    PerformanceMetrics,
+)
 from .market import EMAData, EMAList, KBar, KBarList, MACDData, MACDList, Quote
 from .order import (
     Deal,
@@ -38,4 +45,10 @@ __all__ = [
     "StrategyInput",
     # Exit reason
     "ExitReason",
+    # Backtest models
+    "BacktestConfig",
+    "BacktestPosition",
+    "BacktestResult",
+    "BacktestTrade",
+    "PerformanceMetrics",
 ]
