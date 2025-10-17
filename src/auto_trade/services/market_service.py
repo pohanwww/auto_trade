@@ -113,12 +113,6 @@ class MarketService:
 
         return self._format_kbar_data(kbars, symbol, "1m")
 
-    def get_futures_historical_ticks(self, symbol: str, date: str) -> pd.DataFrame:
-        """取得期貨歷史tick資料"""
-        contract = self.api_client.Contracts.Futures[symbol]
-        ticks = self.api_client.ticks(contract=contract, date=date)
-        return self._format_tick_data(ticks)
-
     def resample_kbars(self, kbar_list: KBarList, timeframe: str) -> KBarList:
         """
         將1分鐘K線轉換為指定時間尺度的K線

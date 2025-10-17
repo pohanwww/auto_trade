@@ -383,9 +383,7 @@ class TradingService:
         if not self.current_position:
             return False
 
-        # 如果還沒有啟動移動停損，檢查是否達到啟動條件
         if not self.trailing_stop_active:
-            # 檢查是否達到啟動移動停損的條件
             if current_price - self.entry_price >= self.start_trailing_stop_points:
                 print(f"獲利{current_price - self.entry_price}點，啟動移動停損")
                 self.trailing_stop_active = True
@@ -395,11 +393,7 @@ class TradingService:
                 return True
             return False
 
-        # 如果已經啟動移動停損，更新停損價格
-        # 計算新的停損價格
         new_stop_price = current_price - self.trailing_stop_points
-
-        # 檢查是否需要更新停損價格
         if new_stop_price > self.stop_loss_price:
             self.stop_loss_price = new_stop_price
             print(f"移動停損價格更新: {new_stop_price}")
@@ -669,7 +663,7 @@ class TradingService:
                                     stop_loss_price=self.stop_loss_price,
                                 )
                         else:
-                            print("開倉失敗")
+                            print("開倉失敗, 等待60秒後重試")
                             time.sleep(60)
                     else:
                         print("無交易訊號")
