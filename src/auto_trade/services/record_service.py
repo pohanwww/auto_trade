@@ -1,4 +1,4 @@
-"""記錄服務 - 整合本地記錄和 Google Sheets"""
+"""記錄服務 - 整合本地記錄和 Google Sheets 交易記錄"""
 
 import json
 from datetime import datetime
@@ -10,7 +10,7 @@ from auto_trade.models.position_record import PositionRecord
 
 
 class RecordService:
-    """記錄服務 - 管理本地持倉記錄和 Google Sheets 記錄"""
+    """記錄服務 - 管理本地持倉記錄和 Google Sheets 交易記錄"""
 
     def __init__(
         self,
@@ -216,7 +216,7 @@ class RecordService:
             return {}
 
     def _remove_position_without_log(self, sub_symbol: str):
-        """移除持倉記錄但不記錄到 Google Sheets（用於清理不同步的記錄）
+        """移除持倉記錄但不記錄到 Google Sheets 交易記錄（用於清理不同步的記錄）
 
         Args:
             sub_symbol: 子商品代碼
@@ -392,11 +392,11 @@ class RecordService:
         except Exception as e:
             print(f"❌ 更新平倉記錄失敗: {e}")
 
-    def get_latest_row_data(self, worksheet_title: str = "持倉記錄") -> dict | None:
+    def get_latest_row_data(self, worksheet_title: str = "交易記錄") -> dict | None:
         """獲取 Google Sheet 最新行數據
 
         Args:
-            worksheet_title: 工作表名稱，預設為 "持倉記錄"
+            worksheet_title: 工作表名稱，預設為 "交易記錄"
 
         Returns:
             dict: 最新行的數據字典，如果沒有數據則返回 None

@@ -539,7 +539,7 @@ class TradingService:
 
                 if self.current_position:
                     current_profit = current_price - self.entry_price
-                    stop_triggered = current_profit <= self.stop_loss_price
+                    stop_triggered = current_price <= self.stop_loss_price
                     profit_triggered = current_profit >= self.take_profit_points
                     if stop_triggered or profit_triggered:  # 檢查是否觸發停損或獲利了結
                         # 平倉（賣出）
@@ -579,7 +579,9 @@ class TradingService:
                             if self.line_bot_service:
                                 try:
                                     latest_data = (
-                                        self.record_service.get_latest_row_data()
+                                        self.record_service.get_latest_row_data(
+                                            "交易記錄"
+                                        )
                                     )
                                     if latest_data:
                                         self.line_bot_service.send_close_position_message(
