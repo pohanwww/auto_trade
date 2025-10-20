@@ -1,7 +1,6 @@
 """Line Bot 服務 - 用於發送交易通知和接收命令"""
 
 import os
-from collections import defaultdict
 from datetime import datetime
 
 from linebot import LineBotApi, WebhookHandler
@@ -36,48 +35,6 @@ class LineBotService:
         self.handler = WebhookHandler(channel_secret)
         self.user_id = os.environ.get("LINE_USER_ID")  # 您的 Line User ID
 
-        # 配額管理
-        self.daily_quota = 200  # 每天 200 則訊息
-        self.monthly_quota = 500  # 每月 500 則訊息
-        self.message_count = defaultdict(int)  # 記錄訊息數量
-        self.last_reset_date = datetime.now().date()
-
-    def _check_quota(self) -> bool:
-        """檢查配額是否足夠
-
-        Returns:
-            bool: 是否可以發送訊息
-        """
-        current_date = datetime.now().date()
-
-        # 檢查是否需要重置每日計數
-        if current_date != self.last_reset_date:
-            self.message_count["daily"] = 0
-            self.last_reset_date = current_date
-
-        # 檢查每日配額
-        if self.message_count["daily"] >= self.daily_quota:
-            print(f"⚠️ 已達到每日配額限制: {self.daily_quota}")
-            return False
-
-        # 檢查每月配額
-        if self.message_count["monthly"] >= self.monthly_quota:
-            print(f"⚠️ 已達到每月配額限制: {self.monthly_quota}")
-            return False
-
-        return True
-
-    def _update_quota(self):
-        """更新配額計數"""
-        self.message_count["daily"] += 1
-        self.message_count["monthly"] += 1
-
-        # 顯示配額使用情況
-        daily_remaining = self.daily_quota - self.message_count["daily"]
-        monthly_remaining = self.monthly_quota - self.message_count["monthly"]
-
-        print(f"📊 配額使用: 每日剩餘 {daily_remaining}, 每月剩餘 {monthly_remaining}")
-
     def send_message(self, message: str) -> bool:
         """發送文字訊息
 
@@ -87,13 +44,8 @@ class LineBotService:
         Returns:
             bool: 發送是否成功
         """
-        # 檢查配額
-        if not self._check_quota():
-            return False
-
         try:
             self.line_bot_api.push_message(self.user_id, TextSendMessage(text=message))
-            self._update_quota()
             return True
         except LineBotApiError as e:
             print(f"❌ Line Bot 發送失敗: {e}")
