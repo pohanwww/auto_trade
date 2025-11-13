@@ -40,10 +40,22 @@ class BacktestService:
 
         print(f"📊 獲取到 {len(kbars)} 根K線數據")
 
+        # 如果啟用 MACD 快速停損，計算 MACD 指標
+        macd_list = None
+        if config.enable_macd_fast_stop:
+            macd_list = self.strategy_service.calculate_macd(
+                kbars,
+                config.macd_fast_period,
+                config.macd_slow_period,
+                config.macd_signal_period,
+            )
+            print("📈 計算 MACD 指標完成")
+
         # 初始化狀態
         current_position: BacktestPosition | None = None
         current_equity = config.initial_capital
         trade_counter = 0
+        is_in_macd_death_cross = False  # 記錄是否處於MACD死叉狀態（持續追蹤）
 
         # 按時間順序處理每根K線
         for i, kbar in enumerate(kbars):
@@ -60,9 +72,20 @@ class BacktestService:
             # 檢查持倉狀態
             if current_position:
                 # 檢查是否需要平倉
-                exit_reason = self._check_exit_conditions(
-                    current_position, current_high, current_low, config
+                exit_reason, exit_price_override = self._check_exit_conditions(
+                    current_position,
+                    kbar,
+                    current_high,
+                    current_low,
+                    config,
+                    macd_list,
+                    i,
+                    is_in_macd_death_cross,
                 )
+
+                # 如果平倉，重置死叉狀態
+                if exit_reason:
+                    is_in_macd_death_cross = False
 
                 if exit_reason:
                     # 執行平倉
@@ -73,6 +96,7 @@ class BacktestService:
                         current_low,
                         exit_reason,
                         config,
+                        exit_price_override,
                     )
                     result.trades.append(trade)
 
@@ -85,18 +109,55 @@ class BacktestService:
                         f"📉 平倉: {trade.action.value} @ {trade.exit_price:.1f}, 盈虧: {trade.pnl_twd:.0f}"
                     )
                 else:
+                    # 持續追蹤 MACD 死叉狀態
+                    if (
+                        config.enable_macd_fast_stop
+                        and not current_position.trailing_stop_active
+                        and macd_list is not None
+                        and i >= 1
+                    ):
+                        current_macd = macd_list[i]
+                        previous_macd = macd_list[i - 1]
+
+                        if current_position.action == Action.Buy:
+                            # 檢測死叉（進入死叉狀態）
+                            if (
+                                not is_in_macd_death_cross
+                                and previous_macd.macd_line >= previous_macd.signal_line
+                                and current_macd.macd_line < current_macd.signal_line
+                            ):
+                                is_in_macd_death_cross = True
+                                print(
+                                    f"🔍 進入 MACD 死叉狀態 (MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f})，持續監控快速停損"
+                                )
+
+                            # 檢測金叉（解除死叉狀態）
+                            elif (
+                                is_in_macd_death_cross
+                                and previous_macd.macd_line <= previous_macd.signal_line
+                                and current_macd.macd_line > current_macd.signal_line
+                            ):
+                                is_in_macd_death_cross = False
+                                print(
+                                    f"✅ MACD 金叉，解除死叉狀態 (MACD:{current_macd.macd_line:.1f} > Signal:{current_macd.signal_line:.1f})"
+                                )
+
+                    # 繼續更新移動停損等
                     # 更新移動停損 (使用高點)
                     if (
                         config.enable_trailing_stop
                         and current_position.trailing_stop_active
                     ):
+                        trailing_stop_points = config.calculate_trailing_stop_points(
+                            current_position.entry_price
+                        )
                         if current_position.action == Action.Buy:
                             current_position.update_trailing_stop(
-                                current_high, config.trailing_stop_points
+                                current_high, trailing_stop_points
                             )
                         else:
                             current_position.update_trailing_stop(
-                                current_low, config.trailing_stop_points
+                                current_low, trailing_stop_points
                             )
 
                     # 更新最大獲利/虧損 (使用高點和低點)
@@ -246,10 +307,11 @@ class BacktestService:
         )
 
         # 計算獲利價格
+        take_profit_points = config.calculate_take_profit_points(price)
         if signal.action == Action.Buy:
-            take_profit_price = price + config.take_profit_points
+            take_profit_price = price + take_profit_points
         else:  # Sell
-            take_profit_price = price - config.take_profit_points
+            take_profit_price = price - take_profit_points
 
         position = BacktestPosition(
             symbol=config.symbol,
@@ -319,11 +381,39 @@ class BacktestService:
     def _check_exit_conditions(
         self,
         position: BacktestPosition,
+        current_kbar,
         current_high: float,
         current_low: float,
         config: BacktestConfig,
-    ) -> ExitReason | None:
-        """檢查平倉條件"""
+        macd_list=None,
+        current_index: int = 0,
+        is_in_macd_death_cross: bool = False,
+    ) -> tuple[ExitReason | None, float | None]:
+        """檢查平倉條件
+
+        Returns:
+            (exit_reason, exit_price_override): 平倉原因和可選的覆蓋出場價格
+        """
+        # 檢查 MACD 快速停損（處於死叉狀態時持續檢查）
+        if (
+            config.enable_macd_fast_stop
+            and not position.trailing_stop_active
+            and is_in_macd_death_cross
+        ):
+            # 使用開盤價檢查
+            open_price = current_kbar.open
+
+            # 計算虧損
+            if position.action == Action.Buy:
+                loss_points = position.entry_price - open_price
+
+                # 檢查開盤價是否低於進場價 - 最小虧損點數
+                if loss_points > config.macd_fast_stop_min_loss:
+                    print(
+                        f"⚡ MACD 快速停損觸發: 開盤價 {open_price:.1f}, 虧損 {loss_points:.1f} 點 (處於死叉狀態)"
+                    )
+                    return ExitReason.FAST_STOP, open_price  # 使用開盤價作為出場價
+
         # 檢查獲利了結 (使用高點檢查)
         if config.enable_take_profit and (
             (
@@ -335,7 +425,7 @@ class BacktestService:
                 and current_low <= position.take_profit_price
             )
         ):
-            return ExitReason.TAKE_PROFIT
+            return ExitReason.TAKE_PROFIT, None
 
         # 檢查移動停損 (使用低點檢查，優先於一般停損)
         if (
@@ -352,7 +442,7 @@ class BacktestService:
                 )
             )
         ):
-            return ExitReason.TRAILING_STOP
+            return ExitReason.TRAILING_STOP, None
 
         # 檢查一般停損 (使用低點檢查)
         if (
@@ -360,7 +450,7 @@ class BacktestService:
         ) or (
             position.action == Action.Sell and current_high >= position.stop_loss_price
         ):
-            return ExitReason.STOP_LOSS
+            return ExitReason.STOP_LOSS, None
 
         # 檢查是否啟動移動停損 (使用高點檢查)
         if config.enable_trailing_stop and not position.trailing_stop_active:
@@ -372,16 +462,15 @@ class BacktestService:
 
             if profit_points >= config.start_trailing_stop_points:
                 position.trailing_stop_active = True
+                trailing_stop_points = config.calculate_trailing_stop_points(
+                    position.entry_price
+                )
                 if position.action == Action.Buy:
-                    position.update_trailing_stop(
-                        current_high, config.trailing_stop_points
-                    )
+                    position.update_trailing_stop(current_high, trailing_stop_points)
                 else:
-                    position.update_trailing_stop(
-                        current_low, config.trailing_stop_points
-                    )
+                    position.update_trailing_stop(current_low, trailing_stop_points)
 
-        return None
+        return None, None
 
     def _close_position(
         self,
@@ -391,10 +480,14 @@ class BacktestService:
         current_low: float,
         exit_reason: ExitReason,
         config: BacktestConfig,  # noqa: ARG002
+        exit_price_override: float | None = None,
     ) -> BacktestTrade:
         """平倉"""
-        # 根據出場原因決定實際成交價格
-        if exit_reason == ExitReason.TAKE_PROFIT:
+        # 如果有覆蓋價格（例如快速停損使用開盤價），優先使用
+        if exit_price_override is not None:
+            exit_price = exit_price_override
+        # 否則根據出場原因決定實際成交價格
+        elif exit_reason == ExitReason.TAKE_PROFIT:
             # 獲利了結：使用目標價格
             exit_price = position.take_profit_price
         elif exit_reason == ExitReason.TRAILING_STOP:
@@ -448,8 +541,22 @@ class BacktestService:
         report.append(f"K線時間尺度: {result.config.timeframe}")
         report.append(f"初始停損點數: {result.config.stop_loss_points}")
         report.append(f"啟動移動停損點數: {result.config.start_trailing_stop_points}")
-        report.append(f"移動停損點數: {result.config.trailing_stop_points}")
-        report.append(f"獲利了結點數: {result.config.take_profit_points}")
+
+        # 移動停損顯示（優先顯示百分比）
+        if result.config.trailing_stop_points_rate is not None:
+            report.append(
+                f"移動停損: {result.config.trailing_stop_points_rate * 100}% (進入價格 × {result.config.trailing_stop_points_rate})"
+            )
+        else:
+            report.append(f"移動停損點數: {result.config.trailing_stop_points}")
+
+        # 獲利了結顯示（優先顯示百分比）
+        if result.config.take_profit_points_rate is not None:
+            report.append(
+                f"獲利了結: {result.config.take_profit_points_rate * 100}% (進入價格 × {result.config.take_profit_points_rate})"
+            )
+        else:
+            report.append(f"獲利了結點數: {result.config.take_profit_points}")
         report.append(f"最大同時持倉數: {result.config.max_positions}")
         report.append(
             f"啟用移動停損: {'是' if result.config.enable_trailing_stop else '否'}"
@@ -544,7 +651,9 @@ class BacktestService:
 
         return "\n".join(report)
 
-    def save_results(self, result: BacktestResult, filename: str = None) -> str:
+    def save_results(
+        self, result: BacktestResult, filename: str = None, suffix: str = ""
+    ) -> str:
         """保存回測結果到檔案"""
 
         # 確保 data/backtest/ 目錄存在（相對於當前工作目錄）
@@ -554,7 +663,9 @@ class BacktestService:
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             symbol = result.config.symbol
-            filename = f"{backtest_dir}/backtest_results_{symbol}_{timestamp}.txt"
+            filename = (
+                f"{backtest_dir}/backtest_results_{symbol}_{timestamp}{suffix}.txt"
+            )
 
         report = self.generate_report(result)
 

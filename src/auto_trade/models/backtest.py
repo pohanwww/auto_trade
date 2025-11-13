@@ -27,9 +27,9 @@ class BacktestTrade:
     symbol: str
     action: Action
     entry_time: datetime
-    entry_price: float
+    entry_price: int
     exit_time: datetime | None = None
-    exit_price: float | None = None
+    exit_price: int | None = None
     quantity: int = 1
     exit_reason: ExitReason | None = None
     pnl_points: float | None = None
@@ -43,9 +43,9 @@ class BacktestTrade:
             return 0.0, 0.0
 
         if self.action == Action.Buy:
-            pnl_points = self.exit_price - self.entry_price
+            pnl_points = float(self.exit_price - self.entry_price)
         else:  # Sell
-            pnl_points = self.entry_price - self.exit_price
+            pnl_points = float(self.entry_price - self.exit_price)
 
         # 根據商品代碼獲取每點價值
         point_value = get_point_value(self.symbol)
@@ -64,16 +64,16 @@ class BacktestPosition:
     symbol: str
     action: Action
     entry_time: datetime
-    entry_price: float
+    entry_price: int
     quantity: int
-    stop_loss_price: float
-    take_profit_price: float
-    trailing_stop_price: float | None = None
+    stop_loss_price: int
+    take_profit_price: int
+    trailing_stop_price: int | None = None
     trailing_stop_active: bool = False
     max_profit_points: float = 0.0
     max_loss_points: float = 0.0
 
-    def update_trailing_stop(self, current_price: float, trailing_stop_points: int):
+    def update_trailing_stop(self, current_price: int, trailing_stop_points: int):
         """更新移動停損"""
         if self.action == Action.Buy:
             new_trailing_stop = current_price - trailing_stop_points
@@ -108,10 +108,9 @@ class BacktestConfig:
     start_trailing_stop_points: int = 200
     trailing_stop_points: int = 200
     take_profit_points: int = 500
-
-    # 成本設定
-    commission_per_trade: float = 50.0  # 每筆交易手續費
-    slippage_points: float = 1.0  # 滑價點數
+    # 百分比參數（可選，如果設置則會覆蓋固定點數）
+    trailing_stop_points_rate: float | None = None
+    take_profit_points_rate: float | None = None
 
     # 策略參數
     timeframe: str = "30m"
@@ -123,6 +122,22 @@ class BacktestConfig:
     max_positions: int = 1  # 最大同時持倉數
     enable_trailing_stop: bool = True
     enable_take_profit: bool = True
+
+    # MACD 快速停損設定
+    enable_macd_fast_stop: bool = False  # 是否啟用 MACD 快速停損
+    macd_fast_stop_min_loss: int = 30  # MACD 快速停損最小虧損點數
+
+    def calculate_trailing_stop_points(self, entry_price: int) -> int:
+        """根據進入價格計算移動停損點數"""
+        if self.trailing_stop_points_rate is not None:
+            return int(entry_price * self.trailing_stop_points_rate)
+        return int(self.trailing_stop_points)
+
+    def calculate_take_profit_points(self, entry_price: int) -> int:
+        """根據進入價格計算獲利了結點數"""
+        if self.take_profit_points_rate is not None:
+            return int(entry_price * self.take_profit_points_rate)
+        return int(self.take_profit_points)
 
 
 @dataclass
@@ -159,6 +174,13 @@ class BacktestResult:
         """計算統計指標"""
         if not self.trades:
             return
+
+        # 重置計數器（避免重複調用時累加）
+        self.total_trades = 0
+        self.winning_trades = 0
+        self.losing_trades = 0
+        self.total_pnl_twd = 0.0
+        self.total_pnl_points = 0.0
 
         self.total_trades = len(self.trades)
 

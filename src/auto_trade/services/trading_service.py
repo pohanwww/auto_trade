@@ -44,17 +44,20 @@ class TradingService:
 
         # 交易狀態追蹤
         self.current_position: FuturePosition | None = None
-        self.entry_price: float = 0.0
+        self.entry_price: int = 0
         self.trailing_stop_active: bool = False
-        self.stop_loss_price: float = 0.0  # 停損價格 (共用於初始停損和移動停損)
+        self.stop_loss_price: int = 0  # 停損價格 (共用於初始停損和移動停損)
         self.last_sync_time: datetime | None = None
+        self.is_in_macd_death_cross: bool = False  # MACD 死叉狀態追蹤
 
         # 交易參數 (預設值)
         self.trailing_stop_points: int = 200
+        self.trailing_stop_points_rate: float | None = None
         self.start_trailing_stop_points: int = 200
         self.order_quantity: int = 1
         self.stop_loss_points: int = 50
         self.take_profit_points: int = 500
+        self.take_profit_points_rate: float | None = None
         self.timeframe: str = "30m"  # K線時間尺度
 
         # 檢測頻率參數
@@ -69,10 +72,12 @@ class TradingService:
     def set_trading_params(self, params: dict):
         """設定交易參數"""
         self.trailing_stop_points = params.get("trailing_stop_points", 200)
+        self.trailing_stop_points_rate = params.get("trailing_stop_points_rate")
         self.start_trailing_stop_points = params.get("start_trailing_stop_points", 200)
         self.order_quantity = params.get("order_quantity", 1)
         self.stop_loss_points = params.get("stop_loss_points", 50)
         self.take_profit_points = params.get("take_profit_points", 500)
+        self.take_profit_points_rate = params.get("take_profit_points_rate")
         self.timeframe = params.get("timeframe", "30m")
 
         # 檢測頻率參數
@@ -113,11 +118,21 @@ class TradingService:
             print(f"  子商品代碼: {self.sub_symbol}")
         if self.contract_code:
             print(f"  合約代碼: {self.contract_code}")
-        print(f"  移動停損點數: {self.trailing_stop_points}")
+        trailing_stop_display = (
+            f"{self.trailing_stop_points_rate * 100}% (進入價格 × {self.trailing_stop_points_rate})"
+            if self.trailing_stop_points_rate is not None
+            else f"{self.trailing_stop_points} 點"
+        )
+        take_profit_display = (
+            f"{self.take_profit_points_rate * 100}% (進入價格 × {self.take_profit_points_rate})"
+            if self.take_profit_points_rate is not None
+            else f"{self.take_profit_points} 點"
+        )
+        print(f"  移動停損: {trailing_stop_display}")
         print(f"  啟動移動停損點數: {self.start_trailing_stop_points}")
         print(f"  下單數量: {self.order_quantity}")
         print(f"  初始停損點數: {self.stop_loss_points}")
-        print(f"  獲利了結點數: {self.take_profit_points}")
+        print(f"  獲利了結: {take_profit_display}")
         print(f"  K線時間尺度: {self.timeframe}")
         print(f"  訊號檢測間隔: {self.signal_check_interval} 分鐘")
         print(f"  持倉檢測間隔: {self.position_check_interval} 秒")
@@ -152,9 +167,21 @@ class TradingService:
 
         return latest_trade
 
+    def _calculate_trailing_stop_points(self, entry_price: int) -> int:
+        """根據進入價格計算移動停損點數"""
+        if self.trailing_stop_points_rate is not None:
+            return int(entry_price * self.trailing_stop_points_rate)
+        return int(self.trailing_stop_points)
+
+    def _calculate_take_profit_points(self, entry_price: int) -> int:
+        """根據進入價格計算獲利了結點數"""
+        if self.take_profit_points_rate is not None:
+            return int(entry_price * self.take_profit_points_rate)
+        return int(self.take_profit_points)
+
     def _calculate_trailing_stop_from_history(
-        self, symbol: str, sub_symbol: str, entry_time: datetime, entry_price: float
-    ) -> tuple[float, bool]:
+        self, symbol: str, sub_symbol: str, entry_time: datetime, entry_price: int
+    ) -> tuple[int, bool]:
         """根據進場時間計算當前應有的移動停損狀態
 
         Args:
@@ -174,18 +201,15 @@ class TradingService:
         days_diff = max((now - entry_time).days + 1, 30)
         print(f"計算移動停損: 從 {entry_time} 到現在，需要 {days_diff} 天數據")
 
-        # 獲取歷史K棒數據
-        kbars = self.market_service.get_futures_historical_kbars(
-            symbol, sub_symbol, days_diff
+        # 直接獲取指定時間尺度的 K 棒數據
+        kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
+            symbol, sub_symbol, self.timeframe, days_diff
         )
 
-        if not kbars or len(kbars.kbars) < 30:
+        if not kbars_30m or len(kbars_30m.kbars) < 30:
             raise ValueError(
-                f"歷史數據不足: 需要至少 30 根K棒，實際獲得 {len(kbars.kbars) if kbars else 0} 根"
+                f"歷史數據不足: 需要至少 30 根{self.timeframe}K棒，實際獲得 {len(kbars_30m.kbars) if kbars_30m else 0} 根"
             )
-
-        # 轉換為30分鐘K棒
-        kbars_30m = self.market_service.resample_kbars(kbars, "30m")
 
         # 計算初始停損（進場前30根K棒最低點）
         pre_entry_kbars = [kbar for kbar in kbars_30m.kbars if kbar.time <= entry_time]
@@ -214,8 +238,11 @@ class TradingService:
 
         # 檢查是否應該啟動移動停損
         if profit_points >= self.start_trailing_stop_points:
-            trailing_stop_loss = highest_price - self.trailing_stop_points
-            print(f"✅ 移動停損已啟動，停損價格: {trailing_stop_loss:.1f}")
+            trailing_stop_points = self._calculate_trailing_stop_points(entry_price)
+            trailing_stop_loss = highest_price - trailing_stop_points
+            print(
+                f"✅ 移動停損已啟動，停損價格: {trailing_stop_loss:.1f} (點數: {trailing_stop_points:.1f})"
+            )
             return trailing_stop_loss, True
         else:
             print(f"移動停損未啟動，使用初始停損: {initial_stop_loss:.1f}")
@@ -259,7 +286,12 @@ class TradingService:
                         f"calculated_stop_loss={calculated_stop_loss}"
                     )
 
-                print(f"獲利了結價格: {self.entry_price + self.take_profit_points:.1f}")
+                take_profit_points = self._calculate_take_profit_points(
+                    self.entry_price
+                )
+                print(
+                    f"獲利了結價格: {self.entry_price + take_profit_points:.1f} (點數: {take_profit_points:.1f})"
+                )
                 print("現有持倉初始化完成 (使用本地記錄)")
                 self.record_service.update_stop_loss(
                     sub_symbol,
@@ -332,9 +364,12 @@ class TradingService:
                 print(f"使用備用方案計算停損: {self.stop_loss_price:.1f}")
 
             # 計算獲利了結價格（只支持做多）
-            self.take_profit_points = self.entry_price + self.take_profit_points
+            take_profit_points = self._calculate_take_profit_points(self.entry_price)
+            take_profit_price = self.entry_price + take_profit_points
 
-            print(f"獲利了結價格: {self.take_profit_points:.1f}")
+            print(
+                f"獲利了結價格: {take_profit_price:.1f} (點數: {take_profit_points:.1f})"
+            )
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
 
             position_record = PositionRecord(
@@ -378,7 +413,83 @@ class TradingService:
             print(f"取得持倉失敗: {str(e)}")
             return None
 
-    def _update_trailing_stop(self, current_price: float) -> bool:
+    def _check_macd_fast_stop(self, current_price: int) -> bool:
+        """檢查 MACD 快速停損
+
+        Args:
+            current_price: 當前價格
+
+        Returns:
+            bool: 是否觸發快速停損
+        """
+        try:
+            current_profit = current_price - self.entry_price
+
+            # 如果已經在死叉狀態，直接檢查虧損條件
+            if self.is_in_macd_death_cross and not self.trailing_stop_active:
+                if current_profit < -self.stop_loss_points:
+                    print(
+                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                    )
+                    return True
+                return False
+
+            # 否則，獲取 K 線並計算 MACD
+            kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
+                self.symbol, self.sub_symbol, self.timeframe, days=30
+            )
+
+            if not kbars_30m or len(kbars_30m.kbars) < 35:
+                return False
+
+            # 使用 strategy_service 計算 MACD
+            macd_list = self.strategy_service.calculate_macd(kbars_30m)
+
+            # 使用 strategy_service 檢測死叉和金叉
+            is_death_cross = self.strategy_service.check_death_cross(macd_list)
+            is_golden_cross = self.strategy_service.check_golden_cross(macd_list)
+
+            # 獲取當前 MACD 值用於日誌輸出
+            latest_macd = macd_list.get_latest(1)
+            if latest_macd:
+                current_macd_data = latest_macd[-1]
+                current_macd = current_macd_data.macd_line
+                current_signal = current_macd_data.signal_line
+            else:
+                return False
+
+            # 死叉確認
+            if is_death_cross:
+                self.is_in_macd_death_cross = True
+                print(
+                    f"🔍 進入 MACD 死叉狀態 (MACD: {current_macd:.2f}, Signal: {current_signal:.2f})"
+                )
+
+                # 檢查是否達到虧損門檻
+                if (
+                    not self.trailing_stop_active
+                    and current_profit < -self.stop_loss_points
+                ):
+                    print(
+                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                    )
+                    return True
+
+            # 金叉確認 - 解除死叉狀態
+            elif is_golden_cross:
+                if self.is_in_macd_death_cross:
+                    self.is_in_macd_death_cross = False
+                    print(
+                        f"✅ MACD 金叉，解除死叉狀態 (MACD: {current_macd:.2f}, Signal: {current_signal:.2f})"
+                    )
+
+            return False
+
+        except Exception as e:
+            print(f"⚠️  MACD 快速停損檢查失敗: {e}")
+            return False
+
+    def _update_trailing_stop(self, current_price: int) -> bool:
         """更新移動停損 - 檢查是否啟動移動停損並更新停損價格"""
         if not self.current_position:
             return False
@@ -388,12 +499,25 @@ class TradingService:
                 print(f"獲利{current_price - self.entry_price}點，啟動移動停損")
                 self.trailing_stop_active = True
                 # 立即設定移動停損價格
-                self.stop_loss_price = current_price - self.trailing_stop_points
-                print(f"移動停損已啟動，停損價格: {self.stop_loss_price}")
+                trailing_stop_points = self._calculate_trailing_stop_points(
+                    self.entry_price
+                )
+                self.stop_loss_price = current_price - trailing_stop_points
+                print(
+                    f"移動停損已啟動，停損價格: {self.stop_loss_price} (點數: {trailing_stop_points:.1f})"
+                )
+
+                # 更新本地記錄
+                self.record_service.update_stop_loss(
+                    self.current_position.sub_symbol,
+                    self.stop_loss_price,
+                    self.trailing_stop_active,
+                )
                 return True
             return False
 
-        new_stop_price = current_price - self.trailing_stop_points
+        trailing_stop_points = self._calculate_trailing_stop_points(self.entry_price)
+        new_stop_price = current_price - trailing_stop_points
         if new_stop_price > self.stop_loss_price:
             self.stop_loss_price = new_stop_price
             print(f"移動停損價格更新: {new_stop_price}")
@@ -455,30 +579,23 @@ class TradingService:
 
             while datetime.now() - start_time < timedelta(minutes=timeout_minutes):
                 trades = self.order_service.check_order_status(
-                    symbol=symbol,
-                    sub_symbol=self.contract_code,
+                    result.order_id,
                 )
-                filled_trades = [
-                    t
-                    for t in trades
-                    if t.status.status in ["Filled", "PartFilled", "Status.Filled"]
-                ]
-
-                if filled_trades:
+                if trades and trades[0].status.status in [
+                    "Filled",
+                    "PartFilled",
+                    "Status.Filled",
+                ]:
+                    current_trade = trades[0]
                     print(f"成交確認: {action} {order_type}")
-
-                    # 等待一下讓系統更新
-                    time.sleep(2)
+                    time.sleep(2)  # 等待一下讓系統更新
 
                     # 更新持倉狀態
                     self.current_position = self._get_current_position(sub_symbol)
                     print(f"持倉狀態已更新: {action}")
 
-                    # 根據成交時間取最新的交易記錄
-                    latest_trade = self._get_latest_trade(filled_trades)
-                    if latest_trade and latest_trade.status.deals:
-                        # 取最後一筆成交的價格
-                        last_deal = latest_trade.status.deals[-1]
+                    if current_trade.status.deals:
+                        last_deal = current_trade.status.deals[-1]
                         fill_price = last_deal.price
                         print(f"成交價格: {fill_price} (成交時間: {last_deal.time})")
 
@@ -539,28 +656,39 @@ class TradingService:
 
                 if self.current_position:
                     current_profit = current_price - self.entry_price
+
+                    # 定期檢查 MACD 快速停損
+                    fast_stop_triggered = False
+                    if current_time.minute % self.signal_check_interval == 0:
+                        fast_stop_triggered = self._check_macd_fast_stop(current_price)
+
+                    # 檢查其他停損條件
                     stop_triggered = current_price <= self.stop_loss_price
-                    profit_triggered = current_profit >= self.take_profit_points
-                    if stop_triggered or profit_triggered:  # 檢查是否觸發停損或獲利了結
+                    take_profit_points = self._calculate_take_profit_points(
+                        self.entry_price
+                    )
+                    profit_triggered = current_profit >= take_profit_points
+
+                    if (
+                        fast_stop_triggered or stop_triggered or profit_triggered
+                    ):  # 檢查是否觸發停損或獲利了結
                         # 平倉（賣出）
                         fill_price = self._place_market_order_and_wait(
                             self.symbol, self.sub_symbol, Action.Sell, "Close"
                         )
                         if fill_price is not None:
-                            exit_reason = (
-                                ExitReason.TAKE_PROFIT
-                                if profit_triggered
-                                else ExitReason.TRAILING_STOP
-                                if self.trailing_stop_active
-                                else ExitReason.STOP_LOSS
-                            )
-                            print(f"觸發平倉，成交價格: {fill_price}")
+                            # 判斷退出原因
+                            if profit_triggered:
+                                exit_reason = ExitReason.TAKE_PROFIT
+                            elif fast_stop_triggered:
+                                exit_reason = ExitReason.FAST_STOP
+                                print(f"⚡ MACD 快速停損執行，成交價格: {fill_price}")
+                            elif self.trailing_stop_active:
+                                exit_reason = ExitReason.TRAILING_STOP
+                            else:
+                                exit_reason = ExitReason.STOP_LOSS
 
-                            # 重置狀態
-                            self.current_position = None
-                            self.trailing_stop_active = False
-                            self.stop_loss_price = 0.0
-                            self.entry_price = 0.0
+                            print(f"觸發平倉，成交價格: {fill_price}")
 
                             # 移除本地持倉記錄並記錄平倉資訊
                             self.record_service.remove_position(
@@ -570,10 +698,23 @@ class TradingService:
                                 {
                                     "stop_loss_points": self.stop_loss_points,
                                     "start_trailing_stop_points": self.start_trailing_stop_points,
-                                    "trailing_stop_points": self.trailing_stop_points,
-                                    "take_profit_points": self.take_profit_points,
+                                    "trailing_stop_points": self._calculate_trailing_stop_points(
+                                        self.entry_price
+                                    ),
+                                    "take_profit_points": self._calculate_take_profit_points(
+                                        self.entry_price
+                                    ),
+                                    "trailing_stop_points_rate": self.trailing_stop_points_rate,
+                                    "take_profit_points_rate": self.take_profit_points_rate,
                                 },
                             )
+
+                            # 重置狀態
+                            self.current_position = None
+                            self.trailing_stop_active = False
+                            self.stop_loss_price = 0.0
+                            self.entry_price = 0.0
+                            self.is_in_macd_death_cross = False  # 重置 MACD 死叉狀態
 
                             # 獲取 Google Sheets 最新數據並發送 Line 通知
                             if self.line_bot_service:
@@ -637,6 +778,7 @@ class TradingService:
                             self.entry_price = fill_price
                             self.trailing_stop_active = False
                             self.stop_loss_price = signal.stop_loss_price
+                            self.is_in_macd_death_cross = False  # 重置 MACD 死叉狀態
 
                             print(f"開倉成交價格: {fill_price}")
                             print(f"停損點位已設定: {self.stop_loss_price}")

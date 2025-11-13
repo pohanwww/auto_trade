@@ -14,6 +14,7 @@ class ExitReason(Enum):
     TAKE_PROFIT = "TP"  # 獲利了結
     STOP_LOSS = "SL"  # 停損
     HOLD = "Hold"  # 持倉中
+    FAST_STOP = "FS"  # 快速停損
 
 
 @dataclass

@@ -312,7 +312,7 @@ class RecordService:
                     f'=SUMIF(R$2:R{next_row},">0",R$2:R{next_row})',  # 總盈利點
                     f'=SUMIF(R$2:R{next_row},"<0",R$2:R{next_row})',  # 總虧損點
                     f"=SUM(R$2:R{next_row})",  # 總盈虧點
-                    f"=ABS(D{next_row}/E{next_row})",  # 盈虧比
+                    f'=IF(E{next_row}=0,"inf",ABS(D{next_row}/E{next_row}))',  # 盈虧比
                     f"=SUM(S$2:S{next_row})",  # 總盈虧
                 ]
 

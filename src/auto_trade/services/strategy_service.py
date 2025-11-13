@@ -95,6 +95,62 @@ class StrategyService:
             timeframe=kbar_list.timeframe,
         )
 
+    def check_golden_cross(self, macd_list: MACDList) -> bool:
+        """檢查是否發生 MACD 金叉（已確認）
+
+        金叉定義：MACD 線從下方穿越信號線到上方
+        使用 [-2] 和 [-3] 確保檢查的是已確認的K線，而非正在形成的K線
+
+        Args:
+            macd_list: MACD 數據列表
+
+        Returns:
+            bool: True 如果發生金叉，False 否則
+        """
+        if len(macd_list.macd_data) < 3:
+            return False
+
+        latest_macd = macd_list.get_latest(3)
+        if len(latest_macd) < 3:
+            return False
+
+        current = latest_macd[-2]  # 已確認的最新K線
+        previous = latest_macd[-3]  # 已確認的前一根K線
+
+        # 金叉：前一根 MACD <= Signal，當前 MACD > Signal
+        return (
+            previous.macd_line <= previous.signal_line
+            and current.macd_line > current.signal_line
+        )
+
+    def check_death_cross(self, macd_list: MACDList) -> bool:
+        """檢查是否發生 MACD 死叉（已確認）
+
+        死叉定義：MACD 線從上方穿越信號線到下方
+        使用 [-2] 和 [-3] 確保檢查的是已確認的K線，而非正在形成的K線
+
+        Args:
+            macd_list: MACD 數據列表
+
+        Returns:
+            bool: True 如果發生死叉，False 否則
+        """
+        if len(macd_list.macd_data) < 3:
+            return False
+
+        latest_macd = macd_list.get_latest(3)
+        if len(latest_macd) < 3:
+            return False
+
+        current = latest_macd[-2]  # 已確認的最新K線
+        previous = latest_macd[-3]  # 已確認的前一根K線
+
+        # 死叉：前一根 MACD >= Signal，當前 MACD < Signal
+        return (
+            previous.macd_line >= previous.signal_line
+            and current.macd_line < current.signal_line
+        )
+
     def generate_signal(self, input_data: StrategyInput) -> TradingSignal:
         """生成MACD金叉策略訊號並計算停損價格"""
         if len(input_data.kbars) < 30:
@@ -118,48 +174,47 @@ class StrategyService:
         # 計算MACD
         macd_list = self.calculate_macd(input_data.kbars)
 
-        # 取得最新的MACD值
-        latest_macd = macd_list.get_latest(3)  # 取得最新2個數據點
-        if len(latest_macd) < 2:
-            return TradingSignal(
-                action=Action.Hold,
-                symbol=input_data.symbol,
-                price=input_data.current_price,
-                reason="Insufficient MACD data",
-                stop_loss_price=stop_loss_price,
-            )
+        # 取得當前 MACD 值（用於日誌和條件判斷）
+        latest_macd = macd_list.get_latest(1)
+        current_macd = latest_macd[-1] if latest_macd else None
 
-        current_macd = latest_macd[-2]
-        previous_macd = latest_macd[-3]
-
-        print(f"latest_macd: {latest_macd[-1].macd_line:.1f}")
-        print(f"latest_signal: {latest_macd[-1].signal_line:.1f}")
-        current_signal = current_macd.signal_line
-        previous_signal = previous_macd.signal_line
+        # 打印 MACD 日誌（如果有數據）
+        if current_macd:
+            print(f"latest_macd: {current_macd.macd_line:.1f}")
+            print(f"latest_signal: {current_macd.signal_line:.1f}")
 
         current_price = input_data.current_price
 
-        # MACD金叉策略：MACD < 30 且金叉時買入
+        # 檢查金叉（內部已處理數據不足的情況）
+        is_golden_cross = self.check_golden_cross(macd_list)
+
+        # MACD金叉策略：MACD < 35 且金叉時買入
         if (
-            (current_macd.macd_line + current_macd.signal_line) / 2 < 30
-            and previous_macd.macd_line <= previous_signal
-            and current_macd.macd_line > current_signal
+            current_macd
+            and (current_macd.macd_line + current_macd.signal_line) / 2 < 35
+            and is_golden_cross
         ):
             return TradingSignal(
                 action=Action.Buy,
                 symbol=input_data.symbol,
                 price=current_price,
                 confidence=0.8,
-                reason=f"MACD Golden Cross: MACD({current_macd.macd_line:.2f}) > Signal({current_signal:.2f})",
+                reason=f"MACD Golden Cross: MACD({current_macd.macd_line:.2f}) > Signal({current_macd.signal_line:.2f})",
                 timestamp=datetime.now(),
                 stop_loss_price=stop_loss_price,
             )
+
+        # 構建 Hold 原因說明
+        if current_macd:
+            reason = f"No signal: MACD({current_macd.macd_line:.2f}), Signal({current_macd.signal_line:.2f})"
+        else:
+            reason = "Insufficient MACD data"
 
         return TradingSignal(
             action=Action.Hold,
             symbol=input_data.symbol,
             price=current_price,
-            reason=f"No signal: MACD({current_macd.macd_line:.2f}), Signal({current_signal:.2f})",
+            reason=reason,
             timestamp=datetime.now(),
             stop_loss_price=stop_loss_price,
         )

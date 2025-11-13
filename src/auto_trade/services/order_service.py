@@ -257,3 +257,24 @@ class OrderService:
         except Exception as e:
             print(f"檢查委託單狀態失敗: {str(e)}")
             return []
+
+
+if __name__ == "__main__":
+    from auto_trade.core.client import create_api_client
+    from auto_trade.core.config import Config
+
+    config = Config()
+    api_client = create_api_client(
+        config.api_key,
+        config.secret_key,
+        simulation=False,
+    )
+    order_service = OrderService(api_client=api_client)
+    trades = order_service.check_order_status(
+        symbol="MXF",
+        sub_symbol="MXF202512",
+    )
+
+    # trades = order_service.list_trades()
+    print(trades)
+    breakpoint()
