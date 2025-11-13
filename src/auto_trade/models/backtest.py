@@ -124,8 +124,9 @@ class BacktestConfig:
     enable_take_profit: bool = True
 
     # MACD 快速停損設定
-    enable_macd_fast_stop: bool = False  # 是否啟用 MACD 快速停損
-    macd_fast_stop_min_loss: int = 30  # MACD 快速停損最小虧損點數
+    enable_macd_fast_stop: bool = (
+        False  # 是否啟用 MACD 快速停損（使用 stop_loss_points 作為門檻）
+    )
 
     def calculate_trailing_stop_points(self, entry_price: int) -> int:
         """根據進入價格計算移動停損點數"""

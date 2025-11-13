@@ -126,10 +126,19 @@ class BacktestService:
                                 and previous_macd.macd_line >= previous_macd.signal_line
                                 and current_macd.macd_line < current_macd.signal_line
                             ):
-                                is_in_macd_death_cross = True
-                                print(
-                                    f"🔍 進入 MACD 死叉狀態 (MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f})，持續監控快速停損"
+                                # 檢查死叉強度（只有強死叉才進入監控）
+                                death_cross_strength = abs(
+                                    current_macd.macd_line - current_macd.signal_line
                                 )
+                                if death_cross_strength > 3.0:
+                                    is_in_macd_death_cross = True
+                                    print(
+                                        f"🔴 強死叉確認（強度 {death_cross_strength:.2f}）- MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f}，持續監控快速停損"
+                                    )
+                                else:
+                                    print(
+                                        f"⚪ 弱死叉（強度 {death_cross_strength:.2f} <= 5.0）- MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f}，忽略"
+                                    )
 
                             # 檢測金叉（解除死叉狀態）
                             elif (
@@ -407,10 +416,10 @@ class BacktestService:
             if position.action == Action.Buy:
                 loss_points = position.entry_price - open_price
 
-                # 檢查開盤價是否低於進場價 - 最小虧損點數
-                if loss_points > config.macd_fast_stop_min_loss:
+                # 使用 stop_loss_points 作為門檻（與實際交易一致）
+                if loss_points > config.stop_loss_points:
                     print(
-                        f"⚡ MACD 快速停損觸發: 開盤價 {open_price:.1f}, 虧損 {loss_points:.1f} 點 (處於死叉狀態)"
+                        f"⚡ MACD 快速停損觸發: 開盤價 {open_price:.1f}, 虧損 {loss_points:.1f} 點 >= 門檻 {config.stop_loss_points} 點 (處於死叉狀態)"
                     )
                     return ExitReason.FAST_STOP, open_price  # 使用開盤價作為出場價
 

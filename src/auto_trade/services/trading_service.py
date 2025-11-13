@@ -49,6 +49,9 @@ class TradingService:
         self.stop_loss_price: int = 0  # 停損價格 (共用於初始停損和移動停損)
         self.last_sync_time: datetime | None = None
         self.is_in_macd_death_cross: bool = False  # MACD 死叉狀態追蹤
+        self.last_fast_stop_check_kbar_time: datetime | None = (
+            None  # 最後檢查快速停損的 K 棒時間
+        )
 
         # 交易參數 (預設值)
         self.trailing_stop_points: int = 200
@@ -136,6 +139,7 @@ class TradingService:
         print(f"  K線時間尺度: {self.timeframe}")
         print(f"  訊號檢測間隔: {self.signal_check_interval} 分鐘")
         print(f"  持倉檢測間隔: {self.position_check_interval} 秒")
+        print("  MACD 快速停損強度門檻: 3.0")
 
     def _get_latest_trade(self, trades: list[FuturesTrade]) -> FuturesTrade | None:
         """根據成交時間獲取最新的交易記錄
@@ -292,6 +296,10 @@ class TradingService:
                 print(
                     f"獲利了結價格: {self.entry_price + take_profit_points:.1f} (點數: {take_profit_points:.1f})"
                 )
+
+                # 恢復 MACD 死叉狀態
+                self._restore_macd_death_cross_status()
+
                 print("現有持倉初始化完成 (使用本地記錄)")
                 self.record_service.update_stop_loss(
                     sub_symbol,
@@ -388,6 +396,9 @@ class TradingService:
             self.record_service.save_position(position_record)
             print("備用方案的持倉信息已保存到本地記錄")
 
+            # 恢復 MACD 死叉狀態
+            self._restore_macd_death_cross_status()
+
             print("現有持倉初始化完成 (使用備用方案)")
 
         except Exception as e:
@@ -413,8 +424,105 @@ class TradingService:
             print(f"取得持倉失敗: {str(e)}")
             return None
 
+    def _restore_macd_death_cross_status(self) -> None:
+        """恢復 MACD 死叉狀態（程式重啟時使用）
+
+        檢查從開倉到現在的時間線中，最後一個死叉是否為強死叉，
+        如果是強死叉且之後沒有金叉，則設置 is_in_macd_death_cross = True
+        """
+        try:
+            # 如果移動停損已啟動，不需要檢查 MACD 狀態
+            if self.trailing_stop_active:
+                print("✅ 移動停損已啟動，不需要檢查 MACD 快速停損狀態")
+                return
+
+            print("🔍 檢查從開倉到現在的 MACD 死叉狀態...")
+
+            # 獲取 K 線數據（需要足夠的數據來計算 MACD）
+            kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
+                self.symbol, self.sub_symbol, self.timeframe, days=30
+            )
+
+            if not kbars_30m or len(kbars_30m.kbars) < 35:
+                print("⚠️  K 線數據不足，無法檢查 MACD 狀態")
+                return
+
+            # 使用 strategy_service 計算 MACD
+            macd_list = self.strategy_service.calculate_macd(kbars_30m)
+
+            if len(macd_list.macd_data) < 2:
+                print("⚠️  MACD 數據不足")
+                return
+
+            # 遍歷 MACD 數據，找到最後一次死叉和金叉
+            last_death_cross_idx = None
+            last_death_cross_strength = 0.0
+            last_golden_cross_idx = None
+
+            for i in range(1, len(macd_list.macd_data)):
+                current = macd_list.macd_data[i]
+                previous = macd_list.macd_data[i - 1]
+
+                # 檢測死叉（MACD 從上方穿過 Signal 向下）
+                if (
+                    previous.macd_line >= previous.signal_line
+                    and current.macd_line < current.signal_line
+                ):
+                    last_death_cross_idx = i
+                    last_death_cross_strength = abs(
+                        current.macd_line - current.signal_line
+                    )
+                    print(
+                        f"   發現死叉 @ K棒 {i}（強度 {last_death_cross_strength:.2f}）- "
+                        f"MACD: {current.macd_line:.2f}, Signal: {current.signal_line:.2f}"
+                    )
+
+                # 檢測金叉（MACD 從下方穿過 Signal 向上）
+                elif (
+                    previous.macd_line <= previous.signal_line
+                    and current.macd_line > current.signal_line
+                ):
+                    last_golden_cross_idx = i
+                    print(
+                        f"   發現金叉 @ K棒 {i} - "
+                        f"MACD: {current.macd_line:.2f}, Signal: {current.signal_line:.2f}"
+                    )
+
+            # 判斷是否應該恢復死叉狀態
+            if last_death_cross_idx is not None:
+                # 如果最後一次死叉之後沒有金叉（或金叉在死叉之前）
+                if (
+                    last_golden_cross_idx is None
+                    or last_golden_cross_idx < last_death_cross_idx
+                ):
+                    # 檢查死叉強度
+                    if last_death_cross_strength > 3.0:
+                        self.is_in_macd_death_cross = True
+                        current = macd_list.macd_data[last_death_cross_idx]
+                        kbars_ago = len(macd_list.macd_data) - last_death_cross_idx - 1
+                        print(f"🔴 恢復強死叉狀態！最後死叉在 {kbars_ago} 根 K 棒前")
+                        print(
+                            f"   強度: {last_death_cross_strength:.2f}, "
+                            f"MACD: {current.macd_line:.2f}, Signal: {current.signal_line:.2f}"
+                        )
+                    else:
+                        print(
+                            f"⚪ 最後一次死叉為弱死叉（強度 {last_death_cross_strength:.2f} <= 3.0），不恢復監控狀態"
+                        )
+                else:
+                    print("✅ 最後一次死叉後已有金叉，無需恢復死叉狀態")
+            else:
+                print("✅ 未發現死叉，無需恢復死叉狀態")
+
+        except Exception as e:
+            print(f"⚠️  檢查 MACD 狀態失敗: {e}")
+
     def _check_macd_fast_stop(self, current_price: int) -> bool:
-        """檢查 MACD 快速停損
+        """檢查 MACD 快速停損（只在新 K 棒出現時執行）
+
+        只在以下情況檢查：
+        1. 當前虧損 >= stop_loss_points（需要開始監控）
+        2. 已在死叉狀態（需要追蹤金叉來解除狀態）
 
         Args:
             current_price: 當前價格
@@ -423,18 +531,17 @@ class TradingService:
             bool: 是否觸發快速停損
         """
         try:
+            # 計算當前盈虧
             current_profit = current_price - self.entry_price
 
-            # 如果已經在死叉狀態，直接檢查虧損條件
-            if self.is_in_macd_death_cross and not self.trailing_stop_active:
-                if current_profit < -self.stop_loss_points:
-                    print(
-                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
-                    )
-                    return True
+            # 如果盈利或虧損未達門檻，且不在死叉狀態，不需要檢查
+            if (
+                current_profit >= -self.stop_loss_points
+                and not self.is_in_macd_death_cross
+            ):
                 return False
 
-            # 否則，獲取 K 線並計算 MACD
+            # 先獲取 K 線數據來檢查是否有新 K 棒
             kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
                 self.symbol, self.sub_symbol, self.timeframe, days=30
             )
@@ -442,6 +549,30 @@ class TradingService:
             if not kbars_30m or len(kbars_30m.kbars) < 35:
                 return False
 
+            # 獲取最新 K 棒的時間
+            latest_kbar = kbars_30m.kbars[-1]
+            latest_kbar_time = latest_kbar.ts
+
+            # 如果是同一根 K 棒，不重複檢查
+            if self.last_fast_stop_check_kbar_time == latest_kbar_time:
+                return False
+
+            # 新 K 棒出現，執行快速停損檢查
+            print(f"🆕 檢測到新 K 棒（{latest_kbar_time}），檢查 MACD 快速停損...")
+            self.last_fast_stop_check_kbar_time = latest_kbar_time
+
+            # 如果已經在死叉狀態且虧損達標，立即觸發快速停損
+            if (
+                self.is_in_macd_death_cross
+                and not self.trailing_stop_active
+                and current_profit < -self.stop_loss_points
+            ):
+                print(
+                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                )
+                return True
+
+            # 計算 MACD 並檢查死叉/金叉（無論是否已在死叉狀態，都要檢查金叉來解除狀態）
             # 使用 strategy_service 計算 MACD
             macd_list = self.strategy_service.calculate_macd(kbars_30m)
 
@@ -460,20 +591,30 @@ class TradingService:
 
             # 死叉確認
             if is_death_cross:
-                self.is_in_macd_death_cross = True
-                print(
-                    f"🔍 進入 MACD 死叉狀態 (MACD: {current_macd:.2f}, Signal: {current_signal:.2f})"
-                )
+                # 檢查死叉強度（強度定義為 MACD 與 Signal 的差距）
+                death_cross_strength = abs(current_macd - current_signal)
 
-                # 檢查是否達到虧損門檻
-                if (
-                    not self.trailing_stop_active
-                    and current_profit < -self.stop_loss_points
-                ):
+                # 只有強死叉（強度 > 3）才進入監控
+                if death_cross_strength > 3.0:
+                    self.is_in_macd_death_cross = True
                     print(
-                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                        f"🔴 強死叉確認（強度 {death_cross_strength:.2f}）- MACD: {current_macd:.2f}, Signal: {current_signal:.2f}"
                     )
-                    return True
+
+                    # 檢查是否達到虧損門檻
+                    if (
+                        not self.trailing_stop_active
+                        and current_profit < -self.stop_loss_points
+                    ):
+                        print(
+                            f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                        )
+                        return True
+                else:
+                    # 弱死叉 - 忽略
+                    print(
+                        f"⚪ 弱死叉（強度 {death_cross_strength:.2f} <= 3.0）- 忽略，等待初始停損"
+                    )
 
             # 金叉確認 - 解除死叉狀態
             elif is_golden_cross:
@@ -657,10 +798,8 @@ class TradingService:
                 if self.current_position:
                     current_profit = current_price - self.entry_price
 
-                    # 定期檢查 MACD 快速停損
-                    fast_stop_triggered = False
-                    if current_time.minute % self.signal_check_interval == 0:
-                        fast_stop_triggered = self._check_macd_fast_stop(current_price)
+                    # 檢查 MACD 快速停損（內部自動判斷是否需要檢查）
+                    fast_stop_triggered = self._check_macd_fast_stop(current_price)
 
                     # 檢查其他停損條件
                     stop_triggered = current_price <= self.stop_loss_price
@@ -715,6 +854,9 @@ class TradingService:
                             self.stop_loss_price = 0.0
                             self.entry_price = 0.0
                             self.is_in_macd_death_cross = False  # 重置 MACD 死叉狀態
+                            self.last_fast_stop_check_kbar_time = (
+                                None  # 重置 K 棒檢查時間
+                            )
 
                             # 獲取 Google Sheets 最新數據並發送 Line 通知
                             if self.line_bot_service:
@@ -779,6 +921,9 @@ class TradingService:
                             self.trailing_stop_active = False
                             self.stop_loss_price = signal.stop_loss_price
                             self.is_in_macd_death_cross = False  # 重置 MACD 死叉狀態
+                            self.last_fast_stop_check_kbar_time = (
+                                None  # 重置 K 棒檢查時間
+                            )
 
                             print(f"開倉成交價格: {fill_price}")
                             print(f"停損點位已設定: {self.stop_loss_price}")

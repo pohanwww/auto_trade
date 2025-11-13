@@ -101,13 +101,10 @@ def run_comparison():
             max_positions=1,
             enable_trailing_stop=True,
             enable_take_profit=True,
-            enable_macd_fast_stop=True,  # 啟用快速停損
-            macd_fast_stop_min_loss=30,  # 虧損超過30點時檢查MACD死叉
+            enable_macd_fast_stop=True,  # 啟用快速停損（使用 stop_loss_points 作為門檻）
         )
 
-        print(
-            f"MACD 快速停損: 啟用（虧損 > {config2.macd_fast_stop_min_loss} 點時檢查死叉）"
-        )
+        print(f"MACD 快速停損: 啟用（虧損 > {config2.stop_loss_points} 點時檢查死叉）")
         print()
 
         result2 = backtest_service.run_backtest(config2)
