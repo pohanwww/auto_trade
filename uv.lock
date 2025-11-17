@@ -1009,7 +1009,7 @@ wheels = [
 
 [[package]]
 name = "pysolace"
-version = "0.9.52"
+version = "0.9.53"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
@@ -1018,11 +1018,20 @@ dependencies = [
     { name = "typer" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/ce/bd7943c1f45b08d46056b334b1b5de4afa2a56ed7607367edc6d06337c98/pysolace-0.9.52-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:4516580591902a376d2be32ecf312d6d46af7bbbb17990b7d7343bd81691a367", size = 5675521, upload-time = "2025-06-13T10:09:51.457Z" },
-    { url = "https://files.pythonhosted.org/packages/6b/c9/386e030d6bff5624923e6c124758f1e69c2ee74ceabea58bff730e6a0be8/pysolace-0.9.52-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:8358fc47e939f3c229fd002e692f41f82d841fc1d34133b61c4a67c4cbb9d39a", size = 5600106, upload-time = "2025-06-13T10:09:58.927Z" },
-    { url = "https://files.pythonhosted.org/packages/a2/b0/ba8fed8e8a8ffa7c150e9c192f6352e31bb5e8c3f95751291f084ffdf1b2/pysolace-0.9.52-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6beead04c8d8cd6363ac11d9aeb807b3ce25bea6466d86d7ff7f0466e0cd1152", size = 2917316, upload-time = "2025-06-13T10:10:03.656Z" },
-    { url = "https://files.pythonhosted.org/packages/db/7c/9bc0321591ac5d96c510cc9ab7190876a2835f95999c59fabbfa84a2fa8f/pysolace-0.9.52-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:82751f265aa6c7e5490996cd5c8fd4e1333c0fba1fb15195ebfe3f55443a35f2", size = 2841508, upload-time = "2025-06-13T10:10:07.798Z" },
-    { url = "https://files.pythonhosted.org/packages/bb/62/cd862e0654c1acb94d041f24f23934ce5d347a8c4345960a96181bab5cf5/pysolace-0.9.52-cp313-cp313-win_amd64.whl", hash = "sha256:7f709540f9c8629b0a28a1efcc200f0b603f0c4b12eebe3e6e4811497892fcad", size = 1163903, upload-time = "2025-06-13T10:10:10.432Z" },
+    { url = "https://files.pythonhosted.org/packages/83/df/3544b29a213deb00e69be9952f4a032626b778f0d3120e43d243ec5e57db/pysolace-0.9.53-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:a17f48abd9ead36079179599052832448ed3c1d4bddb4579474b049071ab68ef", size = 5712790, upload-time = "2025-10-29T05:12:54.01Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/ed/e82a2fa76bbdc6450056db49c6e405806c365ef5df80387b7035673b5aff/pysolace-0.9.53-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:9f88db608b9d77a0c6f33a7db7a16b50802e6ba4d1bd6ec9635f37283bd407d2", size = 5633046, upload-time = "2025-10-29T05:12:58.778Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/46/29cefb0be115e19372ef5530e74df19a0a8e93cd7df5a67833663632111d/pysolace-0.9.53-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8c482580a699d9aa0da2a823bc3879781744d0b8c7c5dee272e6c4ade2192d3e", size = 2945571, upload-time = "2025-10-29T05:13:03.119Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/06/0cef14b9ee34088e50c4cf1fbf9d4d1a19fbff325145bdc576aad7086acc/pysolace-0.9.53-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1cf787e45dee0a960d26e70aa5adeefc873b4045b534712a6fd2f2b3f51280db", size = 2873557, upload-time = "2025-10-29T05:13:05.811Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/99/7dbd194718e41acf2dfa4d6d3e56c6015aaf3df99663a9ae3cb0c51885c8/pysolace-0.9.53-cp313-cp313-win_amd64.whl", hash = "sha256:26fd392f2fb978d905082cf6ebc20afa2cbd78fe2f9ec82de6e6d30380b2106f", size = 1221530, upload-time = "2025-10-29T05:13:07.831Z" },
+    { url = "https://files.pythonhosted.org/packages/47/4a/d3a14379f06de7d812ac98d86cc31c4953f3ea142c01a1d7fb5b273031e7/pysolace-0.9.53-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:3e8bbc4a46feaaadf1a77db8a185109d828cfcb23051f6a1c9a522bfddee54bb", size = 5712207, upload-time = "2025-10-29T05:13:12.243Z" },
+    { url = "https://files.pythonhosted.org/packages/29/f4/6bfb0e9662c7b11d7fd145ab358c933314f8da6ec6d1c741c98a2d2e2c54/pysolace-0.9.53-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:b51525b4cd550a3c002c21c0f49ec8b82b9ce40291ca6da62c844ae8aadef9b0", size = 5633481, upload-time = "2025-10-29T05:13:15.298Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/5b/9cf72810323fa2438b25c040f5b417d2fd1ca8f26367389dca65bd164d8d/pysolace-0.9.53-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:77d0f750758265a04b87756bc96f0f23632dad82bf09343c114ffcb62b0b017b", size = 2947978, upload-time = "2025-10-29T05:13:17.806Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/b4/d002c3a5d6fedc83e90bc8ccb7bd3f40fb7dd13dc9a175ce7987bdce4422/pysolace-0.9.53-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a65d5b2795aa5aa974955f47c9262ee504815a10c866b5cc0fcc0f7353e42d49", size = 2874895, upload-time = "2025-10-29T05:13:20.179Z" },
+    { url = "https://files.pythonhosted.org/packages/00/ad/3ac2d34c0368102c6c5d1f4be9a6b682f5d965485d7d0a13d097c8b189dc/pysolace-0.9.53-cp314-cp314-win_amd64.whl", hash = "sha256:c1bfe569b9b9f2a2126170fd1b93d2cbad499611944cffa13db236cf1e1b78c5", size = 1222385, upload-time = "2025-10-29T05:13:22.08Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/48/1cf70029357d0e2e2b3284e1bf69867f4537aeca44d2a9f2171b75194694/pysolace-0.9.53-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:8a6d2fb6d5c1b9a7903e2b74a1a1f2a2a9c7711a0dd488b20da7c6565e3ae112", size = 5742162, upload-time = "2025-10-29T05:13:25.91Z" },
+    { url = "https://files.pythonhosted.org/packages/87/11/f76e1db03510bf1d58f0b9647c7216b5eeb8e644bba333c0ee2fad3f1f0c/pysolace-0.9.53-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:23977c35b0f0df701697b3f702fb5adcebd5669dbe021564d884eff42caddf07", size = 5658727, upload-time = "2025-10-29T05:13:29.313Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/a3/560edb92061de5153d5eabae7e0cc6365945eb8ffb06beac3ed614151091/pysolace-0.9.53-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4086c663e385a4eb2a3e2e7e50d160aae8c3430379d4e02aafd81205be17b98b", size = 2947852, upload-time = "2025-10-29T05:13:31.669Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/7e/228195e20ace15027570e98d60797896946b35384402aa66792ff942c143/pysolace-0.9.53-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1d72e73fbaef0843f028ec89234cacfe52a55dc63dbffc959dfe1340e7d23b5a", size = 2869479, upload-time = "2025-10-29T05:13:34.728Z" },
 ]
 
 [[package]]
@@ -1175,7 +1184,7 @@ wheels = [
 
 [[package]]
 name = "shioaji"
-version = "1.2.8"
+version = "1.2.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "base58" },
@@ -1192,11 +1201,20 @@ dependencies = [
     { name = "xxhash" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/e2/70f6a2622d801fcee2f170d99d8f238b9b1a3b1e109d24b5b93e66d7df10/shioaji-1.2.8-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:674758c171a8ca16871ca895d4d0931e055d34b612b4cacc9afd3fa0c5de285b", size = 603157, upload-time = "2025-09-11T07:02:55.501Z" },
-    { url = "https://files.pythonhosted.org/packages/25/2d/66190f3f53a8c2bd4e7c4b4d1b24afd1a7d7fd62cce8ff461556c6799df4/shioaji-1.2.8-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:8379a64c037f19713c014f4898b68c05ea914f6875701f2708fb80dfd27eadde", size = 530153, upload-time = "2025-09-11T07:02:56.949Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/82/10aef6b729814e7660c1d680eb23b379ddf7fc058f0b3fc01095641fa477/shioaji-1.2.8-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:00799b1dacbeb40729d43a30a2c4aa48fe2e892086b0ab3c19f506f9ad2ebbb1", size = 669882, upload-time = "2025-09-11T07:02:58.811Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/fd/927e32ff0d58d8ab93ba268c8e4c263c590d75a17267530453309e7e73f1/shioaji-1.2.8-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3d6157593e8ce966dfaa70f34cf81d0353ef0b7c68c0d68aa4036d6f38a3a598", size = 727442, upload-time = "2025-09-11T07:03:00.68Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/3f/bae979f0a291aa803d067e804b0e1eb1bc6be6668ec77ed9fcb4e50aff66/shioaji-1.2.8-cp313-cp313-win_amd64.whl", hash = "sha256:ea1eb4ca3029bccbd68e0383d32ac6c365c0a2911b4ab5ffcb2613da8000e426", size = 546954, upload-time = "2025-09-11T07:03:02.459Z" },
+    { url = "https://files.pythonhosted.org/packages/28/9a/5c8ecbbfda21ea23a5681e0fc92003b9aa75db86728042170d477870169d/shioaji-1.2.9-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:837eeea394dd823f6daf75f5f5b68637a554218adf10d50c240299af2a739862", size = 603314, upload-time = "2025-10-30T06:49:47.115Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/ab/c0d8c59475ed8f9feefc059f0d013397ee73ba14fe9278b2f07eff52c421/shioaji-1.2.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:6fc9f5cf96c8bc5e39a4e58d1964a16272d4bd7eae57dad803d31c3a6632471d", size = 531640, upload-time = "2025-10-30T06:49:48.593Z" },
+    { url = "https://files.pythonhosted.org/packages/13/26/fcb1642c3c6de83904678bf4148f1ba027c9bcfa80df90d1839963f08664/shioaji-1.2.9-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3fff7da8c5515f2a9bcc7846f85463df8458e52b35161706fdba82c634d519a3", size = 671027, upload-time = "2025-10-30T06:49:50.451Z" },
+    { url = "https://files.pythonhosted.org/packages/13/ba/81e2bd34baa6589fa379d05e1d4cb7f914604bb041c27f8a5e1cea03d70d/shioaji-1.2.9-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:27a2daf2c171cc3a1dcf7580be3f42691f7cb44d8c34aa5ad0c3defe2180660f", size = 728058, upload-time = "2025-10-30T06:49:52.139Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/f7/4f8536a4c7317fc55fdf57d861386f3b3ef3040b6809f7f3216a5535da5e/shioaji-1.2.9-cp313-cp313-win_amd64.whl", hash = "sha256:559b47e268b402c1d837a43f3ee34c9c8a87103ced8dd71af4fad3fe74df1011", size = 548086, upload-time = "2025-10-30T06:49:54.242Z" },
+    { url = "https://files.pythonhosted.org/packages/54/f0/1cc4f0316faf3570516e37e0d257754057a35ca4d81c2e1fbf65dd0a618e/shioaji-1.2.9-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:888ae54acfeb38c3969509fa7668b17b021ab4211b20077210a57839e01163a5", size = 605865, upload-time = "2025-10-30T06:49:55.837Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/75/8068fe20773d7c3ff9324f908fd1f995e0d09eb09ad0a01b4c7b82bd93e2/shioaji-1.2.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:e96eac241d3c859f392f57ed36edd780a0bb4af0e70ac4064cefb47b213f0263", size = 534640, upload-time = "2025-10-30T06:49:57.47Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/c6/000863ea900e67f7992902fda222bb5a5676b5a4fb2cc2a8ce760687f070/shioaji-1.2.9-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d6f920c9f665a3a457506c0d1b802fab5a948a8d909cb2e9b4eae4049ca16eb3", size = 678545, upload-time = "2025-10-30T06:49:59.114Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/5d/e853c318b7cec599f45e703c7c6836bba5b6269abd38b09299ca1d5ce454/shioaji-1.2.9-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4bf8cf6842e0d3f0a0ca82a65eedb39c0fa747da98080dab402062c8d5a7aa8f", size = 729108, upload-time = "2025-10-30T06:50:01.168Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/39/0cf843e91f68db3a271872242dadce70637b129fa198afbf303c3e08cf2e/shioaji-1.2.9-cp314-cp314-win_amd64.whl", hash = "sha256:c7f0a2cfc91d62e1048b410b72a342b067d81c9d6274fa27ce4729a9e3e5e85b", size = 558526, upload-time = "2025-10-30T06:50:02.692Z" },
+    { url = "https://files.pythonhosted.org/packages/09/e9/4549ebab77d8fca9087512fac53d155fb36b09d6ae9e3a150c0c5fbbb996/shioaji-1.2.9-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:e33933c8395ee5d75d6324f895fb220f76ebd5be93ce808c8405f37d65e1d0b0", size = 699358, upload-time = "2025-10-30T06:50:04.286Z" },
+    { url = "https://files.pythonhosted.org/packages/af/4e/d0d08ad42784d008052d1ba69edb925ff4dfd48362bc9adf62583e60d828/shioaji-1.2.9-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:2bba58acf23ada07bb8e46f79ed37836ef1364f8d457521f159a04c5db0dadbc", size = 608425, upload-time = "2025-10-30T06:50:05.917Z" },
+    { url = "https://files.pythonhosted.org/packages/80/02/5f4505e192da2bd2928e9e0936cbe769b3bb0d0eacb21131cba1c04cd7a9/shioaji-1.2.9-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:83b8f92ffbaf14468348d18dda6a0c6c82df5e50733ceff88907daa1c331e1ab", size = 662326, upload-time = "2025-10-30T06:50:07.88Z" },
+    { url = "https://files.pythonhosted.org/packages/98/ba/bc4990a0b86a93be97868162b9373b865a24a9ee934107ac66f585754c24/shioaji-1.2.9-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:19f366f08968f3660aa334394059c17493fcb7a7f01aec27630e670c84905663", size = 701559, upload-time = "2025-10-30T06:50:09.583Z" },
 ]
 
 [package.optional-dependencies]

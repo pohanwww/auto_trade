@@ -95,7 +95,9 @@ class StrategyService:
             timeframe=kbar_list.timeframe,
         )
 
-    def check_golden_cross(self, macd_list: MACDList) -> bool:
+    def check_golden_cross(
+        self, macd_list: MACDList, min_strength: float | None = None
+    ) -> bool:
         """檢查是否發生 MACD 金叉（已確認）
 
         金叉定義：MACD 線從下方穿越信號線到上方
@@ -103,9 +105,10 @@ class StrategyService:
 
         Args:
             macd_list: MACD 數據列表
+            min_strength: 最小金叉強度要求（可選）。強度定義為 abs(MACD - Signal)
 
         Returns:
-            bool: True 如果發生金叉，False 否則
+            bool: True 如果發生金叉且符合強度要求，False 否則
         """
         if len(macd_list.macd_data) < 3:
             return False
@@ -118,12 +121,26 @@ class StrategyService:
         previous = latest_macd[-3]  # 已確認的前一根K線
 
         # 金叉：前一根 MACD <= Signal，當前 MACD > Signal
-        return (
+        is_golden_cross = (
             previous.macd_line <= previous.signal_line
             and current.macd_line > current.signal_line
         )
 
-    def check_death_cross(self, macd_list: MACDList) -> bool:
+        # 如果沒有發生金叉，直接返回 False
+        if not is_golden_cross:
+            return False
+
+        # 如果沒有設置強度要求，直接返回 True
+        if min_strength is None:
+            return True
+
+        # 檢查金叉強度
+        strength = abs(current.macd_line - current.signal_line)
+        return strength >= min_strength
+
+    def check_death_cross(
+        self, macd_list: MACDList, min_acceleration: float | None = None
+    ) -> bool:
         """檢查是否發生 MACD 死叉（已確認）
 
         死叉定義：MACD 線從上方穿越信號線到下方
@@ -131,9 +148,12 @@ class StrategyService:
 
         Args:
             macd_list: MACD 數據列表
+            min_acceleration: 最小死叉加速度要求（可選）。
+                             加速度定義為：當前差距 - 前一根差距
+                             其中差距 = MACD - Signal
 
         Returns:
-            bool: True 如果發生死叉，False 否則
+            bool: True 如果發生死叉且符合加速度要求，False 否則
         """
         if len(macd_list.macd_data) < 3:
             return False
@@ -146,10 +166,25 @@ class StrategyService:
         previous = latest_macd[-3]  # 已確認的前一根K線
 
         # 死叉：前一根 MACD >= Signal，當前 MACD < Signal
-        return (
+        is_death_cross = (
             previous.macd_line >= previous.signal_line
             and current.macd_line < current.signal_line
         )
+
+        # 如果沒有發生死叉，直接返回 False
+        if not is_death_cross:
+            return False
+
+        # 如果沒有設置加速度要求，直接返回 True
+        if min_acceleration is None:
+            return True
+
+        # 計算加速度（趨勢變化率）
+        previous_diff = previous.macd_line - previous.signal_line
+        current_diff = current.macd_line - current.signal_line
+        acceleration = current_diff - previous_diff
+
+        return abs(acceleration) >= min_acceleration
 
     def generate_signal(self, input_data: StrategyInput) -> TradingSignal:
         """生成MACD金叉策略訊號並計算停損價格"""
@@ -234,9 +269,11 @@ if __name__ == "__main__":
         simulation=True,
     )
     market_service = MarketService(api_client)
-    quote = market_service.get_futures_realtime_quote("TXF", "TXF202510")
+    # 訂閱商品
+    market_service.subscribe_symbol("TXF", "TXF202510", init_days=30)
+    quote = market_service.get_realtime_quote("TXF", "TXF202510")
     kbars_30m: KBarList = market_service.get_futures_kbars_with_timeframe(
-        "TXF", "TXF202510", "30m", days=30
+        "TXF", "TXF202510", "30m", days=15
     )
 
     strategy = StrategyService()

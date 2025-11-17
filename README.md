@@ -106,6 +106,104 @@ print(config)  # 顯示當前策略摘要
 
 ---
 
+## ⏰ 自動化排程 (Cron Job)
+
+### 設定自動啟動/停止
+
+系統支援使用 cron job 自動在交易時段啟動和停止程式。
+
+#### 1. 安裝 Cron Job
+
+```bash
+# 給予腳本執行權限
+chmod +x start_trading.sh stop_trading.sh
+
+# 從 crontab.txt 安裝定時任務
+crontab crontab.txt
+
+# 驗證安裝
+crontab -l
+```
+
+#### 2. 排程時間表
+
+| 時段 | 啟動時間 | 停止時間 | 說明 |
+|------|----------|----------|------|
+| **日盤** | 周一～五 08:45 | 周一～五 13:45 | 早盤交易時段 |
+| **夜盤** | 周一～五 15:00 | 周二～六 05:00 | 夜盤交易時段 |
+
+#### 3. macOS 權限設定
+
+macOS 需要給予 cron 完全磁盤訪問權限：
+
+1. 開啟 **系統設置** → **隱私與安全性**
+2. 點擊 **完全磁盤訪問權限**
+3. 點擊 `+` 添加：`/usr/sbin/cron`
+   - 找不到時按 `Cmd+Shift+G`，輸入 `/usr/sbin/cron`
+
+#### 4. 測試與監控
+
+```bash
+# 手動測試啟動
+./start_trading.sh
+
+# 查看運行狀態
+pgrep -f "uv run main" -l
+
+# 查看日誌
+tail -f logs/trading_$(date +%Y%m%d).log
+
+# 手動停止
+./stop_trading.sh
+```
+
+#### 5. 常用 Cron 命令
+
+```bash
+# 查看當前的 cron jobs
+crontab -l
+
+# 編輯 cron jobs
+crontab -e
+
+# 刪除所有 cron jobs
+crontab -r
+
+# 查看 cron 日誌（macOS）
+log show --predicate 'process == "cron"' --last 1h
+```
+
+#### 6. 自訂排程時間
+
+編輯 `crontab.txt` 修改時間：
+
+```bash
+# 分 時 日 月 週
+# │ │ │ │ │
+# │ │ │ │ └─── 星期 (0-7, 0和7都是周日)
+# │ │ │ └───── 月份 (1-12)
+# │ │ └─────── 日期 (1-31)
+# │ └───────── 小時 (0-23)
+# └─────────── 分鐘 (0-59)
+
+# 例如：每天早上 8:45 啟動
+45 8 * * 1-5 cd /path/to/auto_trade && /bin/bash start_trading.sh
+```
+
+修改後重新安裝：
+```bash
+crontab crontab.txt
+```
+
+#### ⚠️ 重要提醒
+
+1. **假日處理**: Cron 不知道台灣假期，遇假日需手動處理
+2. **首次運行**: 建議先手動測試確認一切正常
+3. **日誌監控**: 定期檢查 `logs/` 目錄
+4. **測試模式**: 建議先在 `simulation=true` 模式下測試
+
+---
+
 ## 📊 策略參數說明
 
 ### 交易參數 (trading)

@@ -127,6 +127,7 @@ class BacktestConfig:
     enable_macd_fast_stop: bool = (
         False  # 是否啟用 MACD 快速停損（使用 stop_loss_points 作為門檻）
     )
+    min_acceleration_threshold: float = 0.0  # 死叉加速度門檻（0.0 = 不過濾）
 
     def calculate_trailing_stop_points(self, entry_price: int) -> int:
         """根據進入價格計算移動停損點數"""
@@ -160,6 +161,7 @@ class BacktestResult:
     total_pnl_points: float = 0.0
     gross_profit: float = 0.0
     gross_loss: float = 0.0
+    profit_factor: float = 0.0
 
     # 風險指標
     max_drawdown: float = 0.0
@@ -182,6 +184,7 @@ class BacktestResult:
         self.losing_trades = 0
         self.total_pnl_twd = 0.0
         self.total_pnl_points = 0.0
+        self.profit_factor = 0.0
 
         self.total_trades = len(self.trades)
 

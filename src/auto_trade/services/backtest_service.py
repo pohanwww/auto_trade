@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import datetime
 
-from auto_trade.models import Action, ExitReason, KBarList, TradingSignal
+from auto_trade.models import Action, ExitReason, KBarList, MACDList, TradingSignal
 from auto_trade.models.backtest import (
     BacktestConfig,
     BacktestPosition,
@@ -114,39 +114,53 @@ class BacktestService:
                         config.enable_macd_fast_stop
                         and not current_position.trailing_stop_active
                         and macd_list is not None
-                        and i >= 1
+                        and i >= 2  # 需要至少 3 個數據點（使用 [-2] 和 [-3]）
                     ):
-                        current_macd = macd_list[i]
-                        previous_macd = macd_list[i - 1]
-
                         if current_position.action == Action.Buy:
-                            # 檢測死叉（進入死叉狀態）
+                            # 創建臨時 MACDList 用於檢測（包含到當前 K 棒）
+                            temp_macd_list = MACDList(
+                                macd_data=macd_list.macd_data[: i + 1],
+                                symbol=macd_list.symbol,
+                                timeframe=macd_list.timeframe,
+                            )
+
+                            # 使用 strategy_service 檢測強死叉（進入死叉狀態）
+                            # 使用 config.min_acceleration_threshold 作為門檻
+                            min_accel = (
+                                config.min_acceleration_threshold
+                                if config.min_acceleration_threshold > 0
+                                else None
+                            )
                             if (
                                 not is_in_macd_death_cross
-                                and previous_macd.macd_line >= previous_macd.signal_line
-                                and current_macd.macd_line < current_macd.signal_line
-                            ):
-                                # 檢查死叉強度（只有強死叉才進入監控）
-                                death_cross_strength = abs(
-                                    current_macd.macd_line - current_macd.signal_line
+                                and self.strategy_service.check_death_cross(
+                                    temp_macd_list, min_acceleration=min_accel
                                 )
-                                if death_cross_strength > 3.0:
-                                    is_in_macd_death_cross = True
-                                    print(
-                                        f"🔴 強死叉確認（強度 {death_cross_strength:.2f}）- MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f}，持續監控快速停損"
+                            ):
+                                is_in_macd_death_cross = True
+                                current_macd = macd_list[i - 1]  # 使用 [-2] 位置的數據
+                                previous_macd = macd_list[i - 2]  # 使用 [-3] 位置的數據
+                                # 計算加速度
+                                acceleration = abs(
+                                    (current_macd.macd_line - current_macd.signal_line)
+                                    - (
+                                        previous_macd.macd_line
+                                        - previous_macd.signal_line
                                     )
-                                else:
-                                    print(
-                                        f"⚪ 弱死叉（強度 {death_cross_strength:.2f} <= 5.0）- MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f}，忽略"
-                                    )
+                                )
+                                print(
+                                    f"🔴 強死叉確認（加速度 {acceleration:.2f}）- MACD:{current_macd.macd_line:.1f} < Signal:{current_macd.signal_line:.1f}，持續監控快速停損"
+                                )
 
-                            # 檢測金叉（解除死叉狀態）
+                            # 使用 strategy_service 檢測金叉（解除死叉狀態）
                             elif (
                                 is_in_macd_death_cross
-                                and previous_macd.macd_line <= previous_macd.signal_line
-                                and current_macd.macd_line > current_macd.signal_line
+                                and self.strategy_service.check_golden_cross(
+                                    temp_macd_list
+                                )
                             ):
                                 is_in_macd_death_cross = False
+                                current_macd = macd_list[i - 1]  # 使用 [-2] 位置的數據
                                 print(
                                     f"✅ MACD 金叉，解除死叉狀態 (MACD:{current_macd.macd_line:.1f} > Signal:{current_macd.signal_line:.1f})"
                                 )
@@ -582,6 +596,20 @@ class BacktestService:
         report.append(f"慢速週期: {result.config.macd_slow_period}")
         report.append(f"信號週期: {result.config.macd_signal_period}")
         report.append("")
+
+        # MACD 快速停損參數
+        if result.config.enable_macd_fast_stop:
+            report.append("⚡ MACD 快速停損")
+            report.append("-" * 30)
+            report.append("啟用快速停損: 是")
+            report.append(f"快速停損門檻: {result.config.stop_loss_points} 點")
+            if result.config.min_acceleration_threshold > 0:
+                report.append(
+                    f"死叉加速度門檻: {result.config.min_acceleration_threshold:.1f}"
+                )
+            else:
+                report.append("死叉加速度門檻: 無過濾（所有死叉）")
+            report.append("")
 
         # 交易統計
         report.append("📊 交易統計")

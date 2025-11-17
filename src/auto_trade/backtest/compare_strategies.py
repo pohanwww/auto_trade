@@ -101,162 +101,233 @@ def run_comparison():
             max_positions=1,
             enable_trailing_stop=True,
             enable_take_profit=True,
-            enable_macd_fast_stop=True,  # 啟用快速停損（使用 stop_loss_points 作為門檻）
+            enable_macd_fast_stop=True,  # 啟用快速停損
+            min_acceleration_threshold=0.0,  # 無過濾（所有死叉）
         )
 
-        print(f"MACD 快速停損: 啟用（虧損 > {config2.stop_loss_points} 點時檢查死叉）")
+        print("MACD 快速停損: 啟用（無過濾，所有死叉）")
         print()
 
         result2 = backtest_service.run_backtest(config2)
         print()
 
+        # ===== 策略 3: MACD 快速停損策略（強死叉） =====
+        print("=" * 80)
+        print("📊 策略 3: MACD 快速停損策略（強死叉 ≥ 3.0）")
+        print("-" * 80)
+
+        config3 = BacktestConfig(
+            symbol=symbol,
+            sub_symbol=sub_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=capital,
+            order_quantity=2,
+            stop_loss_points=80,
+            start_trailing_stop_points=250,
+            trailing_stop_points=250,
+            trailing_stop_points_rate=0.0095,
+            take_profit_points=600,
+            take_profit_points_rate=0.02,
+            timeframe="30m",
+            max_positions=1,
+            enable_trailing_stop=True,
+            enable_take_profit=True,
+            enable_macd_fast_stop=True,  # 啟用快速停損
+            min_acceleration_threshold=3.0,  # 強死叉過濾
+        )
+
+        print("MACD 快速停損: 啟用（強死叉，加速度 ≥ 3.0）")
+        print()
+
+        result3 = backtest_service.run_backtest(config3)
+        print()
+
         # ===== 生成比較報告 =====
         print("=" * 80)
-        print("📈 策略比較結果")
+        print("📈 三策略比較結果（90天）")
         print("=" * 80)
         print()
 
         # 計算統計
         result1.calculate_statistics()
         result2.calculate_statistics()
+        result3.calculate_statistics()
 
         # 比較表格
-        print(f"{'指標':<25} {'原始策略':<20} {'快速停損策略':<20} {'差異':<15}")
-        print("-" * 80)
+        print(f"{'指標':<20} {'原始策略':<20} {'無過濾FS':<20} {'強死叉FS':<20}")
+        print("-" * 85)
 
         # 基本統計
         print(
-            f"{'交易次數':<25} {result1.total_trades:<20} {result2.total_trades:<20} {result2.total_trades - result1.total_trades:+<15}"
+            f"{'交易次數':<20} {result1.total_trades:<20} {result2.total_trades:<20} {result3.total_trades:<20}"
         )
         print(
-            f"{'勝率':<25} {result1.win_rate * 100:<19.2f}% {result2.win_rate * 100:<19.2f}% {(result2.win_rate - result1.win_rate) * 100:+.2f}%"
+            f"{'勝率':<20} {result1.win_rate:<19.2f}% {result2.win_rate:<19.2f}% {result3.win_rate:<19.2f}%"
         )
         print(
-            f"{'獲利次數':<25} {result1.winning_trades:<20} {result2.winning_trades:<20} {result2.winning_trades - result1.winning_trades:+<15}"
+            f"{'獲利次數':<20} {result1.winning_trades:<20} {result2.winning_trades:<20} {result3.winning_trades:<20}"
         )
         print(
-            f"{'虧損次數':<25} {result1.losing_trades:<20} {result2.losing_trades:<20} {result2.losing_trades - result1.losing_trades:+<15}"
+            f"{'虧損次數':<20} {result1.losing_trades:<20} {result2.losing_trades:<20} {result3.losing_trades:<20}"
         )
 
         print()
 
         # 盈虧統計
         print(
-            f"{'總盈虧 (TWD)':<25} {result1.total_pnl_twd:<19,.0f} {result2.total_pnl_twd:<19,.0f} {result2.total_pnl_twd - result1.total_pnl_twd:+,.0f}"
+            f"{'總盈虧 (TWD)':<20} {result1.total_pnl_twd:<19,.0f} {result2.total_pnl_twd:<19,.0f} {result3.total_pnl_twd:<19,.0f}"
         )
         print(
-            f"{'總盈虧 (點)':<25} {result1.total_pnl_points:<19,.1f} {result2.total_pnl_points:<19,.1f} {result2.total_pnl_points - result1.total_pnl_points:+,.1f}"
+            f"{'總獲利 (TWD)':<20} {result1.gross_profit:<19,.0f} {result2.gross_profit:<19,.0f} {result3.gross_profit:<19,.0f}"
         )
         print(
-            f"{'毛利 (TWD)':<25} {result1.gross_profit:<19,.0f} {result2.gross_profit:<19,.0f} {result2.gross_profit - result1.gross_profit:+,.0f}"
+            f"{'總虧損 (TWD)':<20} {result1.gross_loss:<19,.0f} {result2.gross_loss:<19,.0f} {result3.gross_loss:<19,.0f}"
         )
         print(
-            f"{'毛損 (TWD)':<25} {result1.gross_loss:<19,.0f} {result2.gross_loss:<19,.0f} {result2.gross_loss - result1.gross_loss:+,.0f}"
-        )
-
-        # 計算獲利因子
-        profit_factor1 = (
-            result1.gross_profit / result1.gross_loss
-            if result1.gross_loss > 0
-            else float("inf")
-        )
-        profit_factor2 = (
-            result2.gross_profit / result2.gross_loss
-            if result2.gross_loss > 0
-            else float("inf")
-        )
-        print(
-            f"{'獲利因子':<25} {profit_factor1:<19.2f} {profit_factor2:<19.2f} {profit_factor2 - profit_factor1:+.2f}"
+            f"{'盈虧比':<20} {result1.profit_factor:<19.2f} {result2.profit_factor:<19.2f} {result3.profit_factor:<19.2f}"
         )
 
         print()
 
         # 風險指標
         print(
-            f"{'最大回撤 (TWD)':<25} {result1.max_drawdown:<19,.0f} {result2.max_drawdown:<19,.0f} {result2.max_drawdown - result1.max_drawdown:+,.0f}"
+            f"{'最大回撤 (%)':<20} {result1.max_drawdown:<19.2f} {result2.max_drawdown:<19.2f} {result3.max_drawdown:<19.2f}"
         )
         print(
-            f"{'夏普比率':<25} {result1.sharpe_ratio:<19.2f} {result2.sharpe_ratio:<19.2f} {result2.sharpe_ratio - result1.sharpe_ratio:+.2f}"
+            f"{'夏普比率':<20} {result1.sharpe_ratio:<19.2f} {result2.sharpe_ratio:<19.2f} {result3.sharpe_ratio:<19.2f}"
+        )
+        print(
+            f"{'持倉時間(小時)':<20} {result1.avg_trade_duration_hours:<19.1f} {result2.avg_trade_duration_hours:<19.1f} {result3.avg_trade_duration_hours:<19.1f}"
         )
 
         print()
-        print("-" * 80)
+        print("=" * 85)
 
-        # 平均統計
-        avg_win1 = (
-            result1.gross_profit / result1.winning_trades
-            if result1.winning_trades > 0
-            else 0
-        )
-        avg_win2 = (
-            result2.gross_profit / result2.winning_trades
-            if result2.winning_trades > 0
-            else 0
-        )
-        avg_loss1 = (
-            result1.gross_loss / result1.losing_trades
-            if result1.losing_trades > 0
-            else 0
-        )
-        avg_loss2 = (
-            result2.gross_loss / result2.losing_trades
-            if result2.losing_trades > 0
-            else 0
-        )
+        # 相對於原始策略的改善
+        print()
+        print("📊 相對於原始策略的改善:")
+        print()
 
-        print(
-            f"{'平均獲利 (TWD)':<25} {avg_win1:<19,.0f} {avg_win2:<19,.0f} {avg_win2 - avg_win1:+,.0f}"
+        # 無過濾 vs 原始
+        pnl_diff_2 = result2.total_pnl_twd - result1.total_pnl_twd
+        pnl_pct_2 = (
+            (pnl_diff_2 / result1.total_pnl_twd * 100)
+            if result1.total_pnl_twd != 0
+            else 0
         )
-        print(
-            f"{'平均虧損 (TWD)':<25} {avg_loss1:<19,.0f} {avg_loss2:<19,.0f} {avg_loss2 - avg_loss1:+,.0f}"
+        loss_diff_2 = result2.gross_loss - result1.gross_loss
+        loss_pct_2 = (
+            (loss_diff_2 / result1.gross_loss * 100) if result1.gross_loss != 0 else 0
         )
+        dd_diff_2 = result2.max_drawdown - result1.max_drawdown
 
-        # 賺賠比
-        win_loss_ratio1 = avg_win1 / avg_loss1 if avg_loss1 > 0 else 0
-        win_loss_ratio2 = avg_win2 / avg_loss2 if avg_loss2 > 0 else 0
-        print(
-            f"{'賺賠比':<25} {win_loss_ratio1:<19.2f} {win_loss_ratio2:<19.2f} {win_loss_ratio2 - win_loss_ratio1:+.2f}"
+        print("📌 無過濾快速停損 vs 原始策略:")
+        print(f"   總盈虧：{pnl_diff_2:+,.0f} TWD ({pnl_pct_2:+.2f}%)")
+        print(f"   總虧損：{loss_diff_2:+,.0f} TWD ({loss_pct_2:+.2f}%)")
+        print(f"   最大回撤：{dd_diff_2:+.2f}%")
+        print(f"   盈虧比：{result2.profit_factor - result1.profit_factor:+.2f}")
+
+        # 強死叉 vs 原始
+        pnl_diff_3 = result3.total_pnl_twd - result1.total_pnl_twd
+        pnl_pct_3 = (
+            (pnl_diff_3 / result1.total_pnl_twd * 100)
+            if result1.total_pnl_twd != 0
+            else 0
         )
+        loss_diff_3 = result3.gross_loss - result1.gross_loss
+        loss_pct_3 = (
+            (loss_diff_3 / result1.gross_loss * 100) if result1.gross_loss != 0 else 0
+        )
+        dd_diff_3 = result3.max_drawdown - result1.max_drawdown
 
         print()
-        print("=" * 80)
+        print("📌 強死叉快速停損 vs 原始策略:")
+        print(f"   總盈虧：{pnl_diff_3:+,.0f} TWD ({pnl_pct_3:+.2f}%)")
+        print(f"   總虧損：{loss_diff_3:+,.0f} TWD ({loss_pct_3:+.2f}%)")
+        print(f"   最大回撤：{dd_diff_3:+.2f}%")
+        print(f"   盈虧比：{result3.profit_factor - result1.profit_factor:+.2f}")
+
+        # FS效果分析
+        print()
+        print("=" * 85)
+        print("⚡ 快速停損（FS）效果分析:")
+        print()
+
+        # 策略 2
+        fs_count2 = sum(
+            1 for trade in result2.trades if trade.exit_reason.value == "FS"
+        )
+        sl_count2 = sum(
+            1 for trade in result2.trades if trade.exit_reason.value == "SL"
+        )
+        print("無過濾FS:")
+        print(f"   FS 次數: {fs_count2}")
+        if fs_count2 > 0:
+            fs_pnl2 = sum(
+                trade.pnl_twd
+                for trade in result2.trades
+                if trade.exit_reason.value == "FS"
+            )
+            print(f"   FS 總盈虧: {fs_pnl2:,.0f} TWD")
+            print(f"   FS 平均虧損: {fs_pnl2 / fs_count2:,.0f} TWD")
+        print(f"   SL 次數: {sl_count2}")
+
+        # 策略 3
+        fs_count3 = sum(
+            1 for trade in result3.trades if trade.exit_reason.value == "FS"
+        )
+        sl_count3 = sum(
+            1 for trade in result3.trades if trade.exit_reason.value == "SL"
+        )
+        print()
+        print("強死叉FS (≥3.0):")
+        print(f"   FS 次數: {fs_count3}")
+        if fs_count3 > 0:
+            fs_pnl3 = sum(
+                trade.pnl_twd
+                for trade in result3.trades
+                if trade.exit_reason.value == "FS"
+            )
+            print(f"   FS 總盈虧: {fs_pnl3:,.0f} TWD")
+            print(f"   FS 平均虧損: {fs_pnl3 / fs_count3:,.0f} TWD")
+        print(f"   SL 次數: {sl_count3}")
+
+        print()
+        print("=" * 85)
 
         # 結論
         print()
-        print("📝 結論:")
+        print("🏆 結論:")
         print()
 
-        if result2.total_pnl_twd > result1.total_pnl_twd:
-            diff_pnl = result2.total_pnl_twd - result1.total_pnl_twd
-            diff_pct = (
-                (diff_pnl / abs(result1.total_pnl_twd) * 100)
-                if result1.total_pnl_twd != 0
-                else 0
-            )
-            print("✅ MACD 快速停損策略表現較好")
-            print(f"   總盈虧提升: {diff_pnl:+,.0f} TWD ({diff_pct:+.1f}%)")
-        elif result2.total_pnl_twd < result1.total_pnl_twd:
-            diff_pnl = result1.total_pnl_twd - result2.total_pnl_twd
-            diff_pct = (
-                (diff_pnl / abs(result1.total_pnl_twd) * 100)
-                if result1.total_pnl_twd != 0
-                else 0
-            )
-            print("❌ MACD 快速停損策略表現較差")
-            print(f"   總盈虧下降: {diff_pnl:,.0f} TWD ({diff_pct:.1f}%)")
-        else:
-            print("➖ 兩種策略表現相同")
+        # 找出最佳策略
+        results_list = [
+            ("原始策略", result1.total_pnl_twd),
+            ("無過濾快速停損", result2.total_pnl_twd),
+            ("強死叉快速停損", result3.total_pnl_twd),
+        ]
+        best_strategy = max(results_list, key=lambda x: x[1])
 
-        print()
+        print(f"✨ 總盈虧最高：{best_strategy[0]} ({best_strategy[1]:,.0f} TWD)")
 
-        if result2.total_trades > result1.total_trades:
-            print(
-                f"⚠️  快速停損增加了 {result2.total_trades - result1.total_trades} 次交易"
-            )
-            extra_commission = (
-                (result2.total_trades - result1.total_trades) * 2 * 60
-            )  # 假設每次60元手續費
-            print(f"   額外手續費約: {extra_commission:,.0f} TWD")
+        # 風險控制最佳
+        dd_results = [
+            ("原始策略", result1.max_drawdown),
+            ("無過濾快速停損", result2.max_drawdown),
+            ("強死叉快速停損", result3.max_drawdown),
+        ]
+        best_dd = min(dd_results, key=lambda x: x[1])
+        print(f"✨ 風險控制最佳：{best_dd[0]} (回撤 {best_dd[1]:.2f}%)")
+
+        # 盈虧比最高
+        pf_results = [
+            ("原始策略", result1.profit_factor),
+            ("無過濾快速停損", result2.profit_factor),
+            ("強死叉快速停損", result3.profit_factor),
+        ]
+        best_pf = max(pf_results, key=lambda x: x[1])
+        print(f"✨ 盈虧比最高：{best_pf[0]} ({best_pf[1]:.2f})")
 
         print()
 
