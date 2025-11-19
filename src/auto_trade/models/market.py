@@ -342,8 +342,8 @@ class Quote:
     """即時報價資料模型"""
 
     symbol: str
-    price: float
+    price: int
     volume: int
-    bid_price: float | None = None
-    ask_price: float | None = None
+    bid_price: int | None = None
+    ask_price: int | None = None
     timestamp: datetime | None = None

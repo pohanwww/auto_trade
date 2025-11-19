@@ -51,23 +51,50 @@ class LineBotService:
             print(f"❌ Line Bot 發送失敗: {e}")
             return False
 
-    def send_status_message(self, status: str) -> bool:
+    def send_status_message(
+        self,
+        total_equity: float = None,
+        contract: str = None,
+        price: int | str = None,
+        position: int = None,
+        status: str = None,
+    ) -> bool:
         """發送狀態訊息
 
         Args:
-            status: 狀態訊息
+        total_equity: 權益總值（可選）
+            contract: 合約代碼（可選）
+            price: 當前價格（可選）
+            position: 持倉數量（可選）
+            status: 狀態訊息（可選，用於簡單狀態通知）
 
         Returns:
             bool: 發送是否成功
         """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        message = f"""
+        # 如果有詳細參數，生成完整啟動訊息
+        if contract is not None and price is not None and position is not None:
+            # 格式化權益總值
+            equity_str = f"{total_equity:,.0f}" if total_equity is not None else "N/A"
+
+            # 使用等寬字體確保對齊
+            message = (
+                f"ℹ️ Auto Trade Started\n\n"
+                f"Time: {timestamp}\n"
+                f"Total Equity: {equity_str}\n"
+                f"Subscribe: {contract}\n"
+                f"Price: {price}\n"
+                f"Position: {position}"
+            )
+        # 否則使用簡單狀態訊息（向後兼容）
+        else:
+            message = f"""
 ℹ️ 系統狀態
 
 時間: {timestamp}
-狀態: {status}
-        """
+狀態: {status if status else "未知"}
+            """
 
         return self.send_message(message.strip())
 

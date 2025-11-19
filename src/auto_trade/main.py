@@ -61,11 +61,7 @@ def main():
     # 設定交易參數（從統一配置中取得）
     trading_service.set_trading_params(config.get_trading_params())
 
-    # 發送啟動通知
-    if line_bot_service:
-        line_bot_service.send_status_message("交易系統已啟動")
-
-    # 執行策略循環
+    # 執行策略循環（內部會發送啟動通知）
     trading_service.run_strategy()
 
 

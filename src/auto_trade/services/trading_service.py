@@ -745,6 +745,33 @@ class TradingService:
             # 清理可能不同步的本地記錄（不記錄到 Google Sheets）
             self.record_service._remove_position_without_log(self.sub_symbol)
 
+        # 發送系統啟動通知
+        if self.line_bot_service:
+            try:
+                # 獲取即時報價
+                quote = self.market_service.get_realtime_quote(
+                    self.symbol, self.sub_symbol
+                )
+                current_price = quote.price if quote else "N/A"
+
+                # 獲取持倉數量
+                position_qty = (
+                    self.current_position.quantity if self.current_position else 0
+                )
+
+                # 獲取權益總值
+                margin = self.account_service.get_margin()
+                total_equity = margin.equity_amount
+
+                self.line_bot_service.send_status_message(
+                    total_equity=total_equity,
+                    contract=self.sub_symbol,
+                    price=current_price,
+                    position=position_qty,
+                )
+            except Exception as e:
+                print(f"發送啟動通知失敗: {e}")
+
         # 按固定間隔執行策略
         print_flag = False
         while True:
@@ -756,7 +783,6 @@ class TradingService:
                     self.symbol, self.sub_symbol
                 )
                 if not quote:
-                    breakpoint()
                     raise Exception("無法取得即時報價")
 
                 current_price = quote.price

@@ -325,7 +325,7 @@ class MarketService:
             if tick:
                 return Quote(
                     symbol=tick.code,
-                    price=float(tick.close),
+                    price=int(tick.close),
                     volume=tick.total_volume,
                     bid_price=None,  # TickFOPv1 沒有 bid/ask 價格
                     ask_price=None,
