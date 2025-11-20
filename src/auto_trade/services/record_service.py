@@ -6,7 +6,7 @@ from pathlib import Path
 
 from auto_trade.core.config import Config
 from auto_trade.models import ExitReason
-from auto_trade.models.position_record import PositionRecord
+from auto_trade.models.position_record import BuybackState, PositionRecord
 
 
 class RecordService:
@@ -15,13 +15,16 @@ class RecordService:
     def __init__(
         self,
         record_file: str = "data/position_records.json",
+        buyback_file: str = "data/buyback_state.json",
     ):
         """初始化
 
         Args:
             record_file: 本地記錄文件路徑（相對於項目根目錄）
+            buyback_file: 買回狀態文件路徑（相對於項目根目錄）
         """
         self.record_file = Path(record_file)
+        self.buyback_file = Path(buyback_file)
         self._ensure_file_exists()
 
         # 從 Config 讀取 Google Sheets 設定
@@ -62,9 +65,13 @@ class RecordService:
         # 創建目錄
         self.record_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # 創建文件
+        # 創建持倉記錄文件
         if not self.record_file.exists():
             self.record_file.write_text("{}")
+
+        # 創建買回狀態文件
+        if not self.buyback_file.exists():
+            self.buyback_file.write_text("{}")
 
     # ==================== 本地持倉記錄 ====================
 
@@ -76,7 +83,7 @@ class RecordService:
         """
         try:
             # 讀取現有記錄
-            records = self._load_records()
+            records = self._load_records(self.record_file)
 
             # 使用 sub_symbol 作為 key
             records[record.sub_symbol] = record.to_dict()
@@ -118,7 +125,7 @@ class RecordService:
             持倉記錄，如果不存在則返回 None
         """
         try:
-            records = self._load_records()
+            records = self._load_records(self.record_file)
 
             if sub_symbol in records:
                 return PositionRecord.from_dict(records[sub_symbol])
@@ -145,7 +152,7 @@ class RecordService:
             strategy_params: 策略參數字典（包含 stop_loss_points, start_trailing_stop_points, trailing_stop_points, take_profit_points）
         """
         try:
-            records = self._load_records()
+            records = self._load_records(self.record_file)
 
             if sub_symbol in records:
                 # 獲取持倉記錄用於記錄到 Google Sheets
@@ -157,6 +164,7 @@ class RecordService:
                     exit_price=exit_price,
                     exit_reason=exit_reason,
                     strategy_params=strategy_params,
+                    is_buy_back=position_record.is_buy_back,
                 )
 
                 # 刪除本地記錄
@@ -183,7 +191,7 @@ class RecordService:
             trailing_stop_active: 移動停損是否啟動
         """
         try:
-            records = self._load_records()
+            records = self._load_records(self.record_file)
 
             if sub_symbol in records:
                 records[sub_symbol]["stop_loss_price"] = stop_loss_price
@@ -202,18 +210,11 @@ class RecordService:
             持倉記錄列表
         """
         try:
-            records = self._load_records()
+            records = self._load_records(self.record_file)
             return [PositionRecord.from_dict(data) for data in records.values()]
         except Exception as e:
             print(f"列出持倉記錄失敗: {e}")
             return []
-
-    def _load_records(self) -> dict:
-        """載入所有持倉記錄"""
-        try:
-            return json.loads(self.record_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
 
     def _remove_position_without_log(self, sub_symbol: str):
         """移除持倉記錄但不記錄到 Google Sheets 交易記錄（用於清理不同步的記錄）
@@ -222,7 +223,7 @@ class RecordService:
             sub_symbol: 子商品代碼
         """
         try:
-            records = self._load_records()
+            records = self._load_records(self.record_file)
 
             if sub_symbol in records:
                 del records[sub_symbol]
@@ -233,6 +234,82 @@ class RecordService:
 
         except Exception as e:
             print(f"清理持倉記錄失敗: {e}")
+
+    # ==================== 買回機制狀態記錄 ====================
+
+    def save_buyback_state(self, state: BuybackState):
+        """保存買回機制狀態
+
+        Args:
+            state: 買回機制狀態
+        """
+        try:
+            records = self._load_records(self.buyback_file)
+
+            # 使用 sub_symbol 作為 key
+            records[state.sub_symbol] = state.to_dict()
+
+            self.buyback_file.write_text(
+                json.dumps(records, indent=2, ensure_ascii=False)
+            )
+            print(f"買回狀態已保存: {state.sub_symbol}")
+
+        except Exception as e:
+            print(f"保存買回狀態失敗: {e}")
+
+    def get_buyback_state(self, sub_symbol: str) -> BuybackState | None:
+        """獲取買回機制狀態
+
+        Args:
+            sub_symbol: 子商品代碼
+
+        Returns:
+            買回機制狀態，如果不存在則返回 None
+        """
+        try:
+            records = self._load_records(self.buyback_file)
+
+            if sub_symbol in records:
+                return BuybackState.from_dict(records[sub_symbol])
+
+            return None
+
+        except Exception as e:
+            print(f"讀取買回狀態失敗: {e}")
+            return None
+
+    def remove_buyback_state(self, sub_symbol: str):
+        """移除買回機制狀態
+
+        Args:
+            sub_symbol: 子商品代碼
+        """
+        try:
+            records = self._load_records(self.buyback_file)
+
+            if sub_symbol in records:
+                del records[sub_symbol]
+                self.buyback_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False)
+                )
+                print(f"買回狀態已移除: {sub_symbol}")
+
+        except Exception as e:
+            print(f"移除買回狀態失敗: {e}")
+
+    def _load_records(self, file_path: Path) -> dict:
+        """載入記錄
+
+        Args:
+            file_path: 文件路徑
+
+        Returns:
+            記錄字典
+        """
+        try:
+            return json.loads(file_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
 
     # ==================== Google Sheets 記錄 ====================
 
@@ -353,6 +430,7 @@ class RecordService:
         exit_price: float,
         exit_reason: ExitReason,
         strategy_params: dict | None = None,
+        is_buy_back: bool = False,
     ):
         """更新 Google Sheets 中的交易記錄為平倉狀態"""
         if not self.sheets_service or not row_number:
@@ -378,7 +456,9 @@ class RecordService:
                 worksheet.update_cell(row_number, 19, twd_formula)
 
             # 更新策略參數（T 欄）
-            if strategy_params:
+            if is_buy_back:
+                worksheet.update_cell(row_number, 20, "Buy Back")
+            elif strategy_params:
                 strategy_info = (
                     f"初始停損:{strategy_params.get('stop_loss_points', 0)} \n"
                     f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} \n"

@@ -1,60 +1,60 @@
-# 交易策略配置範例
-# 複製此檔案為 strategy.yaml 並修改您的設定
-# cp config/strategy.example.yaml config/strategy.yaml
-
+# 交易策略配置
 # === 當前啟用的策略 ===
-active_strategy: "default"  # 可選: default, higher, middle, 或自訂策略名稱
+active_strategy: "simple"  # 可選: default, simple, complex, 或自訂策略名稱
 
 
 # === 商品設定 ===
 symbol:
   current: "MXF"           # 商品代碼
-  contract: "MXF202511"    # 合約月份（記得定期更新）
+  contract: "MXF202512"    # 合約月份
   name: "小台指期貨"
 
 
 # === 策略定義 ===
-
-# 預設策略（平衡型）
+# 預設策略
 default:
   trading:
     order_quantity: 1                 # 下單數量
     timeframe: "30m"                  # K線時間尺度
     stop_loss_points: 50              # 初始停損點數
     start_trailing_stop_points: 200   # 啟動移動停損的獲利點數
-    trailing_stop_points: 200         # 移動停損點數
-    take_profit_points: 450           # 獲利了結點數
+    trailing_stop_points: 200         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
+    trailing_stop_points_rate: 0.0095 # 移動停損百分比（進入價格 × 0.0095）
+    take_profit_points: 450           # 獲利了結點數（固定值，如果設置了 take_profit_points_rate 則會被覆蓋）
+    take_profit_points_rate: 0.018     # 獲利了結百分比（進入價格 × 0.02）
   
   monitoring:
-    signal_check_interval: 5          # 訊號檢測間隔 (分鐘)
+    signal_check_interval: 15          # 訊號檢測間隔 (分鐘)
     position_check_interval: 3        # 持倉檢測間隔 (秒)
 
 
-# 激進策略（高風險高報酬）
-higher:
+# index 25000~27500
+simple:
   trading:
-    order_quantity: 1
-    timeframe: "30m"
-    stop_loss_points: 100
-    start_trailing_stop_points: 300
-    trailing_stop_points: 300
-    take_profit_points: 550
-  
-  monitoring:
-    signal_check_interval: 5
-    position_check_interval: 3
-
-
-# 保守策略（低風險低報酬）
-middle:
-  trading:
-    order_quantity: 1
+    order_quantity: 2
     timeframe: "30m"
     stop_loss_points: 80
-    start_trailing_stop_points: 250
-    trailing_stop_points: 250
-    take_profit_points: 500
+    start_trailing_stop_points: 200
+    trailing_stop_points: 200         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
+    take_profit_points: 500          # 獲利了結點數（固定值，如果設置了 take_profit_points_rate 則會被覆蓋）
+    # take_profit_points_rate: 0.02
+
+  monitoring:
+    signal_check_interval: 15
+    position_check_interval: 3
+
+
+complex:
+  trading:
+    order_quantity: 2                 # 下單數量
+    timeframe: "30m"                  # K線時間尺度
+    stop_loss_points: 80              # 初始停損點數
+    start_trailing_stop_points: 200   # 啟動移動停損的獲利點數
+    # trailing_stop_points: 250         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
+    trailing_stop_points_rate: 0.008 # 移動停損百分比（進入價格 × 0.0095）
+    # take_profit_points: 500           # 獲利了結點數（固定值，如果設置了 take_profit_points_rate 則會被覆蓋）
+    take_profit_points_rate: 0.02     # 獲利了結百分比（進入價格 × 0.02）
   
   monitoring:
-    signal_check_interval: 5
-    position_check_interval: 3
+    signal_check_interval: 15          # 訊號檢測間隔 (分鐘)
+    position_check_interval: 2        # 持倉檢測間隔 (秒)

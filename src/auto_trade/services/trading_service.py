@@ -11,7 +11,7 @@ from auto_trade.models import (
     MACDList,
     StrategyInput,
 )
-from auto_trade.models.position_record import PositionRecord
+from auto_trade.models.position_record import BuybackState, PositionRecord
 from auto_trade.services.account_service import AccountService
 from auto_trade.services.line_bot_service import LineBotService
 from auto_trade.services.market_service import MarketService
@@ -48,11 +48,13 @@ class TradingService:
         self.entry_price: int = 0
         self.trailing_stop_active: bool = False
         self.stop_loss_price: int = 0  # 停損價格 (共用於初始停損和移動停損)
+        self.start_trailing_stop_price: int | None = None  # 啟動移動停損的價格
         self.last_sync_time: datetime | None = None
         self.is_in_macd_death_cross: bool = False  # MACD 死叉狀態追蹤
         self.last_fast_stop_check_kbar_time: datetime | None = (
             None  # 最後檢查快速停損的 K 棒時間
         )
+        self.is_buy_back: bool = False  # 是否為買回單
 
         # 交易參數 (預設值)
         self.trailing_stop_points: int = 200
@@ -219,10 +221,10 @@ class TradingService:
         # 計算初始停損（進場前30根K棒最低點）
         pre_entry_kbars = [kbar for kbar in kbars_30m.kbars if kbar.time <= entry_time]
         if len(pre_entry_kbars) >= 30:
-            min_price = min(kbar.low for kbar in pre_entry_kbars[-30:])
+            min_price = int(min(kbar.low for kbar in pre_entry_kbars[-30:]))
             initial_stop_loss = min_price - self.stop_loss_points
             print(
-                f"初始停損計算: 前30根最低點 {min_price:.1f} - {self.stop_loss_points} = {initial_stop_loss:.1f}"
+                f"初始停損計算: 前30根最低點 {min_price} - {self.stop_loss_points} = {initial_stop_loss}"
             )
         else:
             raise ValueError(
@@ -233,24 +235,29 @@ class TradingService:
         post_entry_kbars = [kbar for kbar in kbars_30m.kbars if kbar.time >= entry_time]
 
         if not post_entry_kbars:
-            print(f"進場後無K棒數據，使用初始停損: {initial_stop_loss:.1f}")
+            print(f"進場後無K棒數據，使用初始停損: {initial_stop_loss}")
             return initial_stop_loss, False
 
         # 計算進場後最高價格（只支持做多）
-        highest_price = max(kbar.high for kbar in post_entry_kbars)
-        profit_points = highest_price - entry_price
-        print(f"進場後最高價: {highest_price:.1f}, 最高獲利: {profit_points:.1f} 點")
+        highest_price = int(max(kbar.high for kbar in post_entry_kbars))
 
-        # 檢查是否應該啟動移動停損
-        if profit_points >= self.start_trailing_stop_points:
+        start_trailing_stop_price = (
+            self.start_trailing_stop_price
+            if self.start_trailing_stop_price
+            else entry_price + self.start_trailing_stop_points
+        )
+        print(f"進場後最高價: {highest_price}, 啟動移停價: {start_trailing_stop_price}")
+
+        # 檢查是否應該啟動移動停損 (使用高點檢查)
+        if highest_price >= start_trailing_stop_price:
             trailing_stop_points = self._calculate_trailing_stop_points(entry_price)
             trailing_stop_loss = highest_price - trailing_stop_points
             print(
-                f"✅ 移動停損已啟動，停損價格: {trailing_stop_loss:.1f} (點數: {trailing_stop_points:.1f})"
+                f"✅ 移動停損已啟動，停損價格: {trailing_stop_loss} (點數: {trailing_stop_points})"
             )
             return trailing_stop_loss, True
         else:
-            print(f"移動停損未啟動，使用初始停損: {initial_stop_loss:.1f}")
+            print(f"移動停損未啟動，使用初始停損: {initial_stop_loss}")
             return initial_stop_loss, False
 
     def _initialize_existing_position(self, symbol: str, sub_symbol: str):
@@ -263,10 +270,27 @@ class TradingService:
             if local_record:
                 print("✅ 從本地記錄還原持倉信息")
                 print(f"進場時間: {local_record.entry_time}")
-                print(f"進場價格: {local_record.entry_price:.1f}")
+                print(f"進場價格: {local_record.entry_price}")
 
                 # 還原進場價格
                 self.entry_price = local_record.entry_price
+
+                # 還原是否為買回單
+                self.is_buy_back = local_record.is_buy_back
+                if self.is_buy_back:
+                    print("📍 檢測到此為買回單")
+
+                # 還原或計算啟動移動停損價格
+                if local_record.start_trailing_stop_price:
+                    self.start_trailing_stop_price = (
+                        local_record.start_trailing_stop_price
+                    )
+                    print(f"啟動移動停損價格 (還原): {self.start_trailing_stop_price}")
+                else:
+                    self.start_trailing_stop_price = (
+                        self.entry_price + self.start_trailing_stop_points
+                    )
+                    print(f"啟動移動停損價格 (計算): {self.start_trailing_stop_price}")
 
                 # 使用 entry_time 重新計算移動停損狀態
                 calculated_stop_loss, self.trailing_stop_active = (
@@ -295,7 +319,7 @@ class TradingService:
                     self.entry_price
                 )
                 print(
-                    f"獲利了結價格: {self.entry_price + take_profit_points:.1f} (點數: {take_profit_points:.1f})"
+                    f"獲利了結價格: {self.entry_price + take_profit_points} (點數: {take_profit_points})"
                 )
 
                 # 恢復 MACD 死叉狀態
@@ -311,8 +335,14 @@ class TradingService:
 
             # 如果本地記錄不存在，使用備用方案
             print("⚠️  本地記錄不存在，使用備用方案")
-            print(f"進場價格: {self.current_position.price:.1f}")
-            self.entry_price = self.current_position.price
+            print(f"進場價格: {self.current_position.price}")
+            self.entry_price = int(self.current_position.price)
+
+            # 計算啟動移動停損價格
+            self.start_trailing_stop_price = (
+                self.entry_price + self.start_trailing_stop_points
+            )
+            print(f"啟動移動停損價格 (計算): {self.start_trailing_stop_price}")
 
             # 初始化 open_time 為 None
             open_time = None
@@ -355,30 +385,28 @@ class TradingService:
                         )
                     else:
                         # 沒有成交記錄，使用持倉價格
-                        self.stop_loss_price = self.current_position.price - 50
+                        self.stop_loss_price = self.entry_price - 50
                         print(
-                            f"沒有成交記錄，使用持倉價格計算停損: {self.stop_loss_price:.1f}"
+                            f"沒有成交記錄，使用持倉價格計算停損: {self.stop_loss_price}"
                         )
                 else:
                     # 沒有找到成交記錄，使用持倉價格
-                    self.stop_loss_price = self.current_position.price - 50
+                    self.stop_loss_price = self.entry_price - 50
                     print(
-                        f"沒有找到成交記錄，使用持倉價格計算停損: {self.stop_loss_price:.1f}"
+                        f"沒有找到成交記錄，使用持倉價格計算停損: {self.stop_loss_price}"
                     )
 
             except Exception as e:
                 print(f"計算基於開倉時間的停損失敗: {e}")
                 # 備用方案：使用持倉價格
-                self.stop_loss_price = self.current_position.price - 50
-                print(f"使用備用方案計算停損: {self.stop_loss_price:.1f}")
+                self.stop_loss_price = self.entry_price - 50
+                print(f"使用備用方案計算停損: {self.stop_loss_price}")
 
             # 計算獲利了結價格（只支持做多）
             take_profit_points = self._calculate_take_profit_points(self.entry_price)
             take_profit_price = self.entry_price + take_profit_points
 
-            print(
-                f"獲利了結價格: {take_profit_price:.1f} (點數: {take_profit_points:.1f})"
-            )
+            print(f"獲利了結價格: {take_profit_price} (點數: {take_profit_points})")
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
 
             position_record = PositionRecord(
@@ -393,6 +421,8 @@ class TradingService:
                 stop_loss_price=self.stop_loss_price,
                 timeframe=self.timeframe,
                 trailing_stop_active=False,
+                start_trailing_stop_price=self.start_trailing_stop_price,
+                is_buy_back=self.is_buy_back,
             )
             self.record_service.save_position(position_record)
             print("備用方案的持倉信息已保存到本地記錄")
@@ -550,7 +580,7 @@ class TradingService:
                 and current_profit < -self.stop_loss_points
             ):
                 print(
-                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {self.stop_loss_points} 點"
                 )
                 return True
 
@@ -575,7 +605,7 @@ class TradingService:
                     and current_profit < -self.stop_loss_points
                 ):
                     print(
-                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit:.1f} 點 >= 門檻 {self.stop_loss_points} 點"
+                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {self.stop_loss_points} 點"
                     )
                     return True
 
@@ -597,8 +627,24 @@ class TradingService:
             return False
 
         if not self.trailing_stop_active:
-            if current_price - self.entry_price >= self.start_trailing_stop_points:
-                print(f"獲利{current_price - self.entry_price}點，啟動移動停損")
+            # 使用存儲的啟動價格進行比較
+            should_activate = False
+
+            if self.start_trailing_stop_price is not None:
+                if current_price >= self.start_trailing_stop_price:
+                    should_activate = True
+                    print(
+                        f"價格 {current_price} >= 啟動價格 {self.start_trailing_stop_price}，啟動移動停損"
+                    )
+            else:
+                # 容錯：如果沒有 start_trailing_stop_price，使用舊邏輯
+                if current_price - self.entry_price >= self.start_trailing_stop_points:
+                    should_activate = True
+                    print(
+                        f"獲利 {current_price - self.entry_price} 點 >= 門檻 {self.start_trailing_stop_points} 點，啟動移動停損"
+                    )
+
+            if should_activate:
                 self.trailing_stop_active = True
                 # 立即設定移動停損價格
                 trailing_stop_points = self._calculate_trailing_stop_points(
@@ -606,7 +652,7 @@ class TradingService:
                 )
                 self.stop_loss_price = current_price - trailing_stop_points
                 print(
-                    f"移動停損已啟動，停損價格: {self.stop_loss_price} (點數: {trailing_stop_points:.1f})"
+                    f"移動停損已啟動，停損價格: {self.stop_loss_price} (點數: {trailing_stop_points})"
                 )
 
                 # 更新本地記錄
@@ -632,88 +678,202 @@ class TradingService:
 
         return False
 
-    def _place_market_order_and_wait(
-        self,
-        symbol: str,
-        sub_symbol: str,
-        action: str,
-        order_type: str = "Open",  # "Open" 或 "Close"
-    ) -> float | None:
-        """
-        下市價單並等待成交，整合下單、等待成交、更新持倉狀態
+    def _get_timeframe_delta(self, timeframe: str) -> timedelta:
+        """將時間尺度轉換為 timedelta"""
+        minutes = 0
+        if timeframe.endswith("m"):
+            minutes = int(timeframe[:-1])
+        elif timeframe.endswith("h"):
+            minutes = int(timeframe[:-1]) * 60
+        elif timeframe.endswith("d"):
+            minutes = int(timeframe[:-1]) * 1440
+        else:
+            minutes = 1
+        return timedelta(minutes=minutes)
+
+    def _calculate_current_bar_start_time(
+        self, current_time: datetime, timeframe: str
+    ) -> datetime:
+        """計算當前時間所在的 K 棒開始時間"""
+        delta = self._get_timeframe_delta(timeframe)
+        interval_seconds = delta.total_seconds()
+        timestamp = current_time.timestamp()
+
+        # 對齊到間隔
+        start_timestamp = (timestamp // interval_seconds) * interval_seconds
+        return datetime.fromtimestamp(start_timestamp)
+
+    def _wait_and_execute_buyback(self, state: BuybackState):
+        """等待並執行買回機制 (Blocking)
 
         Args:
-            symbol: 商品代碼
-            sub_symbol: 子商品代碼
-            action: 買賣動作 ("Buy" 或 "Sell")
-            order_type: 訂單類型 ("Open" 開倉 或 "Close" 平倉)
-
-        Returns:
-            float | None: 成交價格，失敗時回傳 None
+            state: 買回狀態物件
         """
+        # 1. 保存狀態 (防止程式異常終止)
+        self.record_service.save_buyback_state(state)
+        print(f"💾 買回狀態已保存，準備進入等待模式... 目標時間: {state.check_time}")
+
+        # 2. 計算等待時間
+        now = datetime.now()
+        wait_seconds_val = (state.check_time - now).total_seconds()
+
+        if wait_seconds_val > 0:
+            print(f"⏳ 進入阻塞等待 (還有 {wait_seconds_val:.0f} 秒)... 期間程式暫停")
+            time.sleep(wait_seconds_val)
+        else:
+            print("⚠️ 目標時間已過，立即執行檢查")
+
+        # 3. 醒來後執行檢查
+        print("⏰ 時間到，開始檢查買回條件")
+
         try:
-            # 設定 octype
-            octype = "Cover" if order_type == "Close" else "Auto"
-
-            print(f"下市價單: {action} {order_type}")
-
-            # 下市價單
-            result = self.order_service.place_order(
-                symbol=symbol,
-                sub_symbol=sub_symbol,
-                action=action,
-                quantity=self.order_quantity,
-                price_type="MKT",
-                # order_type=None 會自動選擇 IOC 用於市價單
-                octype=octype,
+            # 重新獲取最新的 K 棒數據 (包含即將收盤的那根)
+            kbars = self.market_service.get_futures_kbars_with_timeframe(
+                state.symbol, state.sub_symbol, self.timeframe, days=15
             )
-            # 檢查下單是否成功
-            if result.status == "Error":
-                print(f"下單失敗: {result.msg}")
-                time.sleep(60)
-                return None
 
-            print(f"下單成功: {action} {order_type}")
+            if not kbars or not kbars.kbars:
+                print("❌ 無法獲取 K 棒數據，取消買回")
+                self.record_service.remove_buyback_state(state.sub_symbol)
+                return
 
-            # 等待成交
-            start_time = datetime.now()
-            timeout_minutes = 5
+            # 找到監控的那根 K 棒
+            target_kbar = None
+            for kbar in reversed(kbars.kbars):
+                if kbar.time == state.monitoring_bar_time:
+                    target_kbar = kbar
+                    break
 
-            while datetime.now() - start_time < timedelta(minutes=timeout_minutes):
-                trades = self.order_service.check_order_status(
-                    result.order_id,
+            if not target_kbar:
+                print(
+                    f"⚠️ 找不到監控的 K 棒 ({state.monitoring_bar_time})，可能是數據尚未更新"
                 )
-                if trades and trades[0].status.status in [
-                    "Filled",
-                    "PartFilled",
-                    "Status.Filled",
-                ]:
-                    current_trade = trades[0]
-                    print(f"成交確認: {action} {order_type}")
-                    time.sleep(2)  # 等待一下讓系統更新
+                # 這種情況可能發生在數據源延遲，或許可以再等一下，但為了簡單起見先放棄
+                self.record_service.remove_buyback_state(state.sub_symbol)
+                return
 
-                    # 更新持倉狀態
-                    self.current_position = self._get_current_position(sub_symbol)
-                    print(f"持倉狀態已更新: {action}")
+            print(
+                f"🔍 K棒型態檢查: O:{target_kbar.open} H:{target_kbar.high} L:{target_kbar.low} C:{target_kbar.close}"
+            )
 
-                    if current_trade.status.deals:
-                        last_deal = current_trade.status.deals[-1]
-                        fill_price = last_deal.price
-                        print(f"成交價格: {fill_price} (成交時間: {last_deal.time})")
+            # 判斷型態
+            body_length = abs(target_kbar.open - target_kbar.close)
+            should_buyback = False
+            new_stop_loss = 0.0
 
-                        return fill_price
-                    else:
-                        print("警告: 未找到成交價格資訊")
-                        return None
+            if state.direction == Action.Buy:
+                # 多單買回條件：長下影線
+                lower_shadow = (
+                    min(target_kbar.open, target_kbar.close) - target_kbar.low
+                )
+                if lower_shadow > body_length * 2:
+                    print(
+                        f"✅ 發現長下影線 (下影線 {lower_shadow} > 實體 {body_length} * 2)"
+                    )
+                    should_buyback = True
+                    new_stop_loss = target_kbar.low
+                else:
+                    print("❌ 未出現長下影線")
 
-                time.sleep(1)
+            elif state.direction == Action.Sell:
+                # 空單買回條件：長上影線
+                upper_shadow = target_kbar.high - max(
+                    target_kbar.open, target_kbar.close
+                )
+                if upper_shadow > body_length * 2:
+                    print(
+                        f"✅ 發現長上影線 (上影線 {upper_shadow} > 實體 {body_length} * 2)"
+                    )
+                    should_buyback = True
+                    new_stop_loss = target_kbar.high
+                else:
+                    print("❌ 未出現長上影線")
 
-            print(f"等待成交超時: {action} {order_type}")
-            return None
+            # 4. 執行買回動作
+            if should_buyback:
+                print(f"🚀 執行買回: {state.direction}")
+                fill_price = self._place_market_order_and_wait(
+                    state.symbol, state.sub_symbol, state.direction, "Open"
+                )
+
+                if fill_price is not None:
+                    # 更新內部狀態
+                    self.current_position = self._get_current_position(state.sub_symbol)
+                    self.entry_price = int(fill_price)
+                    self.trailing_stop_active = False
+                    self.stop_loss_price = int(new_stop_loss)
+                    self.is_in_macd_death_cross = False
+                    self.last_fast_stop_check_kbar_time = None
+
+                    # 設定為買回單，防止再次買回
+                    self.is_buy_back = True
+
+                    # 計算並設定啟動移動停損價格 (直接使用之前的高點)
+                    self.start_trailing_stop_price = state.highest_price
+
+                    print(
+                        f"買回成功！成交價: {fill_price}, 新停損: {self.stop_loss_price}, 啟動移停價: {self.start_trailing_stop_price}, 買回標記: {self.is_buy_back}"
+                    )
+
+                    # 寫入紀錄
+                    self.record_service.save_position(
+                        PositionRecord(
+                            symbol=state.symbol,
+                            sub_symbol=state.sub_symbol,
+                            direction=state.direction,
+                            quantity=state.quantity,
+                            entry_price=self.entry_price,
+                            entry_time=datetime.now(),
+                            stop_loss_price=self.stop_loss_price,
+                            timeframe=self.timeframe,
+                            trailing_stop_active=False,
+                            start_trailing_stop_price=self.start_trailing_stop_price,
+                            is_buy_back=self.is_buy_back,
+                        )
+                    )
+
+                    # 發送通知
+                    if self.line_bot_service:
+                        self.line_bot_service.send_open_position_message(
+                            symbol=state.symbol,
+                            sub_symbol=state.sub_symbol,
+                            price=fill_price,
+                            quantity=state.quantity,
+                            action=state.direction,
+                            stop_loss_price=self.stop_loss_price,
+                        )
+                else:
+                    print("❌ 買回下單失敗")
+            else:
+                print("❌ 不符合買回條件，確認離場")
 
         except Exception as e:
-            print(f"下單或等待成交失敗: {str(e)}")
-            return None
+            print(f"❌ 買回檢查執行失敗: {e}")
+
+        # 5. 清理狀態 (無論成功失敗都清除，因為機會只有一次)
+        self.record_service.remove_buyback_state(state.sub_symbol)
+        print("🧹 買回狀態已清除")
+
+    def _check_pending_buyback_state(self):
+        """檢查是否有未完成的買回任務 (程式重啟時使用)"""
+        if not self.sub_symbol:
+            return
+
+        state = self.record_service.get_buyback_state(self.sub_symbol)
+        if state:
+            print(f"🔍 發現未完成的買回任務: 目標時間 {state.check_time}")
+
+            # 如果時間還沒過太久 (例如 5 分鐘內)，我們嘗試恢復
+            # 如果已經過了很久，這筆資料就沒意義了
+            now = datetime.now()
+            delta = (now - state.check_time).total_seconds()
+
+            if delta > 300:  # 過期 5 分鐘
+                print("⚠️ 買回任務已過期太久，自動清除")
+                self.record_service.remove_buyback_state(self.sub_symbol)
+            else:
+                print("🔄 恢復買回等待...")
+                self._wait_and_execute_buyback(state)
 
     def run_strategy(self):
         """執行策略循環 - 支持自適應檢測頻率"""
@@ -744,6 +904,9 @@ class TradingService:
         else:
             # 清理可能不同步的本地記錄（不記錄到 Google Sheets）
             self.record_service._remove_position_without_log(self.sub_symbol)
+
+            # 檢查是否有中斷的買回任務 (僅在無持倉時檢查)
+            self._check_pending_buyback_state()
 
         # 發送系統啟動通知
         if self.line_bot_service:
@@ -809,6 +972,8 @@ class TradingService:
                         )
                         if fill_price is not None:
                             # 判斷退出原因
+                            is_trailing_stop_exit = False  # 標記是否為移動停損出場
+
                             if profit_triggered:
                                 exit_reason = ExitReason.TAKE_PROFIT
                             elif fast_stop_triggered:
@@ -816,10 +981,52 @@ class TradingService:
                                 print(f"⚡ MACD 快速停損執行，成交價格: {fill_price}")
                             elif self.trailing_stop_active:
                                 exit_reason = ExitReason.TRAILING_STOP
+                                is_trailing_stop_exit = True  # 是移動停損
                             else:
                                 exit_reason = ExitReason.STOP_LOSS
 
                             print(f"觸發平倉，成交價格: {fill_price}")
+
+                            # 計算買回所需的參數 (在狀態重置之前)
+                            highest_price = 0
+                            buyback_state = None
+
+                            if is_trailing_stop_exit and not self.is_buy_back:
+                                # 計算 highest_price (大約等於 fill_price + trailing_stop_points)
+                                trailing_stop_points = (
+                                    self._calculate_trailing_stop_points(
+                                        self.entry_price
+                                    )
+                                )
+                                highest_price = int(fill_price) + trailing_stop_points
+
+                                print(
+                                    f"準備買回機制: 出場價 {fill_price}, 預估最高價 {highest_price}"
+                                )
+
+                                # 1. 計算監控 K 棒的時間 (當前 K 棒)
+                                monitoring_bar_time = (
+                                    self._calculate_current_bar_start_time(
+                                        current_time, self.timeframe
+                                    )
+                                )
+                                # 2. 計算檢查時間 (K 棒結束前 30 秒)
+                                delta = self._get_timeframe_delta(self.timeframe)
+                                check_time = (
+                                    monitoring_bar_time + delta - timedelta(seconds=30)
+                                )
+
+                                # 3. 建立狀態物件 (先存起來，等平倉完成後執行)
+                                buyback_state = BuybackState(
+                                    symbol=self.symbol,
+                                    sub_symbol=self.sub_symbol,
+                                    direction=Action.Buy,  # 假設原持倉是 Buy
+                                    check_time=check_time,
+                                    monitoring_bar_time=monitoring_bar_time,
+                                    exit_price=int(fill_price),
+                                    highest_price=highest_price,
+                                    quantity=self.order_quantity,
+                                )
 
                             # 移除本地持倉記錄並記錄平倉資訊
                             self.record_service.remove_position(
@@ -849,6 +1056,9 @@ class TradingService:
                             self.last_fast_stop_check_kbar_time = (
                                 None  # 重置 K 棒檢查時間
                             )
+                            self.start_trailing_stop_price = (
+                                None  # 重置啟動移動停損價格
+                            )
 
                             # 獲取 Google Sheets 最新數據並發送 Line 通知
                             if self.line_bot_service:
@@ -869,10 +1079,30 @@ class TradingService:
                                 except Exception as e:
                                     print(f"❌ 發送平倉通知失敗: {e}")
 
+                            # === 移動停損觸發後，進入買回機制 (阻塞式等待) ===
+                            if buyback_state:
+                                print("👀 觸發移動停損，啟動買回機制...")
+
+                                # 4. 執行等待與檢查 (Blocking)
+                                self._wait_and_execute_buyback(buyback_state)
+
+                                # 5. 如果買回成功 (self.current_position 有值)，跳過後面的等待，直接進入下一輪監控
+                                if self.current_position:
+                                    continue
+                                else:
+                                    # 買回失敗或放棄，重置買回標記
+                                    self.is_buy_back = False
+                            else:
+                                # 如果不是買回，確保重置 is_buy_back
+                                self.is_buy_back = False
+
                         calculate_and_wait_to_next_execution(
-                            current_time, self.signal_check_interval, True
+                            current_time=current_time,
+                            interval_minutes=self.signal_check_interval,
+                            verbose=True,
                         )
                         continue  # 停損觸發，不用更新trailing_stop
+
                     # 更新移動停損
                     self._update_trailing_stop(current_price)
 
@@ -909,16 +1139,24 @@ class TradingService:
                             self.symbol, self.sub_symbol, signal.action, "Open"
                         )
                         if fill_price is not None and self.current_position:
-                            self.entry_price = fill_price
+                            self.entry_price = int(fill_price)
                             self.trailing_stop_active = False
-                            self.stop_loss_price = signal.stop_loss_price
+                            self.stop_loss_price = int(signal.stop_loss_price)
                             self.is_in_macd_death_cross = False  # 重置 MACD 死叉狀態
                             self.last_fast_stop_check_kbar_time = (
                                 None  # 重置 K 棒檢查時間
                             )
 
+                            # 新單 (非買回)，重置 is_buy_back
+                            self.is_buy_back = False
+
+                            # 計算並設定啟動移動停損價格
+                            self.start_trailing_stop_price = (
+                                self.entry_price + self.start_trailing_stop_points
+                            )
                             print(f"開倉成交價格: {fill_price}")
                             print(f"停損點位已設定: {self.stop_loss_price}")
+                            print(f"啟動移動停損價格: {self.start_trailing_stop_price}")
 
                             self.record_service.save_position(
                                 PositionRecord(
@@ -926,11 +1164,13 @@ class TradingService:
                                     sub_symbol=self.sub_symbol,
                                     direction=signal.action,
                                     quantity=self.order_quantity,
-                                    entry_price=fill_price,
+                                    entry_price=self.entry_price,
                                     entry_time=datetime.now(),
                                     stop_loss_price=self.stop_loss_price,
                                     timeframe=self.timeframe,
                                     trailing_stop_active=False,
+                                    start_trailing_stop_price=self.start_trailing_stop_price,
+                                    is_buy_back=self.is_buy_back,
                                 )
                             )
 
