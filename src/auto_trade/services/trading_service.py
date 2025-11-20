@@ -756,38 +756,10 @@ class TradingService:
                 f"🔍 K棒型態檢查: O:{target_kbar.open} H:{target_kbar.high} L:{target_kbar.low} C:{target_kbar.close}"
             )
 
-            # 判斷型態
-            body_length = abs(target_kbar.open - target_kbar.close)
-            should_buyback = False
-            new_stop_loss = 0.0
-
-            if state.direction == Action.Buy:
-                # 多單買回條件：長下影線
-                lower_shadow = (
-                    min(target_kbar.open, target_kbar.close) - target_kbar.low
-                )
-                if lower_shadow > body_length * 2:
-                    print(
-                        f"✅ 發現長下影線 (下影線 {lower_shadow} > 實體 {body_length} * 2)"
-                    )
-                    should_buyback = True
-                    new_stop_loss = target_kbar.low
-                else:
-                    print("❌ 未出現長下影線")
-
-            elif state.direction == Action.Sell:
-                # 空單買回條件：長上影線
-                upper_shadow = target_kbar.high - max(
-                    target_kbar.open, target_kbar.close
-                )
-                if upper_shadow > body_length * 2:
-                    print(
-                        f"✅ 發現長上影線 (上影線 {upper_shadow} > 實體 {body_length} * 2)"
-                    )
-                    should_buyback = True
-                    new_stop_loss = target_kbar.high
-                else:
-                    print("❌ 未出現長上影線")
+            # 檢查 K 棒型態是否符合買回條件
+            should_buyback = self.strategy_service.check_hammer_kbar(
+                target_kbar, state.direction
+            )
 
             # 4. 執行買回動作
             if should_buyback:
@@ -801,7 +773,7 @@ class TradingService:
                     self.current_position = self._get_current_position(state.sub_symbol)
                     self.entry_price = int(fill_price)
                     self.trailing_stop_active = False
-                    self.stop_loss_price = int(new_stop_loss)
+                    self.stop_loss_price = int(target_kbar.low)
                     self.is_in_macd_death_cross = False
                     self.last_fast_stop_check_kbar_time = None
 
@@ -1082,19 +1054,12 @@ class TradingService:
                             # === 移動停損觸發後，進入買回機制 (阻塞式等待) ===
                             if buyback_state:
                                 print("👀 觸發移動停損，啟動買回機制...")
-
-                                # 4. 執行等待與檢查 (Blocking)
                                 self._wait_and_execute_buyback(buyback_state)
-
-                                # 5. 如果買回成功 (self.current_position 有值)，跳過後面的等待，直接進入下一輪監控
                                 if self.current_position:
                                     continue
-                                else:
-                                    # 買回失敗或放棄，重置買回標記
-                                    self.is_buy_back = False
-                            else:
-                                # 如果不是買回，確保重置 is_buy_back
-                                self.is_buy_back = False
+
+                            # 如果沒有進入買回機制，或買回失敗/放棄，重置買回標記
+                            self.is_buy_back = False
 
                         calculate_and_wait_to_next_execution(
                             current_time=current_time,

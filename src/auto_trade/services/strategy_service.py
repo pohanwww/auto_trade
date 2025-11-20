@@ -8,6 +8,7 @@ from auto_trade.models import (
     Action,
     EMAData,
     EMAList,
+    KBar,
     KBarList,
     MACDData,
     MACDList,
@@ -185,6 +186,32 @@ class StrategyService:
         acceleration = current_diff - previous_diff
 
         return abs(acceleration) >= min_acceleration
+
+    def check_hammer_kbar(self, kbar: KBar, direction: Action) -> bool:
+        """檢查 K 棒型態是否為錘頭 (做多) 或 倒錘頭 (做空)
+
+        Args:
+            kbar: K 棒數據
+            direction: 交易方向 (Buy: 檢查錘頭/長下影線, Sell: 檢查倒錘頭/長上影線)
+
+        Returns:
+            bool: True 如果符合型態，False 否則
+        """
+        body_length = abs(kbar.open - kbar.close)
+
+        if direction == Action.Buy:
+            # 多單買回條件：長下影線 (錘頭)
+            lower_shadow = min(kbar.open, kbar.close) - kbar.low
+            if lower_shadow > body_length * 2:
+                return True
+
+        elif direction == Action.Sell:
+            # 空單買回條件：長上影線 (倒錘頭/射擊之星)
+            upper_shadow = kbar.high - max(kbar.open, kbar.close)
+            if upper_shadow > body_length * 2:
+                return True
+
+        return False
 
     def generate_signal(self, input_data: StrategyInput) -> TradingSignal:
         """生成MACD金叉策略訊號並計算停損價格"""
