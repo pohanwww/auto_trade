@@ -25,7 +25,7 @@ class PositionRecord:
     sub_symbol: str  # 子商品代碼 (e.g., "MXF202511")
     direction: Action  # 方向 (Buy/Sell)
     entry_time: datetime  # 進場時間
-    timeframe: str = "30m"  # 時間尺度 (e.g., "30m", "5m")
+    timeframe: str  # 時間尺度 (e.g., "30m", "5m")
     quantity: int  # 數量
     entry_price: int  # 進場價格
     stop_loss_price: int | None  # 停損價格
