@@ -841,22 +841,16 @@ class TradingService:
             int | None: 成交價格，如果失敗則返回 None
         """
         try:
-            # 設定 octype
             octype = "Cover" if order_type == "Close" else "Auto"
-
             print(f"下市價單: {action.value} {order_type}")
-
-            # 下市價單
             result = self.order_service.place_order(
                 symbol=symbol,
                 sub_symbol=sub_symbol,
-                action=action.value,
+                action=action,
                 quantity=self.order_quantity,
                 price_type="MKT",
                 octype=octype,
             )
-
-            # 檢查下單是否成功
             if result.status == "Error":
                 print(f"下單失敗: {result.msg}")
                 time.sleep(60)
@@ -864,7 +858,6 @@ class TradingService:
 
             print(f"下單成功: {action.value} {order_type}")
 
-            # 等待成交
             start_time = datetime.now()
             timeout_minutes = 5
 
