@@ -826,6 +826,84 @@ class TradingService:
         self.record_service.remove_buyback_state(state.sub_symbol)
         print("🧹 買回狀態已清除")
 
+    def _place_market_order_and_wait(
+        self, symbol: str, sub_symbol: str, action: Action, order_type: str
+    ) -> int | None:
+        """下市價單並等待成交
+
+        Args:
+            symbol: 商品代碼
+            sub_symbol: 子商品代碼
+            action: 交易方向 (Buy/Sell)
+            order_type: 訂單類型 (Open/Close)
+
+        Returns:
+            int | None: 成交價格，如果失敗則返回 None
+        """
+        try:
+            # 設定 octype
+            octype = "Cover" if order_type == "Close" else "Auto"
+
+            print(f"下市價單: {action.value} {order_type}")
+
+            # 下市價單
+            result = self.order_service.place_order(
+                symbol=symbol,
+                sub_symbol=sub_symbol,
+                action=action.value,
+                quantity=self.order_quantity,
+                price_type="MKT",
+                octype=octype,
+            )
+
+            # 檢查下單是否成功
+            if result.status == "Error":
+                print(f"下單失敗: {result.msg}")
+                time.sleep(60)
+                return None
+
+            print(f"下單成功: {action.value} {order_type}")
+
+            # 等待成交
+            start_time = datetime.now()
+            timeout_minutes = 5
+
+            while datetime.now() - start_time < timedelta(minutes=timeout_minutes):
+                trades = self.order_service.check_order_status(
+                    result.order_id,
+                )
+                if trades and trades[0].status.status in [
+                    "Filled",
+                    "PartFilled",
+                    "Status.Filled",
+                ]:
+                    current_trade = trades[0]
+                    print(f"成交確認: {action.value} {order_type}")
+                    time.sleep(2)  # 等待一下讓系統更新
+
+                    # 更新持倉狀態
+                    self.current_position = self._get_current_position(sub_symbol)
+                    print(f"持倉狀態已更新: {action.value}")
+
+                    if current_trade.status.deals:
+                        last_deal = current_trade.status.deals[-1]
+                        fill_price = int(last_deal.price)
+                        print(f"成交價格: {fill_price} (成交時間: {last_deal.time})")
+
+                        return fill_price
+                    else:
+                        print("警告: 未找到成交價格資訊")
+                        return None
+
+                time.sleep(1)
+
+            print(f"等待成交超時: {action.value} {order_type}")
+            return None
+
+        except Exception as e:
+            print(f"下單或等待成交失敗: {str(e)}")
+            return None
+
     def _check_pending_buyback_state(self):
         """檢查是否有未完成的買回任務 (程式重啟時使用)"""
         if not self.sub_symbol:
