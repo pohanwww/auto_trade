@@ -49,6 +49,7 @@ class TradingService:
         self.trailing_stop_active: bool = False
         self.stop_loss_price: int = 0  # 停損價格 (共用於初始停損和移動停損)
         self.start_trailing_stop_price: int | None = None  # 啟動移動停損的價格
+        self.take_profit_price: int | None = None  # 獲利了結價格
         self.last_sync_time: datetime | None = None
         self.is_in_macd_death_cross: bool = False  # MACD 死叉狀態追蹤
         self.last_fast_stop_check_kbar_time: datetime | None = (
@@ -292,6 +293,19 @@ class TradingService:
                     )
                     print(f"啟動移動停損價格 (計算): {self.start_trailing_stop_price}")
 
+                # 還原或計算獲利了結價格
+                if local_record.take_profit_price:
+                    self.take_profit_price = local_record.take_profit_price
+                    print(f"獲利了結價格 (還原): {self.take_profit_price}")
+                else:
+                    self.take_profit_price = (
+                        self.entry_price
+                        + self._calculate_take_profit_points(self.entry_price)
+                    )
+                    print(
+                        f"獲利了結價格 (計算): {self.take_profit_price} (點數: {take_profit_points})"
+                    )
+
                 # 使用 entry_time 重新計算移動停損狀態
                 calculated_stop_loss, self.trailing_stop_active = (
                     self._calculate_trailing_stop_from_history(
@@ -314,13 +328,6 @@ class TradingService:
                         f"local_record.stop_loss_price={local_record.stop_loss_price}, "
                         f"calculated_stop_loss={calculated_stop_loss}"
                     )
-
-                take_profit_points = self._calculate_take_profit_points(
-                    self.entry_price
-                )
-                print(
-                    f"獲利了結價格: {self.entry_price + take_profit_points} (點數: {take_profit_points})"
-                )
 
                 # 恢復 MACD 死叉狀態
                 self._restore_macd_death_cross_status()
@@ -404,9 +411,11 @@ class TradingService:
 
             # 計算獲利了結價格（只支持做多）
             take_profit_points = self._calculate_take_profit_points(self.entry_price)
-            take_profit_price = self.entry_price + take_profit_points
+            self.take_profit_price = self.entry_price + take_profit_points
 
-            print(f"獲利了結價格: {take_profit_price} (點數: {take_profit_points})")
+            print(
+                f"獲利了結價格: {self.take_profit_price} (點數: {take_profit_points})"
+            )
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
 
             position_record = PositionRecord(
@@ -422,6 +431,7 @@ class TradingService:
                 timeframe=self.timeframe,
                 trailing_stop_active=False,
                 start_trailing_stop_price=self.start_trailing_stop_price,
+                take_profit_price=self.take_profit_price,
                 is_buy_back=self.is_buy_back,
             )
             self.record_service.save_position(position_record)
@@ -783,8 +793,14 @@ class TradingService:
                     # 計算並設定啟動移動停損價格 (直接使用之前的高點)
                     self.start_trailing_stop_price = state.highest_price
 
+                    # 計算並設定獲利了結價格
+                    self.take_profit_price = (
+                        self.entry_price
+                        + self._calculate_take_profit_points(self.entry_price)
+                    )
+
                     print(
-                        f"買回成功！成交價: {fill_price}, 新停損: {self.stop_loss_price}, 啟動移停價: {self.start_trailing_stop_price}, 買回標記: {self.is_buy_back}"
+                        f"買回成功！成交價: {fill_price}, 新停損: {self.stop_loss_price}, 啟動移停價: {self.start_trailing_stop_price}, 獲利了結價格: {self.take_profit_price}, 買回標記: {self.is_buy_back}"
                     )
 
                     # 寫入紀錄
@@ -800,6 +816,7 @@ class TradingService:
                             timeframe=self.timeframe,
                             trailing_stop_active=False,
                             start_trailing_stop_price=self.start_trailing_stop_price,
+                            take_profit_price=self.take_profit_price,
                             is_buy_back=self.is_buy_back,
                         )
                     )
@@ -994,17 +1011,15 @@ class TradingService:
                 current_price = quote.price
 
                 if self.current_position:
-                    current_profit = current_price - self.entry_price
-
                     # 檢查 MACD 快速停損（內部自動判斷是否需要檢查）
                     fast_stop_triggered = self._check_macd_fast_stop(current_price)
 
                     # 檢查其他停損條件
                     stop_triggered = current_price <= self.stop_loss_price
-                    take_profit_points = self._calculate_take_profit_points(
-                        self.entry_price
+                    profit_triggered = (
+                        self.take_profit_price is not None
+                        and current_price >= self.take_profit_price
                     )
-                    profit_triggered = current_profit >= take_profit_points
 
                     if (
                         fast_stop_triggered or stop_triggered or profit_triggered
@@ -1102,6 +1117,7 @@ class TradingService:
                             self.start_trailing_stop_price = (
                                 None  # 重置啟動移動停損價格
                             )
+                            self.take_profit_price = None  # 重置獲利了結價格
 
                             # 獲取 Google Sheets 最新數據並發送 Line 通知
                             if self.line_bot_service:
@@ -1190,9 +1206,20 @@ class TradingService:
                             self.start_trailing_stop_price = (
                                 self.entry_price + self.start_trailing_stop_points
                             )
+                            # 計算並設定獲利了結價格
+                            take_profit_points = self._calculate_take_profit_points(
+                                self.entry_price
+                            )
+                            self.take_profit_price = (
+                                self.entry_price + take_profit_points
+                            )
+
                             print(f"開倉成交價格: {fill_price}")
                             print(f"停損點位已設定: {self.stop_loss_price}")
                             print(f"啟動移動停損價格: {self.start_trailing_stop_price}")
+                            print(
+                                f"獲利了結價格: {self.take_profit_price} (點數: {take_profit_points})"
+                            )
 
                             self.record_service.save_position(
                                 PositionRecord(
@@ -1206,6 +1233,7 @@ class TradingService:
                                     timeframe=self.timeframe,
                                     trailing_stop_active=False,
                                     start_trailing_stop_price=self.start_trailing_stop_price,
+                                    take_profit_price=self.take_profit_price,
                                     is_buy_back=self.is_buy_back,
                                 )
                             )

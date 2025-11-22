@@ -30,6 +30,7 @@ class PositionRecord:
     entry_price: int  # 進場價格
     stop_loss_price: int | None  # 停損價格
     start_trailing_stop_price: int | None = None  # 啟動移動停損的價格
+    take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
     sheets_row_number: int | None = None  # Google Sheets 中的行號
     is_buy_back: bool = False  # 是否為買回單
@@ -46,6 +47,7 @@ class PositionRecord:
             "entry_price": self.entry_price,
             "stop_loss_price": self.stop_loss_price,
             "start_trailing_stop_price": self.start_trailing_stop_price,
+            "take_profit_price": self.take_profit_price,
             "trailing_stop_active": self.trailing_stop_active,
             "sheets_row_number": self.sheets_row_number,
             "is_buy_back": self.is_buy_back,
@@ -68,6 +70,11 @@ class PositionRecord:
             start_trailing_stop_price=(
                 int(data["start_trailing_stop_price"])
                 if data.get("start_trailing_stop_price")
+                else None
+            ),  # 向後兼容
+            take_profit_price=(
+                int(data["take_profit_price"])
+                if data.get("take_profit_price")
                 else None
             ),  # 向後兼容
             trailing_stop_active=data.get("trailing_stop_active", False),
