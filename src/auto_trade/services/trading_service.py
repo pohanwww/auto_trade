@@ -303,7 +303,7 @@ class TradingService:
                         + self._calculate_take_profit_points(self.entry_price)
                     )
                     print(
-                        f"獲利了結價格 (計算): {self.take_profit_price} (點數: {take_profit_points})"
+                        f"獲利了結價格 (計算): {self.take_profit_price}"
                     )
 
                 # 使用 entry_time 重新計算移動停損狀態
@@ -410,11 +410,10 @@ class TradingService:
                 print(f"使用備用方案計算停損: {self.stop_loss_price}")
 
             # 計算獲利了結價格（只支持做多）
-            take_profit_points = self._calculate_take_profit_points(self.entry_price)
-            self.take_profit_price = self.entry_price + take_profit_points
+            self.take_profit_price = self.entry_price + self._calculate_take_profit_points(self.entry_price)
 
             print(
-                f"獲利了結價格: {self.take_profit_price} (點數: {take_profit_points})"
+                f"獲利了結價格: {self.take_profit_price}"
             )
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
 
