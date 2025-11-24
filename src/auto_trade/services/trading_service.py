@@ -18,7 +18,11 @@ from auto_trade.services.market_service import MarketService
 from auto_trade.services.order_service import OrderService
 from auto_trade.services.record_service import RecordService
 from auto_trade.services.strategy_service import StrategyService
-from auto_trade.utils import calculate_and_wait_to_next_execution, wait_seconds
+from auto_trade.utils import (
+    calculate_and_wait_to_next_execution,
+    get_timeframe_delta,
+    wait_seconds,
+)
 
 
 class TradingService:
@@ -302,9 +306,7 @@ class TradingService:
                         self.entry_price
                         + self._calculate_take_profit_points(self.entry_price)
                     )
-                    print(
-                        f"獲利了結價格 (計算): {self.take_profit_price}"
-                    )
+                    print(f"獲利了結價格 (計算): {self.take_profit_price}")
 
                 # 使用 entry_time 重新計算移動停損狀態
                 calculated_stop_loss, self.trailing_stop_active = (
@@ -410,11 +412,11 @@ class TradingService:
                 print(f"使用備用方案計算停損: {self.stop_loss_price}")
 
             # 計算獲利了結價格（只支持做多）
-            self.take_profit_price = self.entry_price + self._calculate_take_profit_points(self.entry_price)
-
-            print(
-                f"獲利了結價格: {self.take_profit_price}"
+            self.take_profit_price = (
+                self.entry_price + self._calculate_take_profit_points(self.entry_price)
             )
+
+            print(f"獲利了結價格: {self.take_profit_price}")
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
 
             position_record = PositionRecord(
@@ -686,31 +688,6 @@ class TradingService:
             return True
 
         return False
-
-    def _get_timeframe_delta(self, timeframe: str) -> timedelta:
-        """將時間尺度轉換為 timedelta"""
-        minutes = 0
-        if timeframe.endswith("m"):
-            minutes = int(timeframe[:-1])
-        elif timeframe.endswith("h"):
-            minutes = int(timeframe[:-1]) * 60
-        elif timeframe.endswith("d"):
-            minutes = int(timeframe[:-1]) * 1440
-        else:
-            minutes = 1
-        return timedelta(minutes=minutes)
-
-    def _calculate_current_bar_start_time(
-        self, current_time: datetime, timeframe: str
-    ) -> datetime:
-        """計算當前時間所在的 K 棒開始時間"""
-        delta = self._get_timeframe_delta(timeframe)
-        interval_seconds = delta.total_seconds()
-        timestamp = current_time.timestamp()
-
-        # 對齊到間隔
-        start_timestamp = (timestamp // interval_seconds) * interval_seconds
-        return datetime.fromtimestamp(start_timestamp)
 
     def _wait_and_execute_buyback(self, state: BuybackState):
         """等待並執行買回機制 (Blocking)
@@ -1061,29 +1038,40 @@ class TradingService:
                                     f"準備買回機制: 出場價 {fill_price}, 預估最高價 {highest_price}"
                                 )
 
-                                # 1. 計算監控 K 棒的時間 (當前 K 棒)
-                                monitoring_bar_time = (
-                                    self._calculate_current_bar_start_time(
-                                        current_time, self.timeframe
-                                    )
+                                # 1. 取得最後一根完整 K 棒的時間作為監控時間
+                                kbars_for_buyback = self.market_service.get_futures_kbars_with_timeframe(
+                                    self.symbol,
+                                    self.sub_symbol,
+                                    self.timeframe,
+                                    days=15,
                                 )
-                                # 2. 計算檢查時間 (K 棒結束前 30 秒)
-                                delta = self._get_timeframe_delta(self.timeframe)
-                                check_time = (
-                                    monitoring_bar_time + delta - timedelta(seconds=30)
-                                )
+                                if (
+                                    kbars_for_buyback
+                                    and len(kbars_for_buyback.kbars) > 0
+                                ):
+                                    monitoring_bar_time = kbars_for_buyback.kbars[
+                                        -1
+                                    ].time
 
-                                # 3. 建立狀態物件 (先存起來，等平倉完成後執行)
-                                buyback_state = BuybackState(
-                                    symbol=self.symbol,
-                                    sub_symbol=self.sub_symbol,
-                                    direction=Action.Buy,  # 假設原持倉是 Buy
-                                    check_time=check_time,
-                                    monitoring_bar_time=monitoring_bar_time,
-                                    exit_price=int(fill_price),
-                                    highest_price=highest_price,
-                                    quantity=self.order_quantity,
-                                )
+                                    # 2. 計算檢查時間 (K 棒結束前 30 秒)
+                                    delta = get_timeframe_delta(self.timeframe)
+                                    check_time = (
+                                        monitoring_bar_time
+                                        + delta
+                                        - timedelta(seconds=30)
+                                    )
+
+                                    # 3. 建立狀態物件 (先存起來，等平倉完成後執行)
+                                    buyback_state = BuybackState(
+                                        symbol=self.symbol,
+                                        sub_symbol=self.sub_symbol,
+                                        direction=Action.Buy,  # 假設原持倉是 Buy
+                                        check_time=check_time,
+                                        monitoring_bar_time=monitoring_bar_time,
+                                        exit_price=int(fill_price),
+                                        highest_price=highest_price,
+                                        quantity=self.order_quantity,
+                                    )
 
                             # 移除本地持倉記錄並記錄平倉資訊
                             self.record_service.remove_position(
@@ -1148,7 +1136,6 @@ class TradingService:
                             self.is_buy_back = False
 
                         calculate_and_wait_to_next_execution(
-                            current_time=current_time,
                             interval_minutes=self.signal_check_interval,
                             verbose=True,
                         )
@@ -1253,7 +1240,7 @@ class TradingService:
                         print("無交易訊號")
                         # 無持倉時，對齊時間等待
                         calculate_and_wait_to_next_execution(
-                            current_time, self.signal_check_interval, True
+                            self.signal_check_interval, True
                         )
 
             except KeyboardInterrupt:

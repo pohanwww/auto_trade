@@ -5,14 +5,14 @@ from datetime import datetime, timedelta
 
 
 def calculate_and_wait_to_next_execution(
-    current_time: datetime, interval_minutes: int, verbose: bool = False
+    interval_minutes: int, verbose: bool = False
 ) -> None:
     """
     計算並等待到下一個執行時間
 
     Args:
-        current_time: 當前時間
         interval_minutes: 間隔分鐘數 (必須能被60整除，如1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30)
+        verbose: 是否顯示詳細訊息
 
     Examples:
         如果當前是 5:08，間隔是 5 分鐘：
@@ -34,6 +34,7 @@ def calculate_and_wait_to_next_execution(
     if 60 % interval_minutes != 0:
         raise ValueError(f"間隔分鐘數 {interval_minutes} 必須能被60整除")
 
+    current_time = datetime.now()
     current_minute = current_time.minute
 
     # 計算到下一個間隔的時間
@@ -76,3 +77,31 @@ def wait_seconds(seconds: int, verbose: bool = False) -> None:
     if verbose:
         print(f"等待 {seconds} 秒...")
     time.sleep(seconds)
+
+
+def get_timeframe_delta(timeframe: str) -> timedelta:
+    """
+    將時間尺度字串轉換為 timedelta 物件
+
+    Args:
+        timeframe: 時間尺度字串 (如 "5m", "30m", "1h", "1d")
+
+    Returns:
+        timedelta: 對應的時間間隔
+
+    Examples:
+        get_timeframe_delta("5m")   # timedelta(minutes=5)
+        get_timeframe_delta("30m")  # timedelta(minutes=30)
+        get_timeframe_delta("1h")   # timedelta(hours=1)
+        get_timeframe_delta("1d")   # timedelta(days=1)
+    """
+    minutes = 0
+    if timeframe.endswith("m"):
+        minutes = int(timeframe[:-1])
+    elif timeframe.endswith("h"):
+        minutes = int(timeframe[:-1]) * 60
+    elif timeframe.endswith("d"):
+        minutes = int(timeframe[:-1]) * 1440
+    else:
+        minutes = 1
+    return timedelta(minutes=minutes)

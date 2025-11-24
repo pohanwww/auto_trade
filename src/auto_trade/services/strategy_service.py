@@ -316,4 +316,3 @@ if __name__ == "__main__":
     print(macd_list[-1].macd_line)
     print(macd_list[-1].signal_line)
     print(macd_list[-1].histogram)
-    breakpoint()

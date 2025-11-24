@@ -820,6 +820,8 @@ if __name__ == "__main__":
         simulation=config.simulation,
     )
     market_service = MarketService(api_client)
+    symbol = "MXF"
+    sub_symbol = "MXF202512"
 
     print("\n" + "=" * 60)
     print("📊 測試 MarketService 核心邏輯")
@@ -830,12 +832,12 @@ if __name__ == "__main__":
 
     # Step 1: 訂閱商品（自動初始化 30 天數據）
     print("\n[1/5] 訂閱商品並初始化緩存...")
-    market_service.subscribe_symbol("MXF", "MXF202511", init_days=30)
+    market_service.subscribe_symbol(symbol, sub_symbol, init_days=30)
     print("✅ 訂閱完成")
 
     # Step 2: 獲取即時報價
     print("\n[2/5] 獲取即時報價...")
-    quote = market_service.get_realtime_quote("MXF", "MXF202511")
+    quote = market_service.get_realtime_quote(symbol, sub_symbol)
     if quote:
         print(f"✅ 當前價格: {quote.price}")
     else:
@@ -846,24 +848,17 @@ if __name__ == "__main__":
     time.sleep(5)
 
     # 再次獲取報價
-    quote = market_service.get_realtime_quote("MXF", "MXF202511")
+    quote = market_service.get_realtime_quote(symbol, sub_symbol)
     if quote:
         print(f"✅ 更新後價格: {quote.price}")
 
     # Step 4: 從緩存獲取不同時間尺度的 K 線（零 API 調用）
     print("\n[4/5] 從緩存獲取不同時間尺度 K 線...")
     kbars_30m = market_service.get_futures_kbars_with_timeframe(
-        "MXF", "MXF202511", "30m", days=15
+        symbol, sub_symbol, "30m", days=15
     )
-    kbars_15m = market_service.get_futures_kbars_with_timeframe(
-        "MXF", "MXF202511", "15m", days=15
-    )
-    kbars_1h = market_service.get_futures_kbars_with_timeframe(
-        "MXF", "MXF202511", "1h", days=15
-    )
+
     print(f"✅ 30分K: {len(kbars_30m.kbars)} 根")
-    print(f"✅ 15分K: {len(kbars_15m.kbars)} 根")
-    print(f"✅ 1小時K: {len(kbars_1h.kbars)} 根")
 
     if len(kbars_30m.kbars) > 0:
         latest = kbars_30m.kbars[-1]
@@ -871,29 +866,6 @@ if __name__ == "__main__":
             f"   最新30分K: {latest.time.strftime('%Y-%m-%d %H:%M')} "
             f"O:{latest.open} H:{latest.high} L:{latest.low} C:{latest.close}"
         )
-
-    # Step 5: 顯示緩存統計
-    print("\n[5/5] 緩存統計資訊...")
-    stats = market_service.get_cache_stats()
-    print(f"✅ 緩存項目: {stats['total_entries']}")
-    print(f"✅ 合約映射: {stats['total_mappings']}")
-
-    for entry in stats["entries"]:
-        print(f"\n📦 {entry['symbol']}/{entry['sub_symbol']}")
-        print(f"   已訂閱: {entry['subscribed']}")
-        print(f"   K棒數量: {entry['kbar_count']}")
-        if entry["latest_kbar_time"]:
-            print(f"   最新K棒: {entry['latest_kbar_time']}")
-        print(f"   上次API同步: {entry['last_api_sync']}")
-        if entry["last_tick_update"]:
-            print(f"   上次Tick更新: {entry['last_tick_update']}")
-
-    print("\n" + "=" * 60)
-    print("💡 流量優化效果:")
-    print("   • 首次訂閱: 30天1分K (~3 MB)")
-    print("   • 後續運行: Tick 實時更新 (零流量)")
-    print("   • 每日校驗: 可選同步1天 (~100 KB)")
-    print("=" * 60)
 
     api_client.logout()
     print("\n✅ 測試完成")

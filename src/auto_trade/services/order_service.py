@@ -277,4 +277,3 @@ if __name__ == "__main__":
 
     # trades = order_service.list_trades()
     print(trades)
-    breakpoint()
