@@ -78,6 +78,7 @@ class Config:
         self.order_quantity: int = trading["order_quantity"]
         self.timeframe: str = trading["timeframe"]
         self.stop_loss_points: int = trading["stop_loss_points"]
+        self.stop_loss_points_rate: float | None = trading.get("stop_loss_points_rate")
         self.start_trailing_stop_points: int = trading["start_trailing_stop_points"]
         self.trailing_stop_points: int = trading["trailing_stop_points"]
         self.take_profit_points: int = trading["take_profit_points"]
@@ -110,6 +111,7 @@ class Config:
             "sub_symbol": self.sub_symbol,
             "timeframe": self.timeframe,
             "stop_loss_points": self.stop_loss_points,
+            "stop_loss_points_rate": self.stop_loss_points_rate,
             "start_trailing_stop_points": self.start_trailing_stop_points,
             "trailing_stop_points": self.trailing_stop_points,
             "take_profit_points": self.take_profit_points,
@@ -119,22 +121,6 @@ class Config:
             "signal_check_interval": self.signal_check_interval,
             "position_check_interval": self.position_check_interval,
         }
-
-    def calculate_trailing_stop_points(self, entry_price: int) -> int:
-        """根據進入價格計算移動停損點數
-        如果設置了 trailing_stop_points_rate，則使用百分比計算；否則使用固定點數
-        """
-        if self.trailing_stop_points_rate is not None:
-            return int(entry_price * self.trailing_stop_points_rate)
-        return int(self.trailing_stop_points)
-
-    def calculate_take_profit_points(self, entry_price: int) -> int:
-        """根據進入價格計算獲利了結點數
-        如果設置了 take_profit_points_rate，則使用百分比計算；否則使用固定點數
-        """
-        if self.take_profit_points_rate is not None:
-            return int(entry_price * self.take_profit_points_rate)
-        return int(self.take_profit_points)
 
     def __repr__(self) -> str:
         """返回配置摘要"""
@@ -148,12 +134,17 @@ class Config:
             if self.take_profit_points_rate is not None
             else f"{self.take_profit_points}點"
         )
+        stop_loss_display = (
+            f"{self.stop_loss_points_rate * 100}%"
+            if self.stop_loss_points_rate is not None
+            else f"{self.stop_loss_points}點"
+        )
         return (
             f"Config(\n"
             f"  環境: {'prod' if self.is_production else 'simulation'}\n"
             f"  策略: {self.strategy_name}\n"
             f"  商品: {self.symbol_name} ({self.sub_symbol})\n"
-            f"  停損: {self.stop_loss_points}點\n"
+            f"  停損: {stop_loss_display}\n"
             f"  移動停損: {trailing_stop_display}\n"
             f"  獲利了結: {take_profit_display}\n"
             f")"

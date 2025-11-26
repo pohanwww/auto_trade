@@ -17,6 +17,7 @@ default:
     order_quantity: 1                 # 下單數量
     timeframe: "30m"                  # K線時間尺度
     stop_loss_points: 50              # 初始停損點數
+    # stop_loss_points_rate: 0.01     # 初始停損百分比（進入價格 × 0.01）
     start_trailing_stop_points: 200   # 啟動移動停損的獲利點數
     trailing_stop_points: 200         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
     trailing_stop_points_rate: 0.0095 # 移動停損百分比（進入價格 × 0.0095）
@@ -34,6 +35,7 @@ simple:
     order_quantity: 2
     timeframe: "30m"
     stop_loss_points: 80
+    # stop_loss_points_rate: 0.01
     start_trailing_stop_points: 200
     trailing_stop_points: 200         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
     take_profit_points: 500          # 獲利了結點數（固定值，如果設置了 take_profit_points_rate 則會被覆蓋）
@@ -49,6 +51,7 @@ complex:
     order_quantity: 2                 # 下單數量
     timeframe: "30m"                  # K線時間尺度
     stop_loss_points: 80              # 初始停損點數
+    # stop_loss_points_rate: 0.01
     start_trailing_stop_points: 200   # 啟動移動停損的獲利點數
     # trailing_stop_points: 250         # 移動停損點數（固定值，如果設置了 trailing_stop_points_rate 則會被覆蓋）
     trailing_stop_points_rate: 0.008 # 移動停損百分比（進入價格 × 0.0095）

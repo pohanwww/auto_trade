@@ -20,6 +20,7 @@ from auto_trade.services.record_service import RecordService
 from auto_trade.services.strategy_service import StrategyService
 from auto_trade.utils import (
     calculate_and_wait_to_next_execution,
+    calculate_points,
     get_timeframe_delta,
     wait_seconds,
 )
@@ -67,6 +68,7 @@ class TradingService:
         self.start_trailing_stop_points: int = 200
         self.order_quantity: int = 1
         self.stop_loss_points: int = 50
+        self.stop_loss_points_rate: float | None = None
         self.take_profit_points: int = 500
         self.take_profit_points_rate: float | None = None
         self.timeframe: str = "30m"  # K線時間尺度
@@ -87,6 +89,7 @@ class TradingService:
         self.start_trailing_stop_points = params.get("start_trailing_stop_points", 200)
         self.order_quantity = params.get("order_quantity", 1)
         self.stop_loss_points = params.get("stop_loss_points", 50)
+        self.stop_loss_points_rate = params.get("stop_loss_points_rate")
         self.take_profit_points = params.get("take_profit_points", 500)
         self.take_profit_points_rate = params.get("take_profit_points_rate")
         self.timeframe = params.get("timeframe", "30m")
@@ -139,10 +142,15 @@ class TradingService:
             if self.take_profit_points_rate is not None
             else f"{self.take_profit_points} 點"
         )
+        stop_loss_display = (
+            f"{self.stop_loss_points_rate * 100}% (進入價格 × {self.stop_loss_points_rate})"
+            if self.stop_loss_points_rate is not None
+            else f"{self.stop_loss_points} 點"
+        )
         print(f"  移動停損: {trailing_stop_display}")
         print(f"  啟動移動停損點數: {self.start_trailing_stop_points}")
         print(f"  下單數量: {self.order_quantity}")
-        print(f"  初始停損點數: {self.stop_loss_points}")
+        print(f"  初始停損: {stop_loss_display}")
         print(f"  獲利了結: {take_profit_display}")
         print(f"  K線時間尺度: {self.timeframe}")
         print(f"  訊號檢測間隔: {self.signal_check_interval} 分鐘")
@@ -178,18 +186,6 @@ class TradingService:
                 latest_trade = trade
 
         return latest_trade
-
-    def _calculate_trailing_stop_points(self, entry_price: int) -> int:
-        """根據進入價格計算移動停損點數"""
-        if self.trailing_stop_points_rate is not None:
-            return int(entry_price * self.trailing_stop_points_rate)
-        return int(self.trailing_stop_points)
-
-    def _calculate_take_profit_points(self, entry_price: int) -> int:
-        """根據進入價格計算獲利了結點數"""
-        if self.take_profit_points_rate is not None:
-            return int(entry_price * self.take_profit_points_rate)
-        return int(self.take_profit_points)
 
     def _calculate_trailing_stop_from_history(
         self, symbol: str, sub_symbol: str, entry_time: datetime, entry_price: int
@@ -227,9 +223,12 @@ class TradingService:
         pre_entry_kbars = [kbar for kbar in kbars_30m.kbars if kbar.time <= entry_time]
         if len(pre_entry_kbars) >= 30:
             min_price = int(min(kbar.low for kbar in pre_entry_kbars[-30:]))
-            initial_stop_loss = min_price - self.stop_loss_points
+            stop_loss_points = calculate_points(
+                self.stop_loss_points, self.stop_loss_points_rate, entry_price
+            )
+            initial_stop_loss = min_price - stop_loss_points
             print(
-                f"初始停損計算: 前30根最低點 {min_price} - {self.stop_loss_points} = {initial_stop_loss}"
+                f"初始停損計算: 前30根最低點 {min_price} - {stop_loss_points} = {initial_stop_loss}"
             )
         else:
             raise ValueError(
@@ -255,7 +254,9 @@ class TradingService:
 
         # 檢查是否應該啟動移動停損 (使用高點檢查)
         if highest_price >= start_trailing_stop_price:
-            trailing_stop_points = self._calculate_trailing_stop_points(entry_price)
+            trailing_stop_points = calculate_points(
+                self.trailing_stop_points, self.trailing_stop_points_rate, entry_price
+            )
             trailing_stop_loss = highest_price - trailing_stop_points
             print(
                 f"✅ 移動停損已啟動，停損價格: {trailing_stop_loss} (點數: {trailing_stop_points})"
@@ -302,10 +303,12 @@ class TradingService:
                     self.take_profit_price = local_record.take_profit_price
                     print(f"獲利了結價格 (還原): {self.take_profit_price}")
                 else:
-                    self.take_profit_price = (
-                        self.entry_price
-                        + self._calculate_take_profit_points(self.entry_price)
+                    take_profit_points = calculate_points(
+                        self.take_profit_points,
+                        self.take_profit_points_rate,
+                        self.entry_price,
                     )
+                    self.take_profit_price = self.entry_price + take_profit_points
                     print(f"獲利了結價格 (計算): {self.take_profit_price}")
 
                 # 使用 entry_time 重新計算移動停損狀態
@@ -355,6 +358,11 @@ class TradingService:
 
             # 初始化 open_time 為 None
             open_time = None
+            fallback_stop_loss_points = calculate_points(
+                self.stop_loss_points,
+                self.stop_loss_points_rate,
+                self.entry_price,
+            )
 
             # 獲取開倉時間 - 從交易記錄中查找
             try:
@@ -394,27 +402,37 @@ class TradingService:
                         )
                     else:
                         # 沒有成交記錄，使用持倉價格
-                        self.stop_loss_price = self.entry_price - 50
+                        self.stop_loss_price = (
+                            self.entry_price - fallback_stop_loss_points
+                        )
                         print(
-                            f"沒有成交記錄，使用持倉價格計算停損: {self.stop_loss_price}"
+                            f"沒有成交記錄，使用持倉價格計算停損: {self.stop_loss_price} "
+                            f"(點數: {fallback_stop_loss_points})"
                         )
                 else:
                     # 沒有找到成交記錄，使用持倉價格
-                    self.stop_loss_price = self.entry_price - 50
+                    self.stop_loss_price = self.entry_price - fallback_stop_loss_points
                     print(
-                        f"沒有找到成交記錄，使用持倉價格計算停損: {self.stop_loss_price}"
+                        f"沒有找到成交記錄，使用持倉價格計算停損: {self.stop_loss_price} "
+                        f"(點數: {fallback_stop_loss_points})"
                     )
 
             except Exception as e:
                 print(f"計算基於開倉時間的停損失敗: {e}")
                 # 備用方案：使用持倉價格
-                self.stop_loss_price = self.entry_price - 50
-                print(f"使用備用方案計算停損: {self.stop_loss_price}")
+                self.stop_loss_price = self.entry_price - fallback_stop_loss_points
+                print(
+                    f"使用備用方案計算停損: {self.stop_loss_price} "
+                    f"(點數: {fallback_stop_loss_points})"
+                )
 
             # 計算獲利了結價格（只支持做多）
-            self.take_profit_price = (
-                self.entry_price + self._calculate_take_profit_points(self.entry_price)
+            take_profit_points = calculate_points(
+                self.take_profit_points,
+                self.take_profit_points_rate,
+                self.entry_price,
             )
+            self.take_profit_price = self.entry_price + take_profit_points
 
             print(f"獲利了結價格: {self.take_profit_price}")
             print(f"移動停損觸發點數: {self.start_trailing_stop_points}")
@@ -556,10 +574,15 @@ class TradingService:
         try:
             # 計算當前盈虧
             current_profit = current_price - self.entry_price
+            stop_loss_threshold = calculate_points(
+                self.stop_loss_points,
+                self.stop_loss_points_rate,
+                self.entry_price,
+            )
 
             # 如果盈利或虧損未達門檻，且不在死叉狀態，不需要檢查
             if (
-                current_profit >= -self.stop_loss_points
+                current_profit >= -stop_loss_threshold
                 and not self.is_in_macd_death_cross
             ):
                 return False
@@ -588,10 +611,10 @@ class TradingService:
             if (
                 self.is_in_macd_death_cross
                 and not self.trailing_stop_active
-                and current_profit < -self.stop_loss_points
+                and current_profit < -stop_loss_threshold
             ):
                 print(
-                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {self.stop_loss_points} 點"
+                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {stop_loss_threshold} 點"
                 )
                 return True
 
@@ -613,10 +636,10 @@ class TradingService:
                 # 檢查是否達到虧損門檻
                 if (
                     not self.trailing_stop_active
-                    and current_profit < -self.stop_loss_points
+                    and current_profit < -stop_loss_threshold
                 ):
                     print(
-                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {self.stop_loss_points} 點"
+                        f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {stop_loss_threshold} 點"
                     )
                     return True
 
@@ -658,8 +681,10 @@ class TradingService:
             if should_activate:
                 self.trailing_stop_active = True
                 # 立即設定移動停損價格
-                trailing_stop_points = self._calculate_trailing_stop_points(
-                    self.entry_price
+                trailing_stop_points = calculate_points(
+                    self.trailing_stop_points,
+                    self.trailing_stop_points_rate,
+                    self.entry_price,
                 )
                 self.stop_loss_price = current_price - trailing_stop_points
                 print(
@@ -675,7 +700,9 @@ class TradingService:
                 return True
             return False
 
-        trailing_stop_points = self._calculate_trailing_stop_points(self.entry_price)
+        trailing_stop_points = calculate_points(
+            self.trailing_stop_points, self.trailing_stop_points_rate, self.entry_price
+        )
         new_stop_price = current_price - trailing_stop_points
         if new_stop_price > self.stop_loss_price:
             self.stop_loss_price = new_stop_price
@@ -770,10 +797,12 @@ class TradingService:
                     self.start_trailing_stop_price = state.highest_price
 
                     # 計算並設定獲利了結價格
-                    self.take_profit_price = (
-                        self.entry_price
-                        + self._calculate_take_profit_points(self.entry_price)
+                    take_profit_points = calculate_points(
+                        self.take_profit_points,
+                        self.take_profit_points_rate,
+                        self.entry_price,
                     )
+                    self.take_profit_price = self.entry_price + take_profit_points
 
                     print(
                         f"買回成功！成交價: {fill_price}, 新停損: {self.stop_loss_price}, 啟動移停價: {self.start_trailing_stop_price}, 獲利了結價格: {self.take_profit_price}, 買回標記: {self.is_buy_back}"
@@ -1027,10 +1056,10 @@ class TradingService:
 
                             if is_trailing_stop_exit and not self.is_buy_back:
                                 # 計算 highest_price (大約等於 fill_price + trailing_stop_points)
-                                trailing_stop_points = (
-                                    self._calculate_trailing_stop_points(
-                                        self.entry_price
-                                    )
+                                trailing_stop_points = calculate_points(
+                                    self.trailing_stop_points,
+                                    self.trailing_stop_points_rate,
+                                    self.entry_price,
                                 )
                                 highest_price = int(fill_price) + trailing_stop_points
 
@@ -1079,14 +1108,23 @@ class TradingService:
                                 fill_price,
                                 exit_reason,
                                 {
-                                    "stop_loss_points": self.stop_loss_points,
+                                    "stop_loss_points": calculate_points(
+                                        self.stop_loss_points,
+                                        self.stop_loss_points_rate,
+                                        self.entry_price,
+                                    ),
                                     "start_trailing_stop_points": self.start_trailing_stop_points,
-                                    "trailing_stop_points": self._calculate_trailing_stop_points(
-                                        self.entry_price
+                                    "trailing_stop_points": calculate_points(
+                                        self.trailing_stop_points,
+                                        self.trailing_stop_points_rate,
+                                        self.entry_price,
                                     ),
-                                    "take_profit_points": self._calculate_take_profit_points(
-                                        self.entry_price
+                                    "take_profit_points": calculate_points(
+                                        self.take_profit_points,
+                                        self.take_profit_points_rate,
+                                        self.entry_price,
                                     ),
+                                    "stop_loss_points_rate": self.stop_loss_points_rate,
                                     "trailing_stop_points_rate": self.trailing_stop_points_rate,
                                     "take_profit_points_rate": self.take_profit_points_rate,
                                 },
@@ -1162,13 +1200,18 @@ class TradingService:
                     kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
                         self.symbol, self.sub_symbol, "30m", days=15
                     )
+                    stop_loss_points_for_signal = calculate_points(
+                        self.stop_loss_points,
+                        self.stop_loss_points_rate,
+                        int(current_price),
+                    )
                     signal = self.strategy_service.generate_signal(
                         StrategyInput(
                             symbol=self.sub_symbol,
                             kbars=kbars_30m,
                             current_price=current_price,
                             timestamp=datetime.now(),
-                            stop_loss_points=self.stop_loss_points,
+                            stop_loss_points=stop_loss_points_for_signal,
                         )
                     )
                     if signal.action == Action.Buy:
@@ -1193,8 +1236,10 @@ class TradingService:
                                 self.entry_price + self.start_trailing_stop_points
                             )
                             # 計算並設定獲利了結價格
-                            take_profit_points = self._calculate_take_profit_points(
-                                self.entry_price
+                            take_profit_points = calculate_points(
+                                self.take_profit_points,
+                                self.take_profit_points_rate,
+                                self.entry_price,
                             )
                             self.take_profit_price = (
                                 self.entry_price + take_profit_points

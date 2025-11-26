@@ -13,6 +13,7 @@ from auto_trade.models.backtest import (
 )
 from auto_trade.services.market_service import MarketService
 from auto_trade.services.strategy_service import StrategyService
+from auto_trade.utils import calculate_points
 
 
 class BacktestService:
@@ -171,8 +172,10 @@ class BacktestService:
                         config.enable_trailing_stop
                         and current_position.trailing_stop_active
                     ):
-                        trailing_stop_points = config.calculate_trailing_stop_points(
-                            current_position.entry_price
+                        trailing_stop_points = calculate_points(
+                            config.trailing_stop_points,
+                            config.trailing_stop_points_rate,
+                            current_position.entry_price,
                         )
                         if current_position.action == Action.Buy:
                             current_position.update_trailing_stop(
@@ -330,7 +333,11 @@ class BacktestService:
         )
 
         # 計算獲利價格
-        take_profit_points = config.calculate_take_profit_points(price)
+        take_profit_points = calculate_points(
+            config.take_profit_points,
+            config.take_profit_points_rate,
+            price,
+        )
         if signal.action == Action.Buy:
             take_profit_price = price + take_profit_points
         else:  # Sell
@@ -485,8 +492,10 @@ class BacktestService:
 
             if profit_points >= config.start_trailing_stop_points:
                 position.trailing_stop_active = True
-                trailing_stop_points = config.calculate_trailing_stop_points(
-                    position.entry_price
+                trailing_stop_points = calculate_points(
+                    config.trailing_stop_points,
+                    config.trailing_stop_points_rate,
+                    position.entry_price,
                 )
                 if position.action == Action.Buy:
                     position.update_trailing_stop(current_high, trailing_stop_points)

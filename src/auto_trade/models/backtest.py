@@ -129,18 +129,6 @@ class BacktestConfig:
     )
     min_acceleration_threshold: float = 0.0  # 死叉加速度門檻（0.0 = 不過濾）
 
-    def calculate_trailing_stop_points(self, entry_price: int) -> int:
-        """根據進入價格計算移動停損點數"""
-        if self.trailing_stop_points_rate is not None:
-            return int(entry_price * self.trailing_stop_points_rate)
-        return int(self.trailing_stop_points)
-
-    def calculate_take_profit_points(self, entry_price: int) -> int:
-        """根據進入價格計算獲利了結點數"""
-        if self.take_profit_points_rate is not None:
-            return int(entry_price * self.take_profit_points_rate)
-        return int(self.take_profit_points)
-
 
 @dataclass
 class BacktestResult:

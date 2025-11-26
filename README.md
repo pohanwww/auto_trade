@@ -219,6 +219,12 @@ crontab crontab.txt
 | `trailing_stop_points` | 移動停損點數 | 200 | 100 | 250 |
 | `take_profit_points` | 獲利了結點數 | 500 | 300 | 800 |
 
+> 📌 固定點數也可改用百分比：
+> - `stop_loss_points_rate`: 例如 `0.01` = 進場價 × 1%，會覆蓋 `stop_loss_points`
+> - `trailing_stop_points_rate`: 移動停損採用百分比
+> - `take_profit_points_rate`: 獲利了結採用百分比
+> 同一項設定只需擇一，寫在 `config/strategy.yaml` 即可生效。
+
 ### 檢測頻率 (monitoring)
 
 | 參數 | 說明 | 預設值 | 激進 | 保守 |
