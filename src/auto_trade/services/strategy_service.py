@@ -202,13 +202,13 @@ class StrategyService:
         if direction == Action.Buy:
             # 多單買回條件：長下影線 (錘頭)
             lower_shadow = min(kbar.open, kbar.close) - kbar.low
-            if lower_shadow > body_length * 2:
+            if lower_shadow >= body_length * 2:
                 return True
 
         elif direction == Action.Sell:
             # 空單買回條件：長上影線 (倒錘頭/射擊之星)
             upper_shadow = kbar.high - max(kbar.open, kbar.close)
-            if upper_shadow > body_length * 2:
+            if upper_shadow >= body_length * 2:
                 return True
 
         return False
