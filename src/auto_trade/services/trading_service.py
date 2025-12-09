@@ -561,9 +561,10 @@ class TradingService:
     def _check_macd_fast_stop(self, current_price: int) -> bool:
         """檢查 MACD 快速停損（只在新 K 棒出現時執行）
 
-        只在以下情況檢查：
-        1. 當前虧損 >= stop_loss_points（需要開始監控）
-        2. 已在死叉狀態（需要追蹤金叉來解除狀態）
+        開倉後持續監測死叉/金叉狀態：
+        1. 每根新 K 棒都檢查死叉/金叉
+        2. 死叉發生時記錄狀態，金叉發生時解除狀態
+        3. 當已在死叉狀態且虧損達到門檻時，觸發快速停損
 
         Args:
             current_price: 當前價格
@@ -579,13 +580,6 @@ class TradingService:
                 self.stop_loss_points_rate,
                 self.entry_price,
             )
-
-            # 如果盈利或虧損未達門檻，且不在死叉狀態，不需要檢查
-            if (
-                current_profit >= -stop_loss_threshold
-                and not self.is_in_macd_death_cross
-            ):
-                return False
 
             # 先獲取 K 線數據來檢查是否有新 K 棒
             kbars_30m = self.market_service.get_futures_kbars_with_timeframe(
@@ -603,8 +597,8 @@ class TradingService:
             if self.last_fast_stop_check_kbar_time == latest_kbar_time:
                 return False
 
-            # 新 K 棒出現，執行快速停損檢查
-            print(f"🆕 檢測到新 K 棒（{latest_kbar_time}），檢查 MACD 快速停損...")
+            # 新 K 棒出現，執行 MACD 死叉監測
+            print(f"🆕 檢測到新 K 棒（{latest_kbar_time}），檢查 MACD 死叉狀態...")
             self.last_fast_stop_check_kbar_time = latest_kbar_time
 
             # 如果已經在死叉狀態且虧損達標，立即觸發快速停損
@@ -648,6 +642,12 @@ class TradingService:
                 if self.is_in_macd_death_cross:
                     self.is_in_macd_death_cross = False
                     print("✅ MACD 金叉，解除死叉狀態")
+                else:
+                    print("✅ MACD 金叉確認")
+            else:
+                # 沒有新的交叉，顯示當前狀態
+                status = "🔴 死叉中" if self.is_in_macd_death_cross else "✅ 正常"
+                print(f"   MACD 狀態: {status}")
 
             return False
 
