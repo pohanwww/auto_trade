@@ -110,3 +110,18 @@ class AccountService:
         except Exception:
             # 如果查詢失敗，返回空列表
             return []
+
+
+if __name__ == "__main__":
+    from auto_trade.core.client import create_api_client
+    from auto_trade.core.config import Config
+
+    config = Config()
+    api_client = create_api_client(
+        config.api_key,
+        config.secret_key,
+        simulation=False,
+    )
+    account_service = AccountService(api_client)
+    positions = account_service.get_future_positions()
+    print(positions)

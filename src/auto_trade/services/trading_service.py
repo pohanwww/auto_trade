@@ -875,7 +875,8 @@ class TradingService:
             )
             if result.status == "Error":
                 print(f"下單失敗: {result.msg}")
-                time.sleep(60)
+                if self.line_bot_service:
+                    self.line_bot_service.send_message(f"⚠️ 下單失敗: {result.msg}")
                 return None
 
             print(f"下單成功: {action.value} {order_type}")
@@ -887,27 +888,49 @@ class TradingService:
                 trades = self.order_service.check_order_status(
                     result.order_id,
                 )
-                if trades and trades[0].status.status in [
-                    "Filled",
-                    "PartFilled",
-                    "Status.Filled",
-                ]:
-                    current_trade = trades[0]
-                    print(f"成交確認: {action.value} {order_type}")
-                    time.sleep(2)  # 等待一下讓系統更新
+                if trades:
+                    status = trades[0].status.status
+                    # 檢查是否成交
+                    if status in ["Filled", "PartFilled", "Status.Filled"]:
+                        current_trade = trades[0]
+                        print(f"成交確認: {action.value} {order_type}")
+                        time.sleep(2)  # 等待一下讓系統更新
 
-                    # 更新持倉狀態
-                    self.current_position = self._get_current_position(sub_symbol)
-                    print(f"持倉狀態已更新: {action.value}")
+                        # 更新持倉狀態
+                        self.current_position = self._get_current_position(sub_symbol)
+                        print(f"持倉狀態已更新: {action.value}")
 
-                    if current_trade.status.deals:
-                        last_deal = current_trade.status.deals[-1]
-                        fill_price = int(last_deal.price)
-                        print(f"成交價格: {fill_price} (成交時間: {last_deal.time})")
+                        if current_trade.status.deals:
+                            last_deal = current_trade.status.deals[-1]
+                            fill_price = int(last_deal.price)
+                            print(
+                                f"成交價格: {fill_price} (成交時間: {last_deal.time})"
+                            )
 
-                        return fill_price
-                    else:
-                        print("警告: 未找到成交價格資訊")
+                            return fill_price
+                        else:
+                            print("警告: 未找到成交價格資訊")
+                            return None
+
+                    # 檢查是否被拒絕/取消
+                    elif status in [
+                        "Cancelled",
+                        "Failed",
+                        "Status.Cancelled",
+                        "Status.Failed",
+                    ]:
+                        # 嘗試獲取詳細錯誤訊息
+                        msg = (
+                            getattr(current_trade.trade.status, "msg", "")
+                            if current_trade.trade
+                            else ""
+                        )
+                        error_msg = (
+                            f"訂單被拒絕: {msg}" if msg else f"訂單被拒絕: {status}"
+                        )
+                        print(f"❌ {error_msg}")
+                        if self.line_bot_service:
+                            self.line_bot_service.send_message(f"⚠️ {error_msg}")
                         return None
 
                 time.sleep(1)
@@ -1279,8 +1302,10 @@ class TradingService:
                                     stop_loss_price=self.stop_loss_price,
                                 )
                         else:
-                            print("開倉失敗, 等待60秒後重試")
-                            time.sleep(60)
+                            print("開倉失敗，等待下一個訊號檢測週期")
+                            calculate_and_wait_to_next_execution(
+                                self.signal_check_interval, True
+                            )
                     else:
                         print("無交易訊號")
                         # 無持倉時，對齊時間等待
