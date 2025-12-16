@@ -452,7 +452,7 @@ class RecordService:
                 worksheet.update_cell(row_number, 18, pnl_formula)
 
                 # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
-                twd_formula = f"=K{row_number}*R{row_number}*50"
+                twd_formula = f"=K{row_number}*R{row_number}*200"
                 worksheet.update_cell(row_number, 19, twd_formula)
 
             # 更新策略參數（T 欄）
