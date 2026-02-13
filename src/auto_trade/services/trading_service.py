@@ -793,8 +793,13 @@ class TradingService:
                     # 設定為買回單，防止再次買回
                     self.is_buy_back = True
 
-                    # 計算並設定啟動移動停損價格 (直接使用之前的高點)
-                    self.start_trailing_stop_price = state.highest_price
+                    # 計算並設定啟動移動停損價格
+                    # 取「進場價 + 啟動點數」和「之前最高價」的較小值
+                    # 這樣可以更早啟動移停保護，同時確保至少有基本獲利空間
+                    self.start_trailing_stop_price = min(
+                        self.entry_price + self.start_trailing_stop_points,
+                        state.highest_price,
+                    )
 
                     # 計算並設定獲利了結價格
                     take_profit_points = calculate_points(
