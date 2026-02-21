@@ -367,6 +367,75 @@ class MarketService:
 
         return self._format_kbar_data(kbars, symbol, "1m")
 
+    def get_futures_kbars_by_date_range(
+        self,
+        symbol: str,
+        sub_symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        timeframe: str = "30m",
+    ) -> KBarList:
+        """取得指定日期範圍的期貨 K 線資料（回測專用）
+
+        直接從 API 取得歷史 1 分鐘 K 線，然後重採樣到指定時間尺度。
+        不需要事先 subscribe_symbol()。
+        支持已到期合約的自動回退。
+
+        Args:
+            symbol: 商品代碼
+            sub_symbol: 子商品代碼
+            start_date: 開始日期
+            end_date: 結束日期
+            timeframe: 時間尺度 (如 "30m", "1h")
+
+        Returns:
+            KBarList: 指定時間尺度的 K 線資料
+        """
+        try:
+            contract = self.api_client.Contracts.Futures[symbol][sub_symbol]
+            if contract is None:
+                print(f"❌ 無法解析合約: {symbol}/{sub_symbol}")
+                return KBarList(kbars=[], symbol=symbol, timeframe=timeframe)
+
+            print(
+                f"📡 從 API 取得歷史數據: {symbol} ({contract.code}) "
+                f"({start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')})"
+            )
+
+            kbars = self.api_client.kbars(
+                contract=contract,
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+            )
+
+            # 檢查是否有數據
+            if kbars is None or not kbars.ts or len(kbars.ts) == 0:
+                print(
+                    f"⚠️  取得 {symbol} 歷史K線資料為空 "
+                    f"({start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')})"
+                )
+                return KBarList(kbars=[], symbol=symbol, timeframe=timeframe)
+
+            # 格式化為 1 分鐘 K 線
+            kbars_1m = self._format_kbar_data(kbars, symbol, "1m")
+            print(f"✅ 取得 {len(kbars_1m.kbars)} 根 1 分鐘 K 線")
+
+            # 如果需要的就是 1m，直接返回
+            if timeframe == "1m":
+                return kbars_1m
+
+            # 重採樣到指定時間尺度
+            resampled = self.resample_kbars(kbars_1m, timeframe)
+            print(f"✅ 重採樣為 {timeframe}: {len(resampled.kbars)} 根 K 線")
+            return resampled
+
+        except Exception as e:
+            print(f"❌ 取得歷史數據失敗: {type(e).__name__}: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return KBarList(kbars=[], symbol=symbol, timeframe=timeframe)
+
     def resample_kbars(self, kbar_list: KBarList, timeframe: str) -> KBarList:
         """
         將1分鐘K線轉換為指定時間尺度的K線
@@ -413,18 +482,19 @@ class MarketService:
         morning_df = df[morning_mask]
 
         if not morning_df.empty:
+            agg_dict = {
+                "open": "first",  # 開盤價取第一個
+                "high": "max",  # 最高價取最大值
+                "low": "min",  # 最低價取最小值
+                "close": "last",  # 收盤價取最後一個
+            }
+            if "volume" in morning_df.columns:
+                agg_dict["volume"] = "sum"  # 成交量加總
             morning_resampled = (
                 morning_df.resample(
                     pandas_freq, origin="08:45", closed="left", label="left"
                 )
-                .agg(
-                    {
-                        "open": "first",  # 開盤價取第一個
-                        "high": "max",  # 最高價取最大值
-                        "low": "min",  # 最低價取最小值
-                        "close": "last",  # 收盤價取最後一個
-                    }
-                )
+                .agg(agg_dict)
                 .dropna()  # 移除空值行
             )
             if not morning_resampled.empty:
@@ -438,18 +508,19 @@ class MarketService:
         # 當天15:00-23:59
         evening_df = df[evening_mask & ~night_mask]
         if not evening_df.empty:
+            agg_dict_eve = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+            }
+            if "volume" in evening_df.columns:
+                agg_dict_eve["volume"] = "sum"
             evening_resampled = (
                 evening_df.resample(
                     pandas_freq, origin="15:00", closed="left", label="left"
                 )
-                .agg(
-                    {
-                        "open": "first",
-                        "high": "max",
-                        "low": "min",
-                        "close": "last",
-                    }
-                )
+                .agg(agg_dict_eve)
                 .dropna()
             )
             if not evening_resampled.empty:
@@ -458,18 +529,19 @@ class MarketService:
         # 隔天00:00-05:00
         night_df = df[night_mask]
         if not night_df.empty:
+            agg_dict_night = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+            }
+            if "volume" in night_df.columns:
+                agg_dict_night["volume"] = "sum"
             night_resampled = (
                 night_df.resample(
                     pandas_freq, origin="00:00", closed="left", label="left"
                 )
-                .agg(
-                    {
-                        "open": "first",
-                        "high": "max",
-                        "low": "min",
-                        "close": "last",
-                    }
-                )
+                .agg(agg_dict_night)
                 .dropna()
             )
             if not night_resampled.empty:
@@ -479,7 +551,7 @@ class MarketService:
             resampled = pd.concat(resampled_dfs).sort_index()
         else:
             # 如果沒有符合時段的資料，返回空的DataFrame
-            resampled = pd.DataFrame(columns=["open", "high", "low", "close"])
+            resampled = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         # 重置索引，將時間戳放回列中，並重命名為 'time'
 
         # resampled.reset_index(inplace=True)
@@ -665,8 +737,17 @@ class MarketService:
         """格式化K線資料"""
         kbar_list = []
 
-        for ts, open, high, low, close in zip(
-            kbars.ts, kbars.Open, kbars.High, kbars.Low, kbars.Close, strict=False
+        # Shioaji API 的 kbars 有 Volume 欄位
+        volumes = getattr(kbars, "Volume", None) or [0] * len(kbars.ts)
+
+        for ts, open, high, low, close, volume in zip(
+            kbars.ts,
+            kbars.Open,
+            kbars.High,
+            kbars.Low,
+            kbars.Close,
+            volumes,
+            strict=False,
         ):
             if (
                 ts is None
@@ -683,6 +764,7 @@ class MarketService:
                     high=float(high),
                     low=float(low),
                     close=float(close),
+                    volume=int(volume) if volume is not None else 0,
                 )
             )
 

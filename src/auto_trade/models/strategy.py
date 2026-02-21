@@ -1,33 +1,31 @@
 """Strategy-related data models."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 
-import pandas as pd
 
-from auto_trade.models.account import Action
+class SignalType(Enum):
+    """信號類型"""
+
+    ENTRY_LONG = "ENTRY_LONG"  # 做多進場
+    ENTRY_SHORT = "ENTRY_SHORT"  # 做空進場
+    EXIT = "EXIT"  # 出場
+    HOLD = "HOLD"  # 持有/觀望
 
 
 @dataclass
-class TradingSignal:
-    """交易訊號模型"""
+class StrategySignal:
+    """策略信號 - BaseStrategy 產出的純信號
 
-    action: Action  # Buy, Sell, Hold
+    只描述「方向和原因」，不包含倉位管理細節（如 stop_loss_price），
+    那是 PositionManager 的責任。
+    """
+
+    signal_type: SignalType
     symbol: str
     price: float
-    quantity: int = 1
-    confidence: float = 1.0  # 訊號信心度 (0-1)
-    reason: str = ""  # 訊號原因
+    confidence: float = 1.0  # 信號信心度 (0-1)
+    reason: str = ""
     timestamp: datetime | None = None
-    stop_loss_price: float | None = None  # 計算好的停損價格
-
-
-@dataclass
-class StrategyInput:
-    """策略輸入資料模型"""
-
-    symbol: str
-    kbars: pd.DataFrame  # OHLCV資料
-    current_price: float  # 即時價格
-    timestamp: datetime
-    stop_loss_points: int = 80  # 停損點數
+    metadata: dict = field(default_factory=dict)  # 策略特定的附加資訊

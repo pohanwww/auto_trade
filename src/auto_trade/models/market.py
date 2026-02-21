@@ -14,6 +14,7 @@ class KBar:
     high: float
     low: float
     close: float
+    volume: int = 0  # 成交量
 
     def to_dict(self) -> dict[str, Any]:
         """轉換為字典格式"""
@@ -23,6 +24,7 @@ class KBar:
             "high": self.high,
             "low": self.low,
             "close": self.close,
+            "volume": self.volume,
         }
 
     @classmethod
@@ -34,6 +36,7 @@ class KBar:
             high=data["high"],
             low=data["low"],
             close=data["close"],
+            volume=data.get("volume", 0),
         )
 
 
@@ -104,6 +107,7 @@ class KBarList:
                     "high": kbar.high,
                     "low": kbar.low,
                     "close": kbar.close,
+                    "volume": kbar.volume,
                 }
             )
 
@@ -134,6 +138,7 @@ class KBarList:
                     high=float(row["high"]),
                     low=float(row["low"]),
                     close=float(row["close"]),
+                    volume=int(row["volume"]) if "volume" in row else 0,
                 )
             )
 

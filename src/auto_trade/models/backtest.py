@@ -191,7 +191,13 @@ class BacktestResult:
                     self.losing_trades += 1
 
                 self.total_pnl_twd += trade.pnl_twd
-                self.total_pnl_points += trade.pnl_points
+
+        # 從 TWD 反算總點數：total_pnl_twd / (每點價值 × 總口數)
+        point_value = get_point_value(self.config.symbol)
+        if point_value > 0 and self.config.order_quantity > 0:
+            self.total_pnl_points = self.total_pnl_twd / (
+                point_value * self.config.order_quantity
+            )
 
         self.win_rate = (
             self.winning_trades / self.total_trades if self.total_trades > 0 else 0.0
@@ -242,27 +248,49 @@ class BacktestResult:
         self.max_drawdown_duration = dd_duration
 
     def _calculate_sharpe_ratio(self):
-        """計算夏普比率"""
+        """計算年化夏普比率（使用每日報酬）
+
+        公式: Sharpe = (mean_daily_return / std_daily_return) × √252
+        - 將 equity_curve 彙總為每日權益
+        - 計算每日報酬率
+        - 年化因子 √252（一年約 252 個交易日）
+        - 無風險利率假設為 0
+        """
         if len(self.equity_curve) < 2:
             return
 
-        returns = []
-        for i in range(1, len(self.equity_curve)):
-            prev_equity = self.equity_curve[i - 1][1]
-            curr_equity = self.equity_curve[i][1]
-            if prev_equity > 0:
-                returns.append((curr_equity - prev_equity) / prev_equity)
+        # 將 equity_curve 彙總為每日收盤權益
+        from collections import OrderedDict
 
-        if not returns:
+        daily_equity: OrderedDict[str, float] = OrderedDict()
+        for timestamp, equity in self.equity_curve:
+            day_key = timestamp.strftime("%Y-%m-%d")
+            daily_equity[day_key] = equity  # 同一天取最後一筆
+
+        daily_values = list(daily_equity.values())
+
+        if len(daily_values) < 2:
             return
 
+        # 計算每日報酬率
+        daily_returns = []
+        for i in range(1, len(daily_values)):
+            prev = daily_values[i - 1]
+            curr = daily_values[i]
+            if prev > 0:
+                daily_returns.append((curr - prev) / prev)
+
+        if not daily_returns:
+            return
+
+        import math
         import statistics
 
-        mean_return = statistics.mean(returns)
-        std_return = statistics.stdev(returns)
+        mean_return = statistics.mean(daily_returns)
+        std_return = statistics.stdev(daily_returns) if len(daily_returns) > 1 else 0.0
 
         if std_return > 0:
-            self.sharpe_ratio = mean_return / std_return
+            self.sharpe_ratio = (mean_return / std_return) * math.sqrt(252)
 
     def _calculate_calmar_ratio(self):
         """計算卡爾瑪比率"""

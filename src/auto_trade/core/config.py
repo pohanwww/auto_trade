@@ -17,7 +17,7 @@ class Config:
 
         配置會從以下來源載入：
         1. 環境變數（.env）- API 金鑰等敏感資訊
-        2. YAML 配置檔（config/strategies.yaml）- 交易策略和商品設定
+        2. YAML 配置檔（config/strategy.yaml）- 交易策略和商品設定
         """
         # === 環境配置（從 .env 讀取）===
         # Shioaji API 設定
@@ -42,6 +42,8 @@ class Config:
 
     def _load_trading_config(self):
         """載入交易策略配置"""
+        from auto_trade.services.position_manager import PositionManagerConfig
+
         # 找到 config 資料夾路徑
         config_dir = Path(__file__).parent.parent.parent.parent / "config"
         strategies_file = config_dir / "strategy.yaml"
@@ -73,21 +75,16 @@ class Config:
         self.sub_symbol: str = symbol_config["contract"]
         self.symbol_name: str = symbol_config.get("name", "")
 
-        # 交易參數（已整合風險管理）
-        trading = strategy_data["trading"]
-        self.order_quantity: int = trading["order_quantity"]
-        self.timeframe: str = trading["timeframe"]
-        self.stop_loss_points: int = trading["stop_loss_points"]
-        self.stop_loss_points_rate: float | None = trading.get("stop_loss_points_rate")
-        self.start_trailing_stop_points: int = trading["start_trailing_stop_points"]
-        self.trailing_stop_points: int = trading["trailing_stop_points"]
-        self.take_profit_points: int = trading["take_profit_points"]
-        # 新增的百分比變數（可選，如果設置則會覆蓋固定點數）
-        self.trailing_stop_points_rate: float | None = trading.get(
-            "trailing_stop_points_rate"
+        # 策略類型（用於選擇策略 class）
+        self.strategy_type: str = strategy_data.get(
+            "strategy_type", "macd_golden_cross"
         )
-        self.take_profit_points_rate: float | None = trading.get(
-            "take_profit_points_rate"
+
+        # 用 from_dict() 一行建立 PositionManagerConfig —— 新增參數時不用改這裡
+        trading = strategy_data["trading"]
+        position = strategy_data.get("position", {})
+        self.pm_config: PositionManagerConfig = PositionManagerConfig.from_dict(
+            trading, position
         )
 
         # 檢測頻率
@@ -104,49 +101,39 @@ class Config:
         """Check if running in production mode."""
         return not self.simulation
 
-    def get_trading_params(self) -> dict:
-        """取得交易參數字典（用於傳遞給 TradingService）"""
-        return {
-            "symbol": self.symbol,
-            "sub_symbol": self.sub_symbol,
-            "timeframe": self.timeframe,
-            "stop_loss_points": self.stop_loss_points,
-            "stop_loss_points_rate": self.stop_loss_points_rate,
-            "start_trailing_stop_points": self.start_trailing_stop_points,
-            "trailing_stop_points": self.trailing_stop_points,
-            "take_profit_points": self.take_profit_points,
-            "trailing_stop_points_rate": self.trailing_stop_points_rate,
-            "take_profit_points_rate": self.take_profit_points_rate,
-            "order_quantity": self.order_quantity,
-            "signal_check_interval": self.signal_check_interval,
-            "position_check_interval": self.position_check_interval,
-        }
-
     def __repr__(self) -> str:
         """返回配置摘要"""
+        pm = self.pm_config
         trailing_stop_display = (
-            f"{self.trailing_stop_points_rate * 100}%"
-            if self.trailing_stop_points_rate is not None
-            else f"{self.trailing_stop_points}點"
+            f"{pm.trailing_stop_points_rate * 100}%"
+            if pm.trailing_stop_points_rate is not None
+            else f"{pm.trailing_stop_points}點"
         )
         take_profit_display = (
-            f"{self.take_profit_points_rate * 100}%"
-            if self.take_profit_points_rate is not None
-            else f"{self.take_profit_points}點"
+            f"{pm.take_profit_points_rate * 100}%"
+            if pm.take_profit_points_rate is not None
+            else f"{pm.take_profit_points}點"
         )
         stop_loss_display = (
-            f"{self.stop_loss_points_rate * 100}%"
-            if self.stop_loss_points_rate is not None
-            else f"{self.stop_loss_points}點"
+            f"{pm.stop_loss_points_rate * 100}%"
+            if pm.stop_loss_points_rate is not None
+            else f"{pm.stop_loss_points}點"
         )
+        fs_display = "啟用" if pm.enable_macd_fast_stop else "禁用"
+        tighten_display = ""
+        if pm.has_tightened_trailing_stop:
+            tighten_display = f"\n  收緊移停: 獲利 {pm.tighten_after_points}點後 → {pm.tightened_trailing_stop_points}點"
         return (
             f"Config(\n"
             f"  環境: {'prod' if self.is_production else 'simulation'}\n"
-            f"  策略: {self.strategy_name}\n"
+            f"  策略: {self.strategy_name} (類型: {self.strategy_type})\n"
             f"  商品: {self.symbol_name} ({self.sub_symbol})\n"
+            f"  倉位: 總量 {pm.total_quantity} = TP×{pm.tp_leg_quantity} + TS×{pm.ts_leg_quantity}\n"
             f"  停損: {stop_loss_display}\n"
             f"  移動停損: {trailing_stop_display}\n"
             f"  獲利了結: {take_profit_display}\n"
+            f"  快速停損 (FS): {fs_display}"
+            f"{tighten_display}\n"
             f")"
         )
 

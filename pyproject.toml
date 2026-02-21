@@ -20,10 +20,12 @@ dependencies = [
     "line-bot-sdk>=3.5.0",
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
+    "matplotlib>=3.8.0",
 ]
 
 [project.scripts]
 main = "auto_trade.main:main"
+backtest = "auto_trade.run_backtest:main"
 
 [build-system]
 requires = ["hatchling"]

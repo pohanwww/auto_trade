@@ -15,6 +15,8 @@ class ExitReason(Enum):
     STOP_LOSS = "SL"  # 停損
     HOLD = "Hold"  # 持倉中
     FAST_STOP = "FS"  # 快速停損
+    TIME_EXIT = "TE"  # 時間強制平倉（日內策略用）
+    MOMENTUM_EXIT = "ME"  # 動能衰竭停利
 
 
 @dataclass

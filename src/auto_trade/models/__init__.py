@@ -16,8 +16,17 @@ from .order import (
     FuturesTrade,
     OrderStatus,
 )
+from .position import (
+    ExitRule,
+    LegType,
+    ManagedPosition,
+    OrderAction,
+    PositionLeg,
+    PositionStatus,
+)
 from .position_record import ExitReason
-from .strategy import StrategyInput, TradingSignal
+from .strategy import SignalType, StrategySignal
+from .trading_unit import TradingUnit
 
 __all__ = [
     # Market models
@@ -41,8 +50,17 @@ __all__ = [
     "OrderStatus",
     "Deal",
     # Strategy models
-    "TradingSignal",
-    "StrategyInput",
+    "StrategySignal",
+    "SignalType",
+    # Position models
+    "ManagedPosition",
+    "PositionLeg",
+    "PositionStatus",
+    "LegType",
+    "ExitRule",
+    "OrderAction",
+    # TradingUnit
+    "TradingUnit",
     # Exit reason
     "ExitReason",
     # Backtest models
