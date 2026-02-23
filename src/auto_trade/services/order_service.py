@@ -49,7 +49,7 @@ class OrderService:
         try:
             # 自動選擇委託類型
             if order_type is None:
-                order_type = "IOC" if price_type == "MKT" else "ROD"
+                order_type = "IOC" if price_type in ("MKT", "MKP") else "ROD"
 
             # 取得期貨合約
             contract = self.api_client.Contracts.Futures[symbol][sub_symbol]

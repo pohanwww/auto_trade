@@ -37,7 +37,7 @@ class LiveExecutor(BaseExecutor):
         try:
             octype = "Cover" if order_action.order_type == "Close" else "Auto"
             print(
-                f"下市價單: {order_action.action.value} {order_action.order_type} x{order_action.quantity}"
+                f"下範圍市價單: {order_action.action.value} {order_action.order_type} x{order_action.quantity}"
             )
 
             result = self.order_service.place_order(
@@ -45,7 +45,7 @@ class LiveExecutor(BaseExecutor):
                 sub_symbol=order_action.sub_symbol,
                 action=order_action.action,
                 quantity=order_action.quantity,
-                price_type="MKT",
+                price_type="MKP",
                 octype=octype,
             )
 
