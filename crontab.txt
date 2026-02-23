@@ -6,16 +6,16 @@
 
 # ── 日盤 ──────────────────────────────────────────────
 
-# 8:40 啟動兩個策略
-40 8 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml strategy_orb.yaml
+# 8:45 啟動兩個策略
+45 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml strategy_orb.yaml
 
-# 13:50 停止所有（ORB 已在 13:30 平倉，MACD 會在夜盤重啟）
-50 13 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
+# 13:45 停止所有（ORB 已在 13:30 平倉，MACD 會在夜盤重啟）
+45 13 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh
 
 # ── 夜盤 ──────────────────────────────────────────────
 
 # 15:00 只啟動 MACD 波段（ORB 日內策略不需要夜盤）
-0 15 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml
+0 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml
 
 # 05:00 停止 MACD
-0 5 * * 2-6 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh strategy_macd.yaml
+0 5 * * 2-6 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_macd.yaml

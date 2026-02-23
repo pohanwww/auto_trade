@@ -6,8 +6,8 @@
 #   ./start_trading.sh strategy_orb.yaml            # 啟動 ORB 日內
 #   ./start_trading.sh strategy_macd.yaml strategy_orb.yaml  # 同時啟動兩個
 
-PROJECT_DIR="/Users/pohanwww/Documents/Code/auto_trade"
-UV_BIN="/Users/pohanwww/.local/bin/uv"
+PROJECT_DIR="/home/pohanwwwgame/auto_trade"
+UV_BIN="/home/pohanwwwgame/.local/bin/uv"
 cd "$PROJECT_DIR"
 
 mkdir -p logs

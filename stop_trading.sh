@@ -6,7 +6,7 @@
 #   ./stop_trading.sh strategy_macd.yaml             # 只停止 MACD
 #   ./stop_trading.sh strategy_orb.yaml              # 只停止 ORB
 
-PROJECT_DIR="/Users/pohanwww/Documents/Code/auto_trade"
+PROJECT_DIR="/home/pohanwwwgame/auto_trade"
 cd "$PROJECT_DIR"
 
 mkdir -p logs
