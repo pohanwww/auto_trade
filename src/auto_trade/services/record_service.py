@@ -265,7 +265,7 @@ class RecordService:
             return 0
 
         try:
-            worksheet = self._get_or_create_worksheet("交易記錄")
+            worksheet = self._get_or_create_worksheet(self.strategy_name)
 
             # 取得現有資料
             all_values = worksheet.get_all_values()
@@ -369,7 +369,7 @@ class RecordService:
             return
 
         try:
-            worksheet = self._get_or_create_worksheet("交易記錄")
+            worksheet = self._get_or_create_worksheet(self.strategy_name)
 
             # 更新出場價格（P 欄）
             worksheet.update_cell(row_number, 16, exit_price)
@@ -401,11 +401,11 @@ class RecordService:
         except Exception as e:
             print(f"❌ 更新平倉記錄失敗: {e}")
 
-    def get_latest_row_data(self, worksheet_title: str = "交易記錄") -> dict | None:
+    def get_latest_row_data(self, worksheet_title: str | None = None) -> dict | None:
         """獲取 Google Sheet 最新行數據
 
         Args:
-            worksheet_title: 工作表名稱，預設為 "交易記錄"
+            worksheet_title: 工作表名稱，預設為策略名稱
 
         Returns:
             dict: 最新行的數據字典，如果沒有數據則返回 None
@@ -414,17 +414,19 @@ class RecordService:
             print("⚠️ Google Sheets 服務未啟用")
             return None
 
+        title = worksheet_title or self.strategy_name
+
         try:
             import gspread
 
             # 取得工作表
-            worksheet = self.spreadsheet.worksheet(worksheet_title)
+            worksheet = self.spreadsheet.worksheet(title)
 
             # 獲取所有數據
             all_values = worksheet.get_all_values()
 
             if not all_values:
-                print(f"📊 工作表 '{worksheet_title}' 沒有數據")
+                print(f"📊 工作表 '{title}' 沒有數據")
                 return None
 
             # 獲取標題行（第一行）

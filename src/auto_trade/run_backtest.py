@@ -132,6 +132,8 @@ def build_trading_units_from_config(
             "sweep_tolerance_pct",
             # ORB: RVOL
             "rvol_lookback",
+            # MACD 策略
+            "macd_threshold",
             # Scalp 策略
             "session_start_time",
             "entry_mode",
