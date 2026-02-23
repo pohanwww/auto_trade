@@ -97,8 +97,19 @@ class MarketService:
         _ = exchange  # 參數由 API 提供但未使用
         contract_code = tick.code
 
-        # 檢查緩存是否存在
-        symbol, sub_symbol = self._contract_mapping.get(contract_code)
+        mapping = self._contract_mapping.get(contract_code)
+        if mapping is None:
+            # 滾動合約（如 MXFR1）訂閱後，tick 會以實際合約代碼送達（如 MXFG6）
+            # 透過商品前綴自動匹配並註冊
+            for _, (sym, sub_sym) in self._contract_mapping.items():
+                if contract_code.startswith(sym):
+                    self._contract_mapping[contract_code] = (sym, sub_sym)
+                    mapping = (sym, sub_sym)
+                    print(f"📌 自動映射合約: {contract_code} → {sym}/{sub_sym}")
+                    break
+            if mapping is None:
+                return
+        symbol, sub_symbol = mapping
         cache_key = (symbol, sub_symbol)
         if cache_key not in self._symbol_cache:
             return
@@ -267,7 +278,10 @@ class MarketService:
             print(f"📡 訂閱合約: {symbol}/{sub_symbol} ({contract_code})")
 
             # 建立合約代碼映射（用於 tick callback）
+            # 同時註冊 sub_symbol 和實際合約代碼（MXFR1 → MXFG6 等滾動合約場景）
             self._contract_mapping[contract_code] = (symbol, sub_symbol)
+            if contract_code != sub_symbol:
+                self._contract_mapping[sub_symbol] = (symbol, sub_symbol)
 
             # 訂閱合約
             self.api_client.quote.subscribe(

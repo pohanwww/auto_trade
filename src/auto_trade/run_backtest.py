@@ -127,6 +127,9 @@ def build_trading_units_from_config(
             # ORB: EMA 方向過濾
             "use_ema_direction",
             "ema_direction_period",
+            # ORB: Sweep-then-Break
+            "use_sweep_entry",
+            "sweep_tolerance_pct",
             # ORB: RVOL
             "rvol_lookback",
             # Scalp 策略
@@ -210,6 +213,8 @@ def build_trading_units_from_config(
         if strategy_kwargs.get("use_ema_direction"):
             ema_p = strategy_kwargs.get("ema_direction_period", 200)
             filter_tags.append(f"EMA{ema_p}Dir")
+        if strategy_kwargs.get("use_sweep_entry"):
+            filter_tags.append("Sweep")
         if strategy_kwargs.get("fixed_tp_points", 0) > 0:
             filter_tags.append(f"FixTP>={strategy_kwargs['fixed_tp_points']}")
         if strategy_kwargs.get("max_entries_per_day", 1) > 1:

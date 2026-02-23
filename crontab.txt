@@ -1,15 +1,21 @@
 # 期貨交易程式 Cron Job 設定
 # 市場時間: 8:45~13:45 (日盤), 15:00~隔天5:00 (夜盤)
+#
+# MACD 波段策略：日盤 + 夜盤都跑
+# ORB 日內策略：僅日盤（13:30 強制平倉）
 
-# 日盤開始時啟動 (週一到週五 8:45)
-45 8 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh
+# ── 日盤 ──────────────────────────────────────────────
 
-# 日盤結束時停止程式 (週一到週五 13:45)
-45 13 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
+# 8:40 啟動兩個策略
+40 8 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml strategy_orb.yaml
 
-# 夜盤開始前15分鐘啟動 (週一到週五 15:00)
-0 15 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh
+# 13:50 停止所有（ORB 已在 13:30 平倉，MACD 會在夜盤重啟）
+50 13 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
 
-# 夜盤結束時停止程式 (週二到週六 5:00)
-0 5 * * 2-6 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh
+# ── 夜盤 ──────────────────────────────────────────────
 
+# 15:00 只啟動 MACD 波段（ORB 日內策略不需要夜盤）
+0 15 * * 1-5 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml
+
+# 05:00 停止 MACD
+0 5 * * 2-6 cd /Users/pohanwww/Documents/Code/auto_trade && /bin/bash stop_trading.sh strategy_macd.yaml

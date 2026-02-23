@@ -28,4 +28,4 @@ credentials/
 *.pem
 
 # Personal configuration (use .example.yaml as template)
-config/strategy.yaml
+config/strategy*.yaml

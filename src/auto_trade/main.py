@@ -1,5 +1,17 @@
-"""主程式入口 - 使用 TradingEngine 新架構."""
+"""主程式入口 - 使用 TradingEngine 新架構.
 
+用法：
+    # 使用預設 strategy.yaml
+    uv run main
+
+    # 指定配置檔（跑 MACD 波段策略）
+    uv run main --config strategy_macd.yaml
+
+    # 指定配置檔（跑 ORB 日內策略）
+    uv run main --config strategy_orb.yaml
+"""
+
+import argparse
 import os
 
 from auto_trade.core.client import create_api_client
@@ -12,13 +24,22 @@ from auto_trade.services.indicator_service import IndicatorService
 from auto_trade.services.line_bot_service import LineBotService
 from auto_trade.services.market_service import MarketService
 from auto_trade.services.order_service import OrderService
+from auto_trade.services.record_service import RecordService
 from auto_trade.strategies import create_strategy
 
 
 def main():
     """主程式入口"""
+    parser = argparse.ArgumentParser(description="自動交易系統")
+    parser.add_argument(
+        "--config", "-c",
+        default=None,
+        help="YAML 配置檔名，如 strategy_macd.yaml（預設: strategy.yaml）",
+    )
+    args = parser.parse_args()
+
     # 載入統一配置
-    config = Config()
+    config = Config(config_file=args.config)
     print(config)
 
     # 建立 API 客戶端
@@ -50,21 +71,12 @@ def main():
         )
         print("✅ Line Bot 服務已啟用")
 
-    # 根據 strategy_type 建立策略（含策略層級參數）
-    strategy_kwargs = {}
-    vol_threshold = config.trading_config.get("volume_percentile_threshold", 0)
-    if vol_threshold > 0:
-        strategy_kwargs["volume_percentile_threshold"] = vol_threshold
-    vol_lookback = config.trading_config.get("volume_percentile_lookback")
-    if vol_lookback:
-        strategy_kwargs["volume_percentile_lookback"] = vol_lookback
-
+    # 根據 strategy_type 建立策略
+    # 直接傳入 trading_config 的全部參數，策略用 **kwargs 忽略不認識的 key
     strategy = create_strategy(
-        config.strategy_type, indicator_service, **strategy_kwargs
+        config.strategy_type, indicator_service, **config.trading_config
     )
     print(f"📋 策略類型: {config.strategy_type} → {strategy.name}")
-    if vol_threshold > 0:
-        print(f"📊 量能過濾: 百分位 >= {vol_threshold:.0%}")
 
     # 建立 TradingUnit（pm_config 直接從 Config 取得，不用手動建立）
     trading_unit = TradingUnit(
@@ -76,6 +88,9 @@ def main():
     # 建立 Executor
     executor = LiveExecutor(order_service)
 
+    # 建立 RecordService（用策略名稱區分檔案和 Google Sheets 標記）
+    record_service = RecordService(strategy_name=config.strategy_name)
+
     # 建立 TradingEngine
     engine = TradingEngine(
         trading_unit=trading_unit,
@@ -83,6 +98,7 @@ def main():
         executor=executor,
         indicator_service=indicator_service,
         account_service=account_service,
+        record_service=record_service,
         line_bot_service=line_bot_service,
     )
 

@@ -2,26 +2,33 @@
 
 日內策略，只在日盤交易（08:45 ~ 13:45）。
 
-=== 雙模式進場（State Machine）===
+=== 三模式進場（State Machine）===
 1. Strong Breakout（強突破）：RVOL 高 + K 棒力道強 → 立即進場
 2. Pullback Retest（回踩確認）：突破後等回踩 OR 關鍵位 → 確認站穩再進場
+3. Sweep-then-Break（掃底突破）：先觸及反向關鍵支撐/壓力，再突破 → 立即進場
 
 === 狀態機（每方向獨立）===
   IDLE → 等待突破
   IDLE → STRONG_ENTRY（強突破 → 立即進場信號）
+  IDLE → SWEEP_ENTRY（掃底後突破 → 立即進場信號）
   IDLE → WAITING_PULLBACK（弱突破 → 等回踩）
   WAITING_PULLBACK → TESTING_LEVEL（價格回到 OR 關鍵位附近）
   WAITING_PULLBACK → FAILED（超時 / 跌破 OR_Mid）
   TESTING_LEVEL → RETEST_ENTRY（反彈確認 → 進場信號）
   TESTING_LEVEL → FAILED（跌破 OR_Mid）
 
+=== Sweep-then-Break 邏輯 ===
+  做多：價格先下探 OR_Low / 昨收缺口 → 之後突破 OR_High → 進場
+  做空：價格先上攻 OR_High / 昨收缺口 → 之後跌破 OR_Low → 進場
+
 === 基本流程 ===
 1. 開盤區間計算：取開盤後前 N 根 K 棒
 2. ADX 環境檢查（可選）
-3. 偵測突破 → 分類為強突破或弱突破
-4. 強突破：立即進場
-5. 弱突破：等回踩 → 確認站穩 → 進場
-6. 出場由 PositionManager 管理（OR_Range based）
+3. 追蹤掃底事件（每根 K 棒更新）
+4. 偵測突破 → 分類為強突破、掃底突破、或弱突破
+5. 強突破 / 掃底突破：立即進場
+6. 弱突破：等回踩 → 確認站穩 → 進場
+7. 出場由 PositionManager 管理（OR_Range based）
 """
 
 from datetime import datetime, time, timedelta
@@ -130,6 +137,9 @@ class ORBStrategy(BaseStrategy):
         # --- EMA 方向過濾 ---
         use_ema_direction: bool = False,
         ema_direction_period: int = 200,
+        # --- Sweep-then-Break（掃底突破）---
+        use_sweep_entry: bool = False,
+        sweep_tolerance_pct: float = 0.1,
         # --- RVOL 計算 ---
         rvol_lookback: int = 20,
         **kwargs,
@@ -192,6 +202,10 @@ class ORBStrategy(BaseStrategy):
         self.use_ema_direction = use_ema_direction
         self.ema_direction_period = ema_direction_period
 
+        # Sweep-then-Break
+        self.use_sweep_entry = use_sweep_entry
+        self.sweep_tolerance_pct = sweep_tolerance_pct
+
         self.rvol_lookback = rvol_lookback
 
         # === 每日狀態（每天重置）===
@@ -215,6 +229,12 @@ class ORBStrategy(BaseStrategy):
         # 前日日夜盤 OHLC
         self._prev_day: SessionOHLC | None = None
         self._prev_night: SessionOHLC | None = None
+
+        # Sweep-then-Break 追蹤
+        self._swept_low: bool = False
+        self._swept_high: bool = False
+        self._swept_low_level: str | None = None
+        self._swept_high_level: str | None = None
 
         # 每日快取
         self._daily_adx: float | None = None
@@ -243,6 +263,12 @@ class ORBStrategy(BaseStrategy):
         self._short_bars_since_breakout = 0
         self._long_breakout_price = None
         self._short_breakout_price = None
+
+        # Sweep 追蹤
+        self._swept_low = False
+        self._swept_high = False
+        self._swept_low_level = None
+        self._swept_high_level = None
 
         # 前日資料
         self._prev_day = None
@@ -529,6 +555,62 @@ class ORBStrategy(BaseStrategy):
             )
 
     # ──────────────────────────────────────────────
+    # Sweep-then-Break 追蹤
+    # ──────────────────────────────────────────────
+
+    def _update_sweep_tracking(self, kbar) -> None:
+        """追蹤掃底/掃頂事件
+
+        做多掃底：bar_low 觸及關鍵支撐（OR_Low、昨收缺口）
+        做空掃頂：bar_high 觸及關鍵壓力（OR_High、昨收缺口）
+        """
+        if not self.use_sweep_entry or self._or_low is None:
+            return
+
+        bar_low = int(kbar.low)
+        bar_high = int(kbar.high)
+        or_range = self._or_range or 0
+        tol = int(self.sweep_tolerance_pct * or_range)
+
+        if not self._swept_low:
+            sweep_targets: list[tuple[str, int]] = [
+                ("OR_Low", self._or_low),
+            ]
+            if self._prev_day and self._prev_day.close < self._or_low:
+                sweep_targets.append(("PrevDayClose", self._prev_day.close))
+            if self._prev_night and self._prev_night.close < self._or_low:
+                sweep_targets.append(("PrevNightClose", self._prev_night.close))
+
+            for name, level in sweep_targets:
+                if bar_low <= level + tol:
+                    self._swept_low = True
+                    self._swept_low_level = name
+                    print(
+                        f"  📊 Sweep low detected: "
+                        f"bar_low({bar_low}) touched {name}({level})"
+                    )
+                    break
+
+        if not self._swept_high:
+            sweep_targets = [
+                ("OR_High", self._or_high),
+            ]
+            if self._prev_day and self._prev_day.close > self._or_high:
+                sweep_targets.append(("PrevDayClose", self._prev_day.close))
+            if self._prev_night and self._prev_night.close > self._or_high:
+                sweep_targets.append(("PrevNightClose", self._prev_night.close))
+
+            for name, level in sweep_targets:
+                if bar_high >= level - tol:
+                    self._swept_high = True
+                    self._swept_high_level = name
+                    print(
+                        f"  📊 Sweep high detected: "
+                        f"bar_high({bar_high}) touched {name}({level})"
+                    )
+                    break
+
+    # ──────────────────────────────────────────────
     # 突破分類 & 狀態機
     # ──────────────────────────────────────────────
 
@@ -608,6 +690,31 @@ class ORBStrategy(BaseStrategy):
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
                             is_long=True, entry_type="strong"
+                        ),
+                    )
+                elif self._swept_low:
+                    # 掃底後突破 → 通過 filters 後立即進場
+                    reject = self._run_filters(kbar_list, close, is_long=True)
+                    if reject:
+                        return None
+                    self._long_trades_today += 1
+                    strength = self.indicator_service.candle_strength(
+                        latest_kbar
+                    )
+                    return StrategySignal(
+                        signal_type=SignalType.ENTRY_LONG,
+                        symbol=kbar_list.symbol,
+                        price=float(close),
+                        confidence=0.82,
+                        reason=(
+                            f"ORB Sweep Long: close({close}) > "
+                            f"OR_High({or_high}), "
+                            f"swept {self._swept_low_level}, "
+                            f"CS={strength:.2f}"
+                        ),
+                        timestamp=bar_time,
+                        metadata=self._build_entry_metadata(
+                            is_long=True, entry_type="sweep"
                         ),
                     )
                 else:
@@ -752,6 +859,33 @@ class ORBStrategy(BaseStrategy):
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
                             is_long=False, entry_type="strong"
+                        ),
+                    )
+                elif self._swept_high:
+                    # 掃頂後跌破 → 通過 filters 後立即進場
+                    reject = self._run_filters(
+                        kbar_list, close, is_long=False
+                    )
+                    if reject:
+                        return None
+                    self._short_trades_today += 1
+                    strength = self.indicator_service.candle_strength(
+                        latest_kbar
+                    )
+                    return StrategySignal(
+                        signal_type=SignalType.ENTRY_SHORT,
+                        symbol=kbar_list.symbol,
+                        price=float(close),
+                        confidence=0.82,
+                        reason=(
+                            f"ORB Sweep Short: close({close}) < "
+                            f"OR_Low({or_low}), "
+                            f"swept {self._swept_high_level}, "
+                            f"CS={1.0 - strength:.2f}"
+                        ),
+                        timestamp=bar_time,
+                        metadata=self._build_entry_metadata(
+                            is_long=False, entry_type="sweep"
                         ),
                     )
                 else:
@@ -928,7 +1062,10 @@ class ORBStrategy(BaseStrategy):
 
         close = int(latest_kbar.close)
 
-        # 7. 更新狀態機（多/空獨立）
+        # 7. 追蹤掃底/掃頂事件（每根 K 棒都更新，不受交易窗口限制）
+        self._update_sweep_tracking(latest_kbar)
+
+        # 8. 更新狀態機（多/空獨立）
         long_signal = None
         short_signal = None
 
@@ -952,6 +1089,10 @@ class ORBStrategy(BaseStrategy):
         # 狀態摘要
         status_parts = [f"close={close}"]
         status_parts.append(f"OR=[{self._or_low}, {self._or_high}]")
+        if self._swept_low:
+            status_parts.append(f"SweptLow({self._swept_low_level})")
+        if self._swept_high:
+            status_parts.append(f"SweptHigh({self._swept_high_level})")
         if self._long_state != BreakoutState.IDLE:
             status_parts.append(
                 f"L:{self._long_state.value}"
@@ -1203,6 +1344,8 @@ class ORBStrategy(BaseStrategy):
             )
         if self.fixed_tp_points > 0:
             parts.append(f"FixTP>={self.fixed_tp_points}")
+        if self.use_sweep_entry:
+            parts.append(f"Sweep(tol={self.sweep_tolerance_pct:.0%})")
         if self.max_entries_per_day > 1:
             parts.append(f"max{self.max_entries_per_day}x/day")
         return f"ORB({', '.join(parts)})"

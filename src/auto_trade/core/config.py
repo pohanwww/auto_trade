@@ -12,12 +12,16 @@ load_dotenv(override=True)
 class Config:
     """統一配置管理類別 - 整合環境變數和 YAML 配置"""
 
-    def __init__(self):
+    def __init__(self, config_file: str | None = None):
         """初始化配置
 
         配置會從以下來源載入：
         1. 環境變數（.env）- API 金鑰等敏感資訊
-        2. YAML 配置檔（config/strategy.yaml）- 交易策略和商品設定
+        2. YAML 配置檔 - 交易策略和商品設定
+
+        Args:
+            config_file: YAML 配置檔名（如 "strategy_macd.yaml"）。
+                         若未指定，預設使用 "strategy.yaml"。
         """
         # === 環境配置（從 .env 讀取）===
         # Shioaji API 設定
@@ -38,6 +42,7 @@ class Config:
         )
 
         # === 交易策略配置（從 YAML 讀取）===
+        self._config_file = config_file or "strategy.yaml"
         self._load_trading_config()
 
     def _load_trading_config(self):
@@ -46,7 +51,7 @@ class Config:
 
         # 找到 config 資料夾路徑
         config_dir = Path(__file__).parent.parent.parent.parent / "config"
-        strategies_file = config_dir / "strategy.yaml"
+        strategies_file = config_dir / self._config_file
 
         # 載入完整配置
         with open(strategies_file, encoding="utf-8") as f:
@@ -80,9 +85,12 @@ class Config:
             "strategy_type", "macd_golden_cross"
         )
 
-        # 用 from_dict() 一行建立 PositionManagerConfig —— 新增參數時不用改這裡
+        # 保留原始 trading dict，供策略建立時使用
         trading = strategy_data["trading"]
         position = strategy_data.get("position", {})
+        self.trading_config: dict = trading
+
+        # 用 from_dict() 一行建立 PositionManagerConfig —— 新增參數時不用改這裡
         self.pm_config: PositionManagerConfig = PositionManagerConfig.from_dict(
             trading, position
         )

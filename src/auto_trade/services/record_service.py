@@ -6,7 +6,7 @@ from pathlib import Path
 
 from auto_trade.core.config import Config
 from auto_trade.models import ExitReason
-from auto_trade.models.position_record import BuybackState, PositionRecord
+from auto_trade.models.position_record import PositionRecord
 
 
 class RecordService:
@@ -14,17 +14,19 @@ class RecordService:
 
     def __init__(
         self,
-        record_file: str = "data/position_records.json",
-        buyback_file: str = "data/buyback_state.json",
+        strategy_name: str = "default",
+        record_file: str | None = None,
     ):
         """初始化
 
         Args:
-            record_file: 本地記錄文件路徑（相對於項目根目錄）
-            buyback_file: 買回狀態文件路徑（相對於項目根目錄）
+            strategy_name: 策略名稱，用於區分不同策略的記錄檔和 Google Sheets 標記
+            record_file: 本地記錄文件路徑（若未指定則依策略名稱自動生成）
         """
-        self.record_file = Path(record_file)
-        self.buyback_file = Path(buyback_file)
+        self.strategy_name = strategy_name
+        self.record_file = Path(
+            record_file or f"data/state/{strategy_name}/position.json"
+        )
         self._ensure_file_exists()
 
         # 從 Config 讀取 Google Sheets 設定
@@ -61,17 +63,11 @@ class RecordService:
                 self.sheets_service = None
 
     def _ensure_file_exists(self):
-        """確保記錄文件和目錄存在"""
-        # 創建目錄
+        """確保記錄文件和目錄存在（自動建立）"""
         self.record_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # 創建持倉記錄文件
         if not self.record_file.exists():
             self.record_file.write_text("{}")
-
-        # 創建買回狀態文件
-        if not self.buyback_file.exists():
-            self.buyback_file.write_text("{}")
 
     # ==================== 本地持倉記錄 ====================
 
@@ -164,7 +160,6 @@ class RecordService:
                     exit_price=exit_price,
                     exit_reason=exit_reason,
                     strategy_params=strategy_params,
-                    is_buy_back=position_record.is_buy_back,
                 )
 
                 # 刪除本地記錄
@@ -234,68 +229,6 @@ class RecordService:
 
         except Exception as e:
             print(f"清理持倉記錄失敗: {e}")
-
-    # ==================== 買回機制狀態記錄 ====================
-
-    def save_buyback_state(self, state: BuybackState):
-        """保存買回機制狀態
-
-        Args:
-            state: 買回機制狀態
-        """
-        try:
-            records = self._load_records(self.buyback_file)
-
-            # 使用 sub_symbol 作為 key
-            records[state.sub_symbol] = state.to_dict()
-
-            self.buyback_file.write_text(
-                json.dumps(records, indent=2, ensure_ascii=False)
-            )
-            print(f"買回狀態已保存: {state.sub_symbol}")
-
-        except Exception as e:
-            print(f"保存買回狀態失敗: {e}")
-
-    def get_buyback_state(self, sub_symbol: str) -> BuybackState | None:
-        """獲取買回機制狀態
-
-        Args:
-            sub_symbol: 子商品代碼
-
-        Returns:
-            買回機制狀態，如果不存在則返回 None
-        """
-        try:
-            records = self._load_records(self.buyback_file)
-
-            if sub_symbol in records:
-                return BuybackState.from_dict(records[sub_symbol])
-
-            return None
-
-        except Exception as e:
-            print(f"讀取買回狀態失敗: {e}")
-            return None
-
-    def remove_buyback_state(self, sub_symbol: str):
-        """移除買回機制狀態
-
-        Args:
-            sub_symbol: 子商品代碼
-        """
-        try:
-            records = self._load_records(self.buyback_file)
-
-            if sub_symbol in records:
-                del records[sub_symbol]
-                self.buyback_file.write_text(
-                    json.dumps(records, indent=2, ensure_ascii=False)
-                )
-                print(f"買回狀態已移除: {sub_symbol}")
-
-        except Exception as e:
-            print(f"移除買回狀態失敗: {e}")
 
     def _load_records(self, file_path: Path) -> dict:
         """載入記錄
@@ -409,8 +342,8 @@ class RecordService:
             # 盈虧公式（18-19 欄）- 開倉時為空
             pnl_formulas = ["", ""]
 
-            # 策略參數（20 欄）- 開倉時為空
-            strategy_info = ""
+            # 策略名稱（20 欄）- 開倉時先寫入策略名稱，平倉時會追加參數
+            strategy_info = self.strategy_name
 
             # 合併：統計公式 + 資料 + 盈虧公式 + 策略
             row = formulas + data + pnl_formulas + [strategy_info]
@@ -430,7 +363,6 @@ class RecordService:
         exit_price: float,
         exit_reason: ExitReason,
         strategy_params: dict | None = None,
-        is_buy_back: bool = False,
     ):
         """更新 Google Sheets 中的交易記錄為平倉狀態"""
         if not self.sheets_service or not row_number:
@@ -447,23 +379,20 @@ class RecordService:
 
             # 更新盈虧公式（R 欄和 S 欄）
             if exit_reason != ExitReason.HOLD:
-                # R 欄：盈虧（點數）= 出場價格 - 進場價格（做多）
                 pnl_formula = f"=P{row_number}-N{row_number}"
                 worksheet.update_cell(row_number, 18, pnl_formula)
 
-                # S 欄：盈虧（新台幣）= 數量 * 盈虧點數 * 50
                 twd_formula = f"=K{row_number}*R{row_number}*200"
                 worksheet.update_cell(row_number, 19, twd_formula)
 
-            # 更新策略參數（T 欄）
-            if is_buy_back:
-                worksheet.update_cell(row_number, 20, "Buy Back")
-            elif strategy_params:
+            # 更新策略參數（T 欄）- 追加出場參數到策略名稱後
+            if strategy_params:
                 strategy_info = (
-                    f"初始停損:{strategy_params.get('stop_loss_points', 0)} \n"
-                    f"啟動移停:{strategy_params.get('start_trailing_stop_points', 0)} \n"
-                    f"移停點數:{strategy_params.get('trailing_stop_points', 0)} \n"
-                    f"獲利點數:{strategy_params.get('take_profit_points', 0)} \n"
+                    f"{self.strategy_name} | "
+                    f"SL:{strategy_params.get('stop_loss_points', 0)} "
+                    f"TS啟動:{strategy_params.get('start_trailing_stop_points', 0)} "
+                    f"TS:{strategy_params.get('trailing_stop_points', 0)} "
+                    f"TP:{strategy_params.get('take_profit_points', 0)}"
                 )
                 worksheet.update_cell(row_number, 20, strategy_info)
 

@@ -1,21 +1,36 @@
 #!/bin/bash
 # 期貨交易程式啟動腳本
+#
+# 用法：
+#   ./start_trading.sh strategy_macd.yaml          # 啟動 MACD 波段
+#   ./start_trading.sh strategy_orb.yaml            # 啟動 ORB 日內
+#   ./start_trading.sh strategy_macd.yaml strategy_orb.yaml  # 同時啟動兩個
 
-# 切換到專案目錄
-cd /Users/pohanwww/Documents/Code/auto_trade
+PROJECT_DIR="/Users/pohanwww/Documents/Code/auto_trade"
+UV_BIN="/Users/pohanwww/.local/bin/uv"
+cd "$PROJECT_DIR"
 
-# 建立日誌目錄
 mkdir -p logs
 
-# 記錄 cron job 被觸發
-echo "$(date): start_trading.sh 被執行" >> logs/trading_$(date +%Y%m%d).log
-
-# 檢查是否已有程式在運行
-if pgrep -f "uv run main" > /dev/null; then
-    echo "$(date): 交易程式已在運行中，跳過啟動" >> logs/trading_$(date +%Y%m%d).log
-    exit 0
+if [ $# -eq 0 ]; then
+    echo "用法: $0 <config1.yaml> [config2.yaml ...]"
+    echo "範例: $0 strategy_macd.yaml strategy_orb.yaml"
+    exit 1
 fi
 
-# 啟動交易程式 (uv run 會自動處理虛擬環境)
-echo "$(date): 啟動交易程式" >> logs/trading_$(date +%Y%m%d).log
-PYTHONUNBUFFERED=1 /Users/pohanwww/.local/bin/uv run main >> logs/trading_$(date +%Y%m%d).log 2>&1 &
+DATE_TAG=$(date +%Y%m%d)
+
+for CONFIG in "$@"; do
+    STRATEGY_TAG="${CONFIG%.yaml}"  # strategy_macd.yaml → strategy_macd
+    LOG_FILE="logs/${STRATEGY_TAG}_${DATE_TAG}.log"
+
+    # 檢查是否已有該策略在運行
+    if pgrep -f "uv run main.*--config $CONFIG" > /dev/null 2>&1; then
+        echo "$(date): [$CONFIG] 已在運行中，跳過" >> "$LOG_FILE"
+        continue
+    fi
+
+    echo "$(date): [$CONFIG] 啟動交易程式" >> "$LOG_FILE"
+    PYTHONUNBUFFERED=1 "$UV_BIN" run main --config "$CONFIG" >> "$LOG_FILE" 2>&1 &
+    echo "$(date): [$CONFIG] PID=$!" >> "$LOG_FILE"
+done

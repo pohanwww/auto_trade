@@ -35,7 +35,6 @@ class PositionRecord:
     take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
     sheets_row_number: int | None = None  # Google Sheets 中的行號
-    is_buy_back: bool = False  # 是否為買回單
 
     def to_dict(self) -> dict:
         """轉換為字典"""
@@ -52,7 +51,6 @@ class PositionRecord:
             "take_profit_price": self.take_profit_price,
             "trailing_stop_active": self.trailing_stop_active,
             "sheets_row_number": self.sheets_row_number,
-            "is_buy_back": self.is_buy_back,
         }
 
     @classmethod
@@ -81,46 +79,4 @@ class PositionRecord:
             ),  # 向後兼容
             trailing_stop_active=data.get("trailing_stop_active", False),
             sheets_row_number=data.get("sheets_row_number"),  # 向後兼容
-            is_buy_back=data.get("is_buy_back", False),  # 向後兼容
-        )
-
-
-@dataclass
-class BuybackState:
-    """買回機制狀態"""
-
-    symbol: str
-    sub_symbol: str
-    direction: Action
-    check_time: datetime  # 預計檢查時間 (K棒結束前)
-    monitoring_bar_time: datetime  # 監控的那根 K 棒開始時間
-    exit_price: int  # 出場價格 (參考用)
-    highest_price: int  # 出場前的最高價 (用於買回後設定啟動移停價)
-    quantity: int = 1
-
-    def to_dict(self) -> dict:
-        """轉換為字典"""
-        return {
-            "symbol": self.symbol,
-            "sub_symbol": self.sub_symbol,
-            "direction": self.direction.value,
-            "check_time": self.check_time.isoformat(),
-            "monitoring_bar_time": self.monitoring_bar_time.isoformat(),
-            "exit_price": self.exit_price,
-            "highest_price": self.highest_price,
-            "quantity": self.quantity,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "BuybackState":
-        """從字典創建"""
-        return cls(
-            symbol=data["symbol"],
-            sub_symbol=data["sub_symbol"],
-            direction=Action(data["direction"]),
-            check_time=datetime.fromisoformat(data["check_time"]),
-            monitoring_bar_time=datetime.fromisoformat(data["monitoring_bar_time"]),
-            exit_price=int(data["exit_price"]),
-            highest_price=int(data.get("highest_price", 0)),  # 向後兼容
-            quantity=data.get("quantity", 1),
         )

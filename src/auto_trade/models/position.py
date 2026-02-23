@@ -119,9 +119,6 @@ class ManagedPosition:
     # MACD 快速停損狀態（方向無關：做多時追蹤死叉，做空時追蹤金叉）
     is_in_macd_adverse_cross: bool = False
 
-    # 買回標記
-    is_buy_back: bool = False
-
     # 策略傳入的額外資訊（如 ORB 的 override 參數）
     metadata: dict = field(default_factory=dict)
 
