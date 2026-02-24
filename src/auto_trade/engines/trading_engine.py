@@ -149,11 +149,8 @@ class TradingEngine:
                     for action in actions:
                         self._execute_action(action)
 
-                    # 持倉狀態有變動時同步到 position.json
-                    self._sync_position_record()
-
-                    # 更新 dashboard status
-                    self._write_dashboard_status(current_price)
+                    # 同步倉位狀態到 position.json
+                    self._sync_position_record(current_price)
 
                     # 日誌（每 5 分鐘一次）
                     if current_time.minute % 5 == 0 and not print_flag:
@@ -206,7 +203,7 @@ class TradingEngine:
                     if not actions:
                         print("無交易訊號")
 
-                    self._write_dashboard_status(current_price)
+                    self._sync_position_record(current_price)
 
                     calculate_and_wait_to_next_execution(
                         self.signal_check_interval, True
@@ -286,56 +283,56 @@ class TradingEngine:
             print(f"❌ 下單失敗: {fill_result.message}")
             return None
 
-    _last_synced_highest: int = 0
-    _last_synced_ts_active: bool = False
-    _last_synced_sl: int = 0
-    _last_synced_ts_price: int = 0
+    def _sync_position_record(self, current_price: float) -> None:
+        """同步倉位狀態 + 即時價格到 position.json（供 dashboard 讀取）"""
+        if not self.record_service or not self.sub_symbol:
+            return
 
-    def _sync_position_record(self) -> None:
-        """持倉狀態有變動時同步到 position.json"""
         pm = self.position_manager
-        if not pm.position or not self.sub_symbol:
-            return
-
         pos = pm.position
-        is_long = pos.direction.value == "Buy"
-        has_active_ts = any(
-            leg.exit_rule.trailing_stop_active for leg in pos.open_legs
-        )
-        sl_price = pos.open_legs[0].exit_rule.stop_loss_price or 0 if pos.open_legs else 0
-
-        ts_prices = [
-            leg.exit_rule.trailing_stop_price
-            for leg in pos.open_legs
-            if leg.exit_rule.trailing_stop_active and leg.exit_rule.trailing_stop_price
-        ]
-        ts_price = (max(ts_prices) if is_long else min(ts_prices)) if ts_prices else 0
-
-        if (
-            pos.highest_price == self._last_synced_highest
-            and has_active_ts == self._last_synced_ts_active
-            and sl_price == self._last_synced_sl
-            and ts_price == self._last_synced_ts_price
-        ):
-            return
 
         try:
             records = self.record_service._load_records(self.record_service.record_file)
-            if self.sub_symbol in records:
-                records[self.sub_symbol]["highest_price"] = pos.highest_price
-                records[self.sub_symbol]["trailing_stop_active"] = has_active_ts
-                records[self.sub_symbol]["stop_loss_price"] = sl_price
-                records[self.sub_symbol]["trailing_stop_price"] = ts_price or None
-                self.record_service.record_file.write_text(
-                    json.dumps(records, indent=2, ensure_ascii=False)
-                )
 
-            self._last_synced_highest = pos.highest_price
-            self._last_synced_ts_active = has_active_ts
-            self._last_synced_sl = sl_price
-            self._last_synced_ts_price = ts_price
-        except Exception as e:
-            print(f"⚠️ 同步持倉記錄失敗: {e}")
+            # Always write live metadata
+            records["_live"] = {
+                "current_price": int(current_price),
+                "timestamp": datetime.now().isoformat(),
+                "strategy": self.record_service.strategy_name,
+                "symbol": self.symbol,
+                "sub_symbol": self.sub_symbol,
+            }
+
+            if pos and self.sub_symbol in records:
+                is_long = pos.direction.value == "Buy"
+                ts_prices = [
+                    leg.exit_rule.trailing_stop_price
+                    for leg in pos.open_legs
+                    if leg.exit_rule.trailing_stop_active
+                    and leg.exit_rule.trailing_stop_price
+                ]
+                rec = records[self.sub_symbol]
+                rec["highest_price"] = pos.highest_price
+                rec["trailing_stop_active"] = any(
+                    leg.exit_rule.trailing_stop_active for leg in pos.open_legs
+                )
+                rec["stop_loss_price"] = (
+                    pos.open_legs[0].exit_rule.stop_loss_price or 0
+                    if pos.open_legs
+                    else 0
+                )
+                rec["trailing_stop_price"] = (
+                    (max(ts_prices) if is_long else min(ts_prices))
+                    if ts_prices
+                    else None
+                )
+                rec["quantity"] = sum(leg.quantity for leg in pos.open_legs)
+
+            self.record_service.record_file.write_text(
+                json.dumps(records, indent=2, ensure_ascii=False)
+            )
+        except Exception:
+            pass
 
     def _try_restore_position(self) -> None:
         """啟動時檢查 position.json，如有未平倉記錄則恢復到 PositionManager"""
@@ -403,65 +400,6 @@ class TradingEngine:
             )
         except Exception as e:
             print(f"⚠️ 移除平倉記錄失敗: {e}")
-
-    def _write_dashboard_status(self, current_price: float) -> None:
-        """Write status.json for the dashboard to read."""
-        if not self.record_service:
-            return
-        status_file = self.record_service.record_file.parent / "status.json"
-        pm = self.position_manager
-        pos = pm.position
-
-        data: dict = {
-            "strategy": self.record_service.strategy_name,
-            "symbol": self.symbol,
-            "sub_symbol": self.sub_symbol,
-            "current_price": int(current_price),
-            "timestamp": datetime.now().isoformat(),
-            "has_position": pos is not None,
-        }
-
-        if pos:
-            is_long = pos.direction.value == "Buy"
-            ts_prices = [
-                leg.exit_rule.trailing_stop_price
-                for leg in pos.open_legs
-                if leg.exit_rule.trailing_stop_active and leg.exit_rule.trailing_stop_price
-            ]
-            ts_price = (
-                (max(ts_prices) if is_long else min(ts_prices))
-                if ts_prices
-                else None
-            )
-            data.update({
-                "direction": pos.direction.value,
-                "entry_price": pos.entry_price,
-                "quantity": sum(leg.quantity for leg in pos.open_legs),
-                "stop_loss_price": (
-                    pos.open_legs[0].exit_rule.stop_loss_price
-                    if pos.open_legs
-                    else None
-                ),
-                "trailing_stop_active": any(
-                    leg.exit_rule.trailing_stop_active for leg in pos.open_legs
-                ),
-                "trailing_stop_price": ts_price,
-                "take_profit_price": (
-                    pos.open_legs[0].exit_rule.take_profit_price
-                    if pos.open_legs and pos.open_legs[0].exit_rule.take_profit_price
-                    else None
-                ),
-                "highest_price": pos.highest_price,
-                "entry_time": (
-                    pos.entry_time.isoformat() if pos.entry_time else None
-                ),
-            })
-
-        try:
-            status_file.parent.mkdir(parents=True, exist_ok=True)
-            status_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
 
     def _send_startup_notification(self) -> None:
         """發送系統啟動通知"""

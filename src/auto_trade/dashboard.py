@@ -30,7 +30,7 @@ def _read_json(path: Path) -> dict:
 
 
 def _collect_strategies() -> list[dict]:
-    """Scan data/state/*/ for status.json and position.json"""
+    """Scan data/state/*/position.json for all strategy data."""
     results = []
     if not STATE_DIR.exists():
         return results
@@ -40,33 +40,32 @@ def _collect_strategies() -> list[dict]:
             continue
 
         strategy_name = strategy_dir.name
-        status = _read_json(strategy_dir / "status.json")
-        position = _read_json(strategy_dir / "position.json")
-
-        if not status and not position:
+        data = _read_json(strategy_dir / "position.json")
+        if not data:
             continue
 
-        # Merge: status.json is authoritative for live data, position.json for stored record
         info: dict = {"strategy": strategy_name, "has_position": False}
 
-        if status:
-            info.update(status)
-        elif position:
-            sub_sym = next(iter(position), None)
-            if sub_sym and isinstance(position[sub_sym], dict):
-                rec = position[sub_sym]
-                info["has_position"] = True
-                info["sub_symbol"] = sub_sym
-                info["direction"] = rec.get("direction")
-                info["entry_price"] = rec.get("entry_price")
-                info["quantity"] = rec.get("quantity")
-                info["stop_loss_price"] = rec.get("stop_loss_price")
-                info["highest_price"] = rec.get("highest_price")
-                info["trailing_stop_active"] = rec.get("trailing_stop_active", False)
-                info["trailing_stop_price"] = rec.get("trailing_stop_price")
-                info["entry_time"] = rec.get("entry_time")
-            else:
-                info["has_position"] = False
+        # Live metadata written by the engine
+        live = data.pop("_live", None)
+        if live:
+            info["current_price"] = live.get("current_price")
+            info["timestamp"] = live.get("timestamp")
+
+        # Position record (keyed by sub_symbol, e.g. "MXF202603")
+        sub_sym = next(iter(data), None)
+        if sub_sym and isinstance(data[sub_sym], dict):
+            rec = data[sub_sym]
+            info["has_position"] = True
+            info["sub_symbol"] = sub_sym
+            info["direction"] = rec.get("direction")
+            info["entry_price"] = rec.get("entry_price")
+            info["quantity"] = rec.get("quantity")
+            info["stop_loss_price"] = rec.get("stop_loss_price")
+            info["highest_price"] = rec.get("highest_price")
+            info["trailing_stop_active"] = rec.get("trailing_stop_active", False)
+            info["trailing_stop_price"] = rec.get("trailing_stop_price")
+            info["entry_time"] = rec.get("entry_time")
 
         results.append(info)
     return results
