@@ -134,6 +134,8 @@ def build_trading_units_from_config(
             "rvol_lookback",
             # MACD 策略
             "macd_threshold",
+            "swing_period",
+            "swing_lookback_days",
             # Scalp 策略
             "session_start_time",
             "entry_mode",

@@ -155,18 +155,28 @@ class PositionManagerConfig:
         )
 
     def __repr__(self) -> str:
+        def _fmt(pts: int, rate: float | None) -> str:
+            if rate:
+                return f"{rate:.2%}"
+            return str(pts)
+
         parts = (
             f"PositionManagerConfig("
             f"total={self.total_quantity}, "
             f"tp_legs={self.tp_leg_quantity}, "
             f"ts_legs={self.ts_leg_quantity}, "
-            f"SL={self.stop_loss_points}, "
-            f"TP={self.take_profit_points}, "
+            f"SL={_fmt(self.stop_loss_points, self.stop_loss_points_rate)}, "
+            f"TP={_fmt(self.take_profit_points, self.take_profit_points_rate)}, "
             f"TS_start={self.start_trailing_stop_points}, "
-            f"TS={self.trailing_stop_points}"
+            f"TS={_fmt(self.trailing_stop_points, self.trailing_stop_points_rate)}"
         )
         if self.has_tightened_trailing_stop:
-            parts += f", tighten@{self.tighten_after_points}→{self.tightened_trailing_stop_points}"
+            tighten_str = _fmt(self.tighten_after_points, self.tighten_after_points_rate)
+            tightened_str = _fmt(
+                self.tightened_trailing_stop_points,
+                self.tightened_trailing_stop_points_rate,
+            )
+            parts += f", tighten@{tighten_str}→{tightened_str}"
         if self.force_exit_time:
             parts += f", force_exit@{self.force_exit_time}"
         parts += ")"
@@ -933,41 +943,48 @@ class PositionManager:
 
             self.position.metadata["next_key_level_idx"] = idx
 
-            if idx < len(key_levels):
-                # 仍有未突破的壓力線 → 維持壓力線模式，不用固定移停
+            is_hybrid = self.position.metadata.get("hybrid_key_level", False)
+
+            if idx < len(key_levels) and not is_hybrid:
+                # 非混合模式：仍有未突破的壓力線 → 維持壓力線模式
                 return
 
-            # 所有壓力線都已突破 → 用開倉價 × 0.005 作為移停距離
-            entry = self.position.entry_price
-            dynamic_ts = int(entry * 0.005)
-            for leg in self.position.open_legs:
-                er = leg.exit_rule
-                if not er.trailing_stop_active:
-                    continue
-                new_stop = (
-                    current_price - dynamic_ts
-                    if is_long
-                    else current_price + dynamic_ts
-                )
-                if is_long and (
-                    er.trailing_stop_price is None
-                    or new_stop > er.trailing_stop_price
-                ):
-                    er.trailing_stop_price = new_stop
-                    print(
-                        f"📊 {leg.leg_id} 壓力線後移停更新: "
-                        f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
+            if not is_hybrid:
+                # 非混合模式：所有壓力線都已突破 → 用開倉價 × 0.005 作為移停距離
+                entry = self.position.entry_price
+                dynamic_ts = int(entry * 0.005)
+                for leg in self.position.open_legs:
+                    er = leg.exit_rule
+                    if not er.trailing_stop_active:
+                        continue
+                    new_stop = (
+                        current_price - dynamic_ts
+                        if is_long
+                        else current_price + dynamic_ts
                     )
-                elif not is_long and (
-                    er.trailing_stop_price is None
-                    or new_stop < er.trailing_stop_price
-                ):
-                    er.trailing_stop_price = new_stop
-                    print(
-                        f"📊 {leg.leg_id} 壓力線後移停更新: "
-                        f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
-                    )
-            return
+                    if is_long and (
+                        er.trailing_stop_price is None
+                        or new_stop > er.trailing_stop_price
+                    ):
+                        er.trailing_stop_price = new_stop
+                        print(
+                            f"📊 {leg.leg_id} 壓力線後移停更新: "
+                            f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
+                        )
+                    elif not is_long and (
+                        er.trailing_stop_price is None
+                        or new_stop < er.trailing_stop_price
+                    ):
+                        er.trailing_stop_price = new_stop
+                        print(
+                            f"📊 {leg.leg_id} 壓力線後移停更新: "
+                            f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
+                        )
+                return
+
+            # hybrid_key_level 模式：不 return，繼續往下跑固定移停邏輯
+            # 固定移停只會在 new_stop > trailing_stop_price 時才更新
+            # 所以自然取兩者較佳值
 
         for leg in self.position.open_legs:
             exit_rule = leg.exit_rule

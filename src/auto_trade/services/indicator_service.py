@@ -528,3 +528,70 @@ class IndicatorService:
             return upper_shadow >= body_length * 1.5
 
         return False
+
+    # ──────────────────────────────────────────────
+    # Swing High / Low Detection
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def find_swing_levels(
+        kbar_list: KBarList,
+        period: int = 5,
+        lookback_bars: int = 200,
+        dedup_tolerance: int = 20,
+    ) -> tuple[list[int], list[int]]:
+        """Detect swing high/low levels from K-bar data.
+
+        A swing high at bar[i] means bar[i].high is the highest among
+        the surrounding ``period`` bars on each side.  Swing low is the
+        mirror for bar[i].low.
+
+        Args:
+            kbar_list: K-bar data (uses the last ``lookback_bars`` bars)
+            period: number of bars on each side to compare
+            lookback_bars: how many recent bars to scan
+            dedup_tolerance: merge levels within this many points
+
+        Returns:
+            (swing_highs, swing_lows) -- each a sorted list of unique
+            price levels (ascending).
+        """
+        bars = kbar_list.kbars[-lookback_bars:] if len(kbar_list) > lookback_bars else kbar_list.kbars
+        n = len(bars)
+        if n < period * 2 + 1:
+            return [], []
+
+        raw_highs: list[int] = []
+        raw_lows: list[int] = []
+
+        for i in range(period, n - period):
+            h = int(bars[i].high)
+            lo = int(bars[i].low)
+
+            is_swing_high = all(
+                h >= int(bars[j].high) for j in range(i - period, i)
+            ) and all(
+                h >= int(bars[j].high) for j in range(i + 1, i + period + 1)
+            )
+            if is_swing_high:
+                raw_highs.append(h)
+
+            is_swing_low = all(
+                lo <= int(bars[j].low) for j in range(i - period, i)
+            ) and all(
+                lo <= int(bars[j].low) for j in range(i + 1, i + period + 1)
+            )
+            if is_swing_low:
+                raw_lows.append(lo)
+
+        def _dedup(levels: list[int], tol: int) -> list[int]:
+            if not levels:
+                return []
+            sorted_levels = sorted(set(levels))
+            result = [sorted_levels[0]]
+            for lv in sorted_levels[1:]:
+                if lv - result[-1] > tol:
+                    result.append(lv)
+            return result
+
+        return _dedup(raw_highs, dedup_tolerance), _dedup(raw_lows, dedup_tolerance)

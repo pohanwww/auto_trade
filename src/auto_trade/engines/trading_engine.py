@@ -11,6 +11,7 @@ TradingEngine 不包含業務邏輯，只負責：
 - Executor → 下單執行
 """
 
+import json
 from datetime import datetime
 
 from auto_trade.executors.base_executor import BaseExecutor
@@ -151,6 +152,9 @@ class TradingEngine:
                     # 持倉狀態有變動時同步到 position.json
                     self._sync_position_record()
 
+                    # 更新 dashboard status
+                    self._write_dashboard_status(current_price)
+
                     # 日誌（每 5 分鐘一次）
                     if current_time.minute % 5 == 0 and not print_flag:
                         print_flag = True
@@ -201,6 +205,8 @@ class TradingEngine:
 
                     if not actions:
                         print("無交易訊號")
+
+                    self._write_dashboard_status(current_price)
 
                     calculate_and_wait_to_next_execution(
                         self.signal_check_interval, True
@@ -388,6 +394,59 @@ class TradingEngine:
             )
         except Exception as e:
             print(f"⚠️ 移除平倉記錄失敗: {e}")
+
+    def _write_dashboard_status(self, current_price: float) -> None:
+        """Write status.json for the dashboard to read."""
+        if not self.record_service:
+            return
+        status_file = self.record_service.record_file.parent / "status.json"
+        pm = self.position_manager
+        pos = pm.position
+
+        data: dict = {
+            "strategy": self.record_service.strategy_name,
+            "symbol": self.symbol,
+            "sub_symbol": self.sub_symbol,
+            "current_price": int(current_price),
+            "timestamp": datetime.now().isoformat(),
+            "has_position": pos is not None,
+        }
+
+        if pos:
+            ts_prices = [
+                leg.exit_rule.trailing_stop_price
+                for leg in pos.open_legs
+                if leg.exit_rule.trailing_stop_active and leg.exit_rule.trailing_stop_price
+            ]
+            data.update({
+                "direction": pos.direction.value,
+                "entry_price": pos.entry_price,
+                "quantity": sum(leg.quantity for leg in pos.open_legs),
+                "stop_loss_price": (
+                    pos.open_legs[0].exit_rule.stop_loss_price
+                    if pos.open_legs
+                    else None
+                ),
+                "trailing_stop_active": any(
+                    leg.exit_rule.trailing_stop_active for leg in pos.open_legs
+                ),
+                "trailing_stop_price": max(ts_prices) if ts_prices else None,
+                "take_profit_price": (
+                    pos.open_legs[0].exit_rule.take_profit_price
+                    if pos.open_legs and pos.open_legs[0].exit_rule.take_profit_price
+                    else None
+                ),
+                "highest_price": pos.highest_price,
+                "entry_time": (
+                    pos.entry_time.isoformat() if pos.entry_time else None
+                ),
+            })
+
+        try:
+            status_file.parent.mkdir(parents=True, exist_ok=True)
+            status_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
 
     def _send_startup_notification(self) -> None:
         """發送系統啟動通知"""

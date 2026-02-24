@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 main = "auto_trade.main:main"
 backtest = "auto_trade.run_backtest:main"
+dashboard = "auto_trade.dashboard:main"
 
 [build-system]
 requires = ["hatchling"]
