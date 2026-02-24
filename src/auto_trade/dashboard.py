@@ -663,7 +663,7 @@ def _build_logs_html(token_param: str) -> str:
     overflow-y: auto;
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 0.82rem;
-    line-height: 1.6;
+    line-height: 1;
     white-space: pre;
     tab-size: 4;
   }}
