@@ -290,14 +290,32 @@ class TradingEngine:
             # 發送通知
             if self.line_bot_service:
                 try:
+                    strategy = self.record_service.strategy_name if self.record_service else ""
+                    pm = self.position_manager
                     if action.order_type == "Open":
+                        sl_price = 0
+                        if pm.position and pm.position.open_legs:
+                            sl_price = pm.position.open_legs[0].exit_rule.stop_loss_price or 0
                         self.line_bot_service.send_open_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
                             price=fill_result.fill_price,
                             quantity=action.quantity,
-                            action=action.action,
-                            stop_loss_price=0,  # TODO: 從 PM 取得
+                            action=action.action.value,
+                            stop_loss_price=sl_price,
+                            strategy_name=strategy,
+                            reason=action.reason,
+                        )
+                    elif action.order_type == "Close":
+                        entry_price = pm.position.entry_price if pm.position else 0
+                        self.line_bot_service.send_close_position_message(
+                            symbol=action.symbol,
+                            sub_symbol=action.sub_symbol,
+                            price=fill_result.fill_price,
+                            quantity=action.quantity,
+                            exit_reason=action.reason,
+                            entry_price=entry_price,
+                            strategy_name=strategy,
                         )
                 except Exception as e:
                     print(f"發送通知失敗: {e}")
@@ -499,11 +517,13 @@ class TradingEngine:
             current_price = quote.price if quote else "N/A"
             margin = self.account_service.get_margin()
 
+            strategy = self.record_service.strategy_name if self.record_service else "unknown"
             self.line_bot_service.send_status_message(
                 total_equity=margin.equity_amount,
                 contract=self.sub_symbol,
                 price=current_price,
                 position=0,
+                status=f"策略 [{strategy}] 已啟動",
             )
         except Exception as e:
             print(f"發送啟動通知失敗: {e}")

@@ -1,0 +1,208 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// MA Convergence Breakout Strategy (均線糾纏後突破)
+
+//@version=6
+strategy("MA糾纏突破 (Long Only)", overlay=true, default_qty_type=strategy.fixed, default_qty_value=2, initial_capital=10000000, currency=currency.TWD, commission_type=strategy.commission.cash_per_order, commission_value=100, margin_long=4, margin_short=4)
+
+// ═══════════════════════════════════════════════
+// 參數設定
+// ═══════════════════════════════════════════════
+
+// EMA 週期
+ema1_len = input.int(5,   "EMA 1", group="均線設定")
+ema2_len = input.int(10,  "EMA 2", group="均線設定")
+ema3_len = input.int(20,  "EMA 3", group="均線設定")
+ema4_len = input.int(60,  "EMA 4", group="均線設定")
+
+// 糾纏參數
+conv_threshold = input.float(0.3, "收斂門檻 (%)", step=0.05, group="糾纏參數", tooltip="EMA spread < 價格 × 此百分比 = 糾纏")
+conv_min_bars  = input.int(3, "最少糾纏 K 棒數", minval=1, group="糾纏參數")
+conv_lookback  = input.int(30, "糾纏記憶 (bars)", minval=1, group="糾纏參數", tooltip="糾纏後最多幾根 K 棒內可觸發進場（越小越嚴格）")
+cooldown_bars  = input.int(5, "進場冷卻 K 棒數", minval=0, group="糾纏參數")
+
+// 出場參數（MA 策略：tp_leg=0, ts_leg=2，只有 SL + 移停，沒有停利）
+sl_rate       = input.float(0.4, "停損 buffer (%)",     step=0.05, group="出場參數", tooltip="Swing Low 再往下的 buffer") / 100
+sl_lookback   = input.int(31,    "停損 Swing Lookback", minval=5,  group="出場參數", tooltip="以前 N 根 K 棒最低點作為停損基準")
+ts_start_pts  = input.int(200,   "啟動移停 (點)",       group="出場參數")
+ts_rate       = input.float(0.6, "移停距離 (%)",        step=0.05, group="出場參數") / 100
+tighten_rate  = input.float(1.6, "收緊移停觸發 (%)",    step=0.1,  group="出場參數") / 100
+tightened_rate = input.float(0.3, "收緊後移停距離 (%)", step=0.05, group="出場參數") / 100
+
+long_only = input.bool(true, "只做多", group="方向")
+
+// ═══════════════════════════════════════════════
+// EMA 計算
+// ═══════════════════════════════════════════════
+
+ema1 = ta.ema(close, ema1_len)
+ema2 = ta.ema(close, ema2_len)
+ema3 = ta.ema(close, ema3_len)
+ema4 = ta.ema(close, ema4_len)
+
+plot(ema1, "EMA 5",  color=color.new(#FF6D00, 0), linewidth=1)
+plot(ema2, "EMA 10", color=color.new(#2962FF, 0), linewidth=1)
+plot(ema3, "EMA 20", color=color.new(#E91E63, 0), linewidth=1)
+plot(ema4, "EMA 60", color=color.new(#00BCD4, 0), linewidth=2)
+
+// ═══════════════════════════════════════════════
+// 糾纏偵測
+// ═══════════════════════════════════════════════
+
+ema_max = math.max(ema1, ema2, ema3, ema4)
+ema_min = math.min(ema1, ema2, ema3, ema4)
+spread_pct = (ema_max - ema_min) / close * 100
+
+is_converged = spread_pct < conv_threshold
+
+// 連續糾纏計數
+var int converged_count = 0
+if is_converged
+    converged_count += 1
+else
+    converged_count := 0
+
+// 追蹤距離上次有效糾纏過了幾根 bar（匹配回測的 lookback 窗口）
+var int bars_since_convergence = 9999
+if converged_count >= conv_min_bars
+    bars_since_convergence := 0
+else
+    bars_since_convergence += 1
+
+had_valid_convergence = bars_since_convergence <= conv_lookback
+
+// 突破條件：前一根未突破 + 當根突破（確保是「新」突破）
+prev_ema_max = math.max(ema1[1], ema2[1], ema3[1], ema4[1])
+prev_ema_min = math.min(ema1[1], ema2[1], ema3[1], ema4[1])
+prev_above_all = close[1] > prev_ema_max
+prev_below_all = close[1] < prev_ema_min
+
+breakout_long  = close > ema_max and not prev_above_all
+breakout_short = close < ema_min and not prev_below_all
+
+// Spread 正在擴張
+spread_expanding = spread_pct > spread_pct[1]
+
+// ═══════════════════════════════════════════════
+// 進場信號
+// ═══════════════════════════════════════════════
+
+var int bars_since_entry = 999
+
+entry_long  = had_valid_convergence and breakout_long  and spread_expanding and bars_since_entry >= cooldown_bars
+entry_short = had_valid_convergence and breakout_short and spread_expanding and bars_since_entry >= cooldown_bars and not long_only
+
+// 突破後重置糾纏記錄
+if entry_long or entry_short
+    bars_since_convergence := 9999
+
+bars_since_entry += 1
+
+// ═══════════════════════════════════════════════
+// 出場管理
+// ═══════════════════════════════════════════════
+
+var float entry_price = na
+var float highest_since_entry = na
+var float trailing_stop = na
+var bool  ts_active = false
+var bool  ts_tightened = false
+
+if entry_long and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    bars_since_entry := 0
+
+if entry_short and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    bars_since_entry := 0
+
+// 偵測新倉位建立（用實際成交價）
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entry_price := strategy.opentrades.entry_price(strategy.opentrades - 1)
+    highest_since_entry := entry_price
+    trailing_stop := na
+    ts_active := false
+    ts_tightened := false
+
+// 計算 Swing Low / High 作為停損基準（匹配回測 _calculate_initial_stop_loss）
+var float sl_price = na
+
+swing_low  = ta.lowest(low, sl_lookback)
+swing_high = ta.highest(high, sl_lookback)
+
+// 做多出場邏輯（純 TS legs：只有停損 + 移動停損，沒有停利）
+if strategy.position_size > 0 and not na(entry_price)
+    if na(sl_price)
+        sl_price := swing_low[1] - entry_price * sl_rate
+
+    if high > highest_since_entry
+        highest_since_entry := high
+
+    if not ts_active and highest_since_entry >= entry_price + ts_start_pts
+        ts_active := true
+
+    if ts_active
+        tighten_trigger = entry_price * (1 + tighten_rate)
+        if not ts_tightened and highest_since_entry >= tighten_trigger
+            ts_tightened := true
+
+        ts_pts = ts_tightened ? entry_price * tightened_rate : entry_price * ts_rate
+        new_ts = highest_since_entry - ts_pts
+        trailing_stop := na(trailing_stop) ? new_ts : math.max(trailing_stop, new_ts)
+
+    // 用一個 exit 指令，stop 取 SL 和 TS 中較緊的那個
+    effective_stop = not na(trailing_stop) and trailing_stop > sl_price ? trailing_stop : sl_price
+    strategy.exit("Exit", "Long", stop=effective_stop)
+
+// 做空出場邏輯
+if strategy.position_size < 0 and not na(entry_price)
+    if na(sl_price)
+        sl_price := swing_high[1] + entry_price * sl_rate
+
+    if low < highest_since_entry
+        highest_since_entry := low
+
+    if not ts_active and highest_since_entry <= entry_price - ts_start_pts
+        ts_active := true
+
+    if ts_active
+        tighten_trigger = entry_price * (1 - tighten_rate)
+        if not ts_tightened and highest_since_entry <= tighten_trigger
+            ts_tightened := true
+
+        ts_pts = ts_tightened ? entry_price * tightened_rate : entry_price * ts_rate
+        new_ts = highest_since_entry + ts_pts
+        trailing_stop := na(trailing_stop) ? new_ts : math.min(trailing_stop, new_ts)
+
+    effective_stop = not na(trailing_stop) and trailing_stop < sl_price ? trailing_stop : sl_price
+    strategy.exit("Exit", "Short", stop=effective_stop)
+
+// 清理狀態
+if strategy.position_size == 0
+    entry_price := na
+    sl_price := na
+    trailing_stop := na
+    ts_active := false
+    ts_tightened := false
+
+// ═══════════════════════════════════════════════
+// 視覺化
+// ═══════════════════════════════════════════════
+
+// 糾纏背景
+bgcolor(is_converged and converged_count >= conv_min_bars ? color.new(color.yellow, 88) : na, title="糾纏區間")
+
+// 進場標記
+plotshape(entry_long,  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, title="做多進場")
+plotshape(entry_short, style=shape.triangledown,  location=location.abovebar, color=color.red,   size=size.small, title="做空進場")
+
+// 停損線 & 移停線
+plot(strategy.position_size != 0 and not na(sl_price) ? sl_price : na, "停損線", color=color.red, linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size > 0 and ts_active ? trailing_stop : na, "移停線", color=color.orange, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size < 0 and ts_active ? trailing_stop : na, "移停線(空)", color=color.orange, linewidth=2, style=plot.style_linebr)
+
+// Spread 指標
+var spreadTable = table.new(position.top_right, 1, 2, bgcolor=color.new(color.black, 70))
+if barstate.islast
+    table.cell(spreadTable, 0, 0, "Spread: " + str.tostring(spread_pct, "#.###") + "%", text_color=is_converged ? color.yellow : color.gray, text_size=size.normal)
+    table.cell(spreadTable, 0, 1, "糾纏: " + str.tostring(converged_count) + " bars", text_color=converged_count >= conv_min_bars ? color.green : color.gray, text_size=size.normal)

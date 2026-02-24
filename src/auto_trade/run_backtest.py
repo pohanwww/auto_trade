@@ -157,6 +157,7 @@ def build_trading_units_from_config(
             "ema_periods",
             "convergence_threshold_pct",
             "convergence_min_bars",
+            "convergence_lookback",
             "volume_confirm",
             "cooldown_bars",
         ]
@@ -177,7 +178,7 @@ def build_trading_units_from_config(
             "ma_convergence": "MA糾纏",
         }
         type_tag = type_tags.get(strategy_type, strategy_type)
-        fs_tag = "" if pm_config.enable_macd_fast_stop else " noFS"
+        fs_tag = " FS" if pm_config.enable_macd_fast_stop else ""
         ts_tag = " tightenTS" if pm_config.has_tightened_trailing_stop else ""
 
         # filter tags

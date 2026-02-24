@@ -106,71 +106,56 @@ class LineBotService:
         quantity: int,
         action: str,
         stop_loss_price: float,
+        strategy_name: str = "",
+        reason: str = "",
     ) -> bool:
-        """發送開倉通知訊息
-
-        Args:
-            symbol: 商品代碼
-            sub_symbol: 子商品代碼
-            price: 開倉價格
-            quantity: 數量
-            action: 交易方向
-            stop_loss_price: 停損價格
-
-        Returns:
-            bool: 發送是否成功
-        """
+        """發送開倉通知訊息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        direction = "做多" if action in ("Buy", "buy") else "做空"
 
-        message = f"""
-📈 開倉通知
+        message = (
+            f"📈 開倉通知\n\n"
+            f"策略: {strategy_name}\n"
+            f"時間: {timestamp}\n"
+            f"商品: {symbol} ({sub_symbol})\n"
+            f"方向: {direction}\n"
+            f"價格: {price:,.0f}\n"
+            f"數量: {quantity} 口\n"
+            f"停損: {stop_loss_price:,.0f}"
+        )
+        if reason:
+            message += f"\n原因: {reason}"
 
-時間: {timestamp}
-商品: {symbol} ({sub_symbol})
-開倉價格: {price:,.1f}
-數量: {quantity}
-方向: {action}
-停損價格: {stop_loss_price:,.1f}
-"""
-
-        return self.send_message(message.strip())
+        return self.send_message(message)
 
     def send_close_position_message(
         self,
         symbol: str,
         sub_symbol: str,
         price: float,
+        quantity: int,
         exit_reason: str,
-        latest_data: dict,
+        entry_price: float = 0,
+        strategy_name: str = "",
     ) -> bool:
-        """發送平倉通知訊息
-
-        Args:
-            symbol: 商品代碼
-            sub_symbol: 子商品代碼
-            price: 平倉價格
-            exit_reason: 平倉原因
-            latest_data: Google Sheets 最新數據
-
-        Returns:
-            bool: 發送是否成功
-        """
+        """發送平倉通知訊息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        pnl_pts = price - entry_price if entry_price else 0
+        pnl_twd = pnl_pts * quantity * 50
+        pnl_sign = "+" if pnl_pts >= 0 else ""
 
-        message = f"""
-📉 平倉通知
+        message = (
+            f"📉 平倉通知\n\n"
+            f"策略: {strategy_name}\n"
+            f"時間: {timestamp}\n"
+            f"商品: {symbol} ({sub_symbol})\n"
+            f"平倉價格: {price:,.0f}\n"
+            f"數量: {quantity} 口\n"
+            f"原因: {exit_reason}\n"
+            f"盈虧: {pnl_sign}{pnl_pts:,.0f} 點 / {pnl_sign}NT${pnl_twd:,.0f}"
+        )
 
-時間: {timestamp}
-商品: {symbol} ({sub_symbol})
-平倉價格: {price:,.1f}
-平倉原因: {exit_reason}
-
-📊 Google Sheets 最新記錄:
-"""
-        for key, value in latest_data.items():
-            message += f"{key}: {value}\n"
-
-        return self.send_message(message.strip())
+        return self.send_message(message)
 
     def create_control_menu(self) -> FlexSendMessage:
         """創建控制選單

@@ -539,6 +539,7 @@ class IndicatorService:
         periods: list[int] | None = None,
         threshold_pct: float = 0.3,
         min_bars: int = 3,
+        convergence_lookback: int = 30,
     ) -> dict:
         """檢測多條 EMA 是否處於糾纏（收斂）狀態
 
@@ -581,7 +582,7 @@ class IndicatorService:
         ema_lists = {p: self.calculate_ema(kbar_list, p) for p in periods}
 
         n = len(kbar_list)
-        lookback = min(n, max_period + min_bars + 30)
+        lookback = min(n, convergence_lookback + min_bars)
 
         converged_count = 0
         prev_spread_pct = 0.0
@@ -607,6 +608,7 @@ class IndicatorService:
                 if converged_count >= min_bars:
                     peak_converged_count = converged_count
 
+        # 最新一根 K 棒
         latest_price = float(kbar_list[-1].close)
         latest_ema_vals = {p: ema_lists[p][-1].ema_value for p in periods}
         all_ema = list(latest_ema_vals.values())
@@ -616,8 +618,15 @@ class IndicatorService:
         is_converged = latest_spread_pct < threshold_pct
         was_converged = peak_converged_count >= min_bars
 
-        breakout_long = latest_price > max(all_ema)
-        breakout_short = latest_price < min(all_ema)
+        # 前一根 K 棒的收盤價與 EMA 關係（用於判斷是否為「新」突破）
+        prev_price = float(kbar_list[-2].close)
+        prev_ema_vals = [ema_lists[p][-2].ema_value for p in periods]
+        prev_above_all = prev_price > max(prev_ema_vals)
+        prev_below_all = prev_price < min(prev_ema_vals)
+
+        # 只有前一根尚未突破、當根才突破的才算有效突破
+        breakout_long = latest_price > max(all_ema) and not prev_above_all
+        breakout_short = latest_price < min(all_ema) and not prev_below_all
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
