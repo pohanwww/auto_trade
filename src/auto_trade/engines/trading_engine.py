@@ -73,6 +73,9 @@ class TradingEngine:
         self.signal_check_interval: int = 5  # 分鐘
         self.position_check_interval: int = 5  # 秒
 
+        # 加碼信號去重
+        self._addon_checked_this_interval: bool = False
+
     def configure(
         self,
         symbol: str,
@@ -148,6 +151,25 @@ class TradingEngine:
                     # 執行 PM 產生的指令
                     for action in actions:
                         self._execute_action(action)
+
+                    # 加碼信號檢測（每 signal_check_interval 分鐘）
+                    if (
+                        self.position_manager.config.enable_addon
+                        and self.position_manager.has_position
+                        and current_time.minute % self.signal_check_interval == 0
+                        and not self._addon_checked_this_interval
+                    ):
+                        self._addon_checked_this_interval = True
+                        signal = self.trading_unit.strategy.evaluate(
+                            kbar_list, current_price, self.sub_symbol
+                        )
+                        addon_actions = self.position_manager.on_signal(
+                            signal, kbar_list, self.symbol, self.sub_symbol
+                        )
+                        for action in addon_actions:
+                            self._execute_action(action)
+                    elif current_time.minute % self.signal_check_interval != 0:
+                        self._addon_checked_this_interval = False
 
                     # 同步倉位狀態到 position.json
                     self._sync_position_record(current_price)

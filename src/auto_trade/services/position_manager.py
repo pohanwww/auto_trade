@@ -66,6 +66,10 @@ class PositionManagerConfig:
         enable_macd_fast_stop: bool = True,
         # 時間強制平倉（日內策略用，格式 "HH:MM"，如 "13:30"）
         force_exit_time: str | None = None,
+        # 加碼設定
+        enable_addon: bool = False,
+        addon_quantity: int = 2,
+        max_addon_count: int = 2,
     ):
         self.total_quantity = total_quantity
         self.tp_leg_quantity = tp_leg_quantity
@@ -94,6 +98,11 @@ class PositionManagerConfig:
         self.timeframe = timeframe
         self.enable_macd_fast_stop = enable_macd_fast_stop
         self.force_exit_time = force_exit_time
+
+        # 加碼
+        self.enable_addon = enable_addon
+        self.addon_quantity = addon_quantity
+        self.max_addon_count = max_addon_count
 
     @classmethod
     def from_dict(
@@ -141,6 +150,10 @@ class PositionManagerConfig:
             timeframe=trading.get("timeframe", "30m"),
             enable_macd_fast_stop=trading.get("enable_macd_fast_stop", True),
             force_exit_time=trading.get("force_exit_time"),
+            # 加碼
+            enable_addon=pos.get("enable_addon", False),
+            addon_quantity=pos.get("addon_quantity", 2),
+            max_addon_count=pos.get("max_addon_count", 2),
         )
 
     @property
@@ -311,6 +324,7 @@ class PositionManager:
                     tightened_trailing_stop_points=tightened_ts_points,
                     is_tightened=is_tightened,
                 ),
+                entry_price=entry_price,
             ))
 
         if self.config.ts_leg_quantity > 0:
@@ -327,6 +341,7 @@ class PositionManager:
                     tightened_trailing_stop_points=tightened_ts_points,
                     is_tightened=is_tightened,
                 ),
+                entry_price=entry_price,
             ))
 
         self.position = ManagedPosition(
@@ -380,6 +395,16 @@ class PositionManager:
             return self._open_position(
                 signal, kbar_list, symbol, sub_symbol, Action.Sell
             )
+
+        # 加碼：已有倉位且同方向信號
+        if self.has_position and self.config.enable_addon:
+            pos = self.position
+            is_same_direction = (
+                (signal.signal_type == SignalType.ENTRY_LONG and pos.direction == Action.Buy)
+                or (signal.signal_type == SignalType.ENTRY_SHORT and pos.direction == Action.Sell)
+            )
+            if is_same_direction:
+                return self._add_to_position(signal, symbol, sub_symbol)
 
         return []
 
@@ -597,6 +622,7 @@ class PositionManager:
                     tighten_after_price=tighten_after_price,
                     tightened_trailing_stop_points=tightened_ts_points,
                 ),
+                entry_price=entry_price,
             )
             legs.append(tp_leg)
 
@@ -612,6 +638,7 @@ class PositionManager:
                     tighten_after_price=tighten_after_price,
                     tightened_trailing_stop_points=tightened_ts_points,
                 ),
+                entry_price=entry_price,
             )
             legs.append(ts_leg)
 
@@ -701,6 +728,73 @@ class PositionManager:
                 quantity=self.config.total_quantity,
                 order_type="Open",
                 reason=signal.reason,
+            )
+        ]
+
+    def _add_to_position(
+        self,
+        signal: StrategySignal,
+        symbol: str,
+        sub_symbol: str,
+    ) -> list[OrderAction]:
+        """加碼：在現有倉位上新增 Legs（同方向、同出場規則）"""
+        pos = self.position
+        addon_price = int(signal.price)
+        is_long = pos.direction == Action.Buy
+
+        # 條件檢查：價格必須有利 + 未超過加碼上限
+        price_favorable = (
+            addon_price > pos.entry_price if is_long
+            else addon_price < pos.entry_price
+        )
+        if not price_favorable:
+            return []
+        if pos.addon_count >= self.config.max_addon_count:
+            return []
+
+        qty = self.config.addon_quantity
+
+        # 使用與現有 open legs 相同的出場規則
+        ref_leg = pos.open_legs[0] if pos.open_legs else None
+        if not ref_leg:
+            return []
+        ref_rule = ref_leg.exit_rule
+
+        addon_id = f"{pos.position_id}-A{pos.addon_count + 1}"
+        new_leg = PositionLeg(
+            leg_id=addon_id,
+            leg_type=LegType.TRAILING_STOP,
+            quantity=qty,
+            exit_rule=ExitRule(
+                stop_loss_price=ref_rule.stop_loss_price,
+                start_trailing_stop_price=ref_rule.start_trailing_stop_price,
+                trailing_stop_active=ref_rule.trailing_stop_active,
+                trailing_stop_price=ref_rule.trailing_stop_price,
+                tighten_after_price=ref_rule.tighten_after_price,
+                tightened_trailing_stop_points=ref_rule.tightened_trailing_stop_points,
+                is_tightened=ref_rule.is_tightened,
+            ),
+            entry_price=addon_price,
+        )
+        pos.legs.append(new_leg)
+        pos.total_quantity += qty
+        pos.addon_count += 1
+
+        print(
+            f"➕ 加碼 #{pos.addon_count}: {addon_id} x{qty} @ {addon_price}, "
+            f"總量 {pos.open_quantity}, "
+            f"SL={ref_rule.stop_loss_price}, "
+            f"TS={'active' if ref_rule.trailing_stop_active else 'inactive'}"
+        )
+
+        return [
+            OrderAction(
+                action=pos.direction,
+                symbol=symbol,
+                sub_symbol=sub_symbol,
+                quantity=qty,
+                order_type="Open",
+                reason=f"加碼 #{pos.addon_count}: {signal.reason}",
             )
         ]
 

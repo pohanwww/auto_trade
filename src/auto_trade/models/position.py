@@ -68,6 +68,7 @@ class PositionLeg:
     leg_type: LegType  # Leg 類型
     quantity: int  # 該 Leg 的數量
     exit_rule: ExitRule  # 出場規則
+    entry_price: int | None = None  # 該 Leg 的進場價格（加碼時與 Position 不同）
     status: PositionStatus = PositionStatus.OPEN
 
     # 出場資訊
@@ -119,10 +120,10 @@ class ManagedPosition:
     # MACD 快速停損狀態（方向無關：做多時追蹤死叉，做空時追蹤金叉）
     is_in_macd_adverse_cross: bool = False
 
-    # 策略傳入的額外資訊（如 ORB 的 override 參數）
-    metadata: dict = field(default_factory=dict)
+    # 加碼次數
+    addon_count: int = 0
 
-    # 附加資訊
+    # 策略傳入的額外資訊（如 ORB 的 override 參數）
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

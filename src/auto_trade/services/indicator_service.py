@@ -530,6 +530,108 @@ class IndicatorService:
         return False
 
     # ──────────────────────────────────────────────
+    # MA Convergence Detection (均線糾纏)
+    # ──────────────────────────────────────────────
+
+    def detect_ma_convergence(
+        self,
+        kbar_list: KBarList,
+        periods: list[int] | None = None,
+        threshold_pct: float = 0.3,
+        min_bars: int = 3,
+    ) -> dict:
+        """檢測多條 EMA 是否處於糾纏（收斂）狀態
+
+        糾纏定義：所有 EMA 之間的最大 spread < 價格的 threshold_pct%
+        連續 min_bars 根 K 棒都滿足即為有效糾纏。
+
+        Args:
+            kbar_list: K 線資料列表
+            periods: EMA 週期列表（預設 [5, 10, 20, 60]）
+            threshold_pct: 最大 spread 占價格的百分比（預設 0.3%）
+            min_bars: 最少持續幾根 K 棒算有效糾纏（預設 3）
+
+        Returns:
+            dict:
+                converged: 最新 K 棒是否處於糾纏狀態
+                converged_bars: 目前已連續糾纏的 K 棒數
+                was_converged: 前一根是否處於有效糾纏（≥ min_bars）
+                spread_pct: 最新一根的 spread 占價格百分比
+                ema_values: 最新一根各 EMA 值 {period: value}
+                breakout_long: 價格收在所有 EMA 之上（突破做多）
+                breakout_short: 價格收在所有 EMA 之下（突破做空）
+                spread_expanding: spread 正在擴張（相比前一根）
+        """
+        if periods is None:
+            periods = [5, 10, 20, 60]
+
+        max_period = max(periods)
+        if len(kbar_list) < max_period + min_bars + 5:
+            return {
+                "converged": False,
+                "converged_bars": 0,
+                "was_converged": False,
+                "spread_pct": 0.0,
+                "ema_values": {},
+                "breakout_long": False,
+                "breakout_short": False,
+                "spread_expanding": False,
+            }
+
+        ema_lists = {p: self.calculate_ema(kbar_list, p) for p in periods}
+
+        n = len(kbar_list)
+        lookback = min(n, max_period + min_bars + 30)
+
+        converged_count = 0
+        prev_spread_pct = 0.0
+        peak_converged_count = 0
+
+        for i in range(n - lookback, n):
+            price = float(kbar_list[i].close)
+            if price <= 0:
+                converged_count = 0
+                continue
+
+            ema_vals = [ema_lists[p][i].ema_value for p in periods]
+            spread = max(ema_vals) - min(ema_vals)
+            sp = (spread / price) * 100.0
+
+            if sp < threshold_pct:
+                converged_count += 1
+            else:
+                converged_count = 0
+
+            if i < n - 1:
+                prev_spread_pct = sp
+                if converged_count >= min_bars:
+                    peak_converged_count = converged_count
+
+        latest_price = float(kbar_list[-1].close)
+        latest_ema_vals = {p: ema_lists[p][-1].ema_value for p in periods}
+        all_ema = list(latest_ema_vals.values())
+        latest_spread = max(all_ema) - min(all_ema)
+        latest_spread_pct = (latest_spread / latest_price) * 100.0 if latest_price > 0 else 0.0
+
+        is_converged = latest_spread_pct < threshold_pct
+        was_converged = peak_converged_count >= min_bars
+
+        breakout_long = latest_price > max(all_ema)
+        breakout_short = latest_price < min(all_ema)
+        spread_expanding = latest_spread_pct > prev_spread_pct
+
+        return {
+            "converged": is_converged,
+            "converged_bars": converged_count,
+            "was_converged": was_converged,
+            "spread_pct": latest_spread_pct,
+            "ema_values": latest_ema_vals,
+            "breakout_long": breakout_long,
+            "breakout_short": breakout_short,
+            "spread_expanding": spread_expanding,
+        }
+
+    # ──────────────────────────────────────────────
     # Swing High / Low Detection
     # ──────────────────────────────────────────────
 

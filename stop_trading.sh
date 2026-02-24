@@ -4,6 +4,7 @@
 # 用法：
 #   ./stop_trading.sh                               # 停止所有策略
 #   ./stop_trading.sh strategy_macd.yaml             # 只停止 MACD
+#   ./stop_trading.sh strategy_ma.yaml               # 只停止 MA
 #   ./stop_trading.sh strategy_orb.yaml              # 只停止 ORB
 
 PROJECT_DIR="/home/pohanwwwgame/auto_trade"
@@ -38,6 +39,7 @@ stop_strategy() {
 if [ $# -eq 0 ]; then
     # 無參數：停止所有策略
     stop_strategy "uv run main.*--config strategy_macd" "strategy_macd"
+    stop_strategy "uv run main.*--config strategy_ma" "strategy_ma"
     stop_strategy "uv run main.*--config strategy_orb" "strategy_orb"
     # 也停止未指定 config 的舊版程式
     stop_strategy "uv run main" "trading"

@@ -243,12 +243,10 @@ class BacktestEngine:
             )
 
             # ── Step 1: 處理延遲進場（上一根 K 棒的信號，用本根 Open 成交）──
-            if _deferred_signal is not None and not pm.has_position:
+            if _deferred_signal is not None:
                 fill_price = current_open
-
-                # 將信號價格更新為實際成交價，確保 PM 的
-                # TP/TS/SL 全部以實際成交價為基準計算
                 _deferred_signal.price = float(fill_price)
+                is_addon = pm.has_position
 
                 actions = pm.on_signal(
                     _deferred_signal,
@@ -262,17 +260,20 @@ class BacktestEngine:
                     fill = executor.execute(action)
 
                     if fill.success and fill.fill_price is not None:
-                        if pm.position:
+                        if not is_addon and pm.position:
                             pm.position.entry_price = fill.fill_price
                             pm.position.entry_time = current_time
                             pm.position.highest_price = fill.fill_price
                             pm.position.lowest_price = fill.fill_price
 
-                        pending_entry_price = fill.fill_price
-                        pending_entry_time = current_time
-                        pending_direction = _deferred_direction
-                        dir_str = "做多" if pending_direction == Action.Buy else "做空"
-                        print(f"📈 {dir_str}開倉: {fill.fill_price}")
+                        if not is_addon:
+                            pending_entry_price = fill.fill_price
+                            pending_entry_time = current_time
+                            pending_direction = _deferred_direction
+                            dir_str = "做多" if pending_direction == Action.Buy else "做空"
+                            print(f"📈 {dir_str}開倉: {fill.fill_price}")
+                        else:
+                            print(f"➕ 加碼成交: {fill.fill_price} x{action.quantity}")
 
                 _deferred_signal = None
                 _deferred_direction = None
@@ -326,6 +327,32 @@ class BacktestEngine:
                     fill = executor.execute(action)
 
                     if fill.success and fill.fill_price is not None:
+                        # 收集要平倉的 leg 資訊（entry_price 需在 on_fill 前取得）
+                        closing_legs: list[tuple[str, int, int]] = []  # (leg_id, entry_price, qty)
+                        if action.leg_id:
+                            leg = next(
+                                (lg for lg in pm.position.legs if lg.leg_id == action.leg_id),
+                                None,
+                            )
+                            leg_entry = (
+                                leg.entry_price if leg and leg.entry_price
+                                else pending_entry_price
+                            )
+                            closing_legs.append((action.leg_id, leg_entry, action.quantity))
+                        elif "leg_ids" in action.metadata:
+                            for lid in action.metadata["leg_ids"]:
+                                leg = next(
+                                    (lg for lg in pm.position.legs if lg.leg_id == lid),
+                                    None,
+                                )
+                                leg_entry = (
+                                    leg.entry_price if leg and leg.entry_price
+                                    else pending_entry_price
+                                )
+                                leg_qty = leg.quantity if leg else action.quantity
+                                closing_legs.append((lid, leg_entry, leg_qty))
+
+                        # 執行 on_fill
                         if action.leg_id:
                             pm.on_fill(
                                 action.leg_id,
@@ -339,38 +366,40 @@ class BacktestEngine:
                                     lid, fill.fill_price, current_time, exit_reason
                                 )
 
-                        if pending_entry_price is not None:
-                            if pending_direction == Action.Buy:
-                                pnl_points = float(
-                                    fill.fill_price - pending_entry_price
-                                )
-                            else:
-                                pnl_points = float(
-                                    pending_entry_price - fill.fill_price
-                                )
-                            pnl_twd = pnl_points * action.quantity * point_value
+                        # 逐 leg 記錄 P&L
+                        if pending_direction is not None:
+                            for _lid, leg_ep, leg_qty in closing_legs:
+                                ep = leg_ep if leg_ep is not None else pending_entry_price
+                                if ep is None:
+                                    continue
+                                if pending_direction == Action.Buy:
+                                    pnl_points = float(fill.fill_price - ep)
+                                else:
+                                    pnl_points = float(ep - fill.fill_price)
+                                pnl_twd = pnl_points * leg_qty * point_value
 
-                            trade = BacktestTrade(
-                                trade_id=str(uuid.uuid4()),
-                                symbol=self.config.symbol,
-                                action=pending_direction or Action.Buy,
-                                entry_time=pending_entry_time or current_time,
-                                entry_price=pending_entry_price,
-                                exit_time=current_time,
-                                exit_price=fill.fill_price,
-                                quantity=action.quantity,
-                                exit_reason=exit_reason,
-                                pnl_points=pnl_points,
-                                pnl_twd=pnl_twd,
-                            )
-                            result.trades.append(trade)
-                            current_equity += pnl_twd
-                            dir_str = "多" if pending_direction == Action.Buy else "空"
-                            print(
-                                f"📉 平{dir_str}倉: {fill.fill_price} | "
-                                f"{exit_reason.value} | "
-                                f"PnL: {pnl_twd:+.0f}"
-                            )
+                                trade = BacktestTrade(
+                                    trade_id=str(uuid.uuid4()),
+                                    symbol=self.config.symbol,
+                                    action=pending_direction or Action.Buy,
+                                    entry_time=pending_entry_time or current_time,
+                                    entry_price=ep,
+                                    exit_time=current_time,
+                                    exit_price=fill.fill_price,
+                                    quantity=leg_qty,
+                                    exit_reason=exit_reason,
+                                    pnl_points=pnl_points,
+                                    pnl_twd=pnl_twd,
+                                )
+                                result.trades.append(trade)
+                                current_equity += pnl_twd
+                                dir_str = "多" if pending_direction == Action.Buy else "空"
+                                print(
+                                    f"📉 平{dir_str}倉: {fill.fill_price} | "
+                                    f"進場:{ep} | "
+                                    f"{exit_reason.value} | "
+                                    f"PnL: {pnl_twd:+.0f}"
+                                )
 
                         if not pm.has_position:
                             pending_entry_price = None
@@ -378,7 +407,29 @@ class BacktestEngine:
                             pending_direction = None
                             unit.strategy.on_position_closed()
 
-            elif _deferred_signal is None:
+            # ── Step 2.5: 持倉中 + 加碼啟用 → 評估加碼信號 ──
+            if (
+                pm.has_position
+                and pm.config.enable_addon
+                and _deferred_signal is None
+            ):
+                signal = unit.strategy.evaluate(
+                    current_kbars, current_price, self.config.sub_symbol
+                )
+                pos = pm.position
+                is_same_dir = (
+                    (signal.signal_type == SignalType.ENTRY_LONG and pos.direction == Action.Buy)
+                    or (signal.signal_type == SignalType.ENTRY_SHORT and pos.direction == Action.Sell)
+                )
+                if is_same_dir:
+                    _deferred_signal = signal
+                    _deferred_direction = pos.direction
+                    print(
+                        f"🔔 加碼信號 @ {current_price} "
+                        f"(延遲至下一根 K 棒開盤進場)"
+                    )
+
+            elif _deferred_signal is None and not pm.has_position:
                 # ── Step 3: 無倉位且無待處理信號 → 評估策略 ──
                 signal = unit.strategy.evaluate(
                     current_kbars, current_price, self.config.sub_symbol
@@ -388,7 +439,6 @@ class BacktestEngine:
                     SignalType.ENTRY_LONG,
                     SignalType.ENTRY_SHORT,
                 ):
-                    # 不立即進場，延遲到下一根 K 棒的 Open 成交
                     _deferred_signal = signal
                     _deferred_direction = (
                         Action.Buy
@@ -403,13 +453,14 @@ class BacktestEngine:
 
             # ── Step 4: 更新權益曲線（含未實現損益）──
             if pm.has_position and pending_entry_price is not None:
+                open_qty = pm.position.open_quantity if pm.position else total_qty
                 if pending_direction == Action.Buy:
                     unrealized = (
-                        (current_price - pending_entry_price) * total_qty * point_value
+                        (current_price - pending_entry_price) * open_qty * point_value
                     )
                 else:
                     unrealized = (
-                        (pending_entry_price - current_price) * total_qty * point_value
+                        (pending_entry_price - current_price) * open_qty * point_value
                     )
                 result.equity_curve.append((current_time, current_equity + unrealized))
             else:

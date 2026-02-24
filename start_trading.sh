@@ -3,8 +3,9 @@
 #
 # 用法：
 #   ./start_trading.sh strategy_macd.yaml          # 啟動 MACD 波段
+#   ./start_trading.sh strategy_ma.yaml             # 啟動 MA 糾纏突破
 #   ./start_trading.sh strategy_orb.yaml            # 啟動 ORB 日內
-#   ./start_trading.sh strategy_macd.yaml strategy_orb.yaml  # 同時啟動兩個
+#   ./start_trading.sh strategy_macd.yaml strategy_ma.yaml strategy_orb.yaml  # 同時啟動三個
 
 PROJECT_DIR="/home/pohanwwwgame/auto_trade"
 UV_BIN="/home/pohanwwwgame/.local/bin/uv"

@@ -7,6 +7,9 @@
     # 指定配置檔（跑 MACD 波段策略）
     uv run main --config strategy_macd.yaml
 
+    # 指定配置檔（跑 MA 均線糾纏突破策略）
+    uv run main --config strategy_ma.yaml
+
     # 指定配置檔（跑 ORB 日內策略）
     uv run main --config strategy_orb.yaml
 """

@@ -153,6 +153,12 @@ def build_trading_units_from_config(
             "hybrid_ts_trail_points",
             "sl_buffer",
             "trend_filter_bars",
+            # MA Convergence 策略
+            "ema_periods",
+            "convergence_threshold_pct",
+            "convergence_min_bars",
+            "volume_confirm",
+            "cooldown_bars",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 
@@ -168,6 +174,7 @@ def build_trading_units_from_config(
             "orb": "ORB",
             "scalp": "Scalp",
             "bollinger": "BB",
+            "ma_convergence": "MA糾纏",
         }
         type_tag = type_tags.get(strategy_type, strategy_type)
         fs_tag = "" if pm_config.enable_macd_fast_stop else " noFS"
