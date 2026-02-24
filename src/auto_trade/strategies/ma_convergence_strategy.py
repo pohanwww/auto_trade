@@ -36,7 +36,6 @@ class MAConvergenceStrategy(BaseStrategy):
         volume_percentile_lookback: int = 100,
         cooldown_bars: int = 5,
         convergence_lookback: int = 30,
-        breakout_proximity_pct: float = 1.0,
         **kwargs,  # noqa: ARG002
     ):
         super().__init__(indicator_service, name="MA Convergence Breakout")
@@ -49,7 +48,6 @@ class MAConvergenceStrategy(BaseStrategy):
         self.volume_percentile_lookback = volume_percentile_lookback
         self.cooldown_bars = cooldown_bars
         self.convergence_lookback = convergence_lookback
-        self.breakout_proximity_pct = breakout_proximity_pct
 
         self._bars_since_entry = 0
         self._had_position = False
@@ -94,7 +92,6 @@ class MAConvergenceStrategy(BaseStrategy):
             threshold_pct=self.convergence_threshold_pct,
             min_bars=self.convergence_min_bars,
             convergence_lookback=self.convergence_lookback,
-            breakout_proximity_pct=self.breakout_proximity_pct,
         )
 
         ema_vals = conv["ema_values"]

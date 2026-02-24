@@ -158,7 +158,6 @@ def build_trading_units_from_config(
             "convergence_threshold_pct",
             "convergence_min_bars",
             "convergence_lookback",
-            "breakout_proximity_pct",
             "volume_confirm",
             "cooldown_bars",
         ]

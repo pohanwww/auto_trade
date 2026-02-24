@@ -540,12 +540,14 @@ class IndicatorService:
         threshold_pct: float = 0.3,
         min_bars: int = 3,
         convergence_lookback: int = 30,
-        breakout_proximity_pct: float = 1.0,
     ) -> dict:
         """檢測多條 EMA 是否處於糾纏（收斂）狀態
 
         糾纏定義：所有 EMA 之間的最大 spread < 價格的 threshold_pct%
         連續 min_bars 根 K 棒都滿足即為有效糾纏。
+
+        一個糾纏區只產生一個進場機會：掃描糾纏區結束到當前 K 棒之間，
+        若已存在完整突破信號（突破 + spread expanding），則當前不是第一進場點。
 
         Args:
             kbar_list: K 線資料列表
@@ -553,20 +555,19 @@ class IndicatorService:
             threshold_pct: 最大 spread 占價格的百分比（預設 0.3%）
             min_bars: 最少持續幾根 K 棒算有效糾纏（預設 3）
             convergence_lookback: 糾纏後最多幾根 K 棒內可觸發進場
-            breakout_proximity_pct: 進場價格不能超過糾纏區 EMA 上/下緣的百分比
 
         Returns:
             dict:
                 converged: 最新 K 棒是否處於糾纏狀態
                 converged_bars: 目前已連續糾纏的 K 棒數
-                was_converged: 前一根是否處於有效糾纏（≥ min_bars）
+                was_converged: lookback 內是否有有效糾纏（≥ min_bars）
                 spread_pct: 最新一根的 spread 占價格百分比
                 ema_values: 最新一根各 EMA 值 {period: value}
-                breakout_long: 價格收在所有 EMA 之上（突破做多）
-                breakout_short: 價格收在所有 EMA 之下（突破做空）
+                breakout_long: 做多突破（第一進場點 + proximity OK）
+                breakout_short: 做空突破（第一進場點 + proximity OK）
                 spread_expanding: spread 正在擴張（相比前一根）
-                convergence_ema_max: 糾纏區最高 EMA 值（用於視覺化）
-                convergence_ema_min: 糾纏區最低 EMA 值（用於視覺化）
+                convergence_ema_max: 糾纏區最高 EMA 值
+                convergence_ema_min: 糾纏區最低 EMA 值
         """
         if periods is None:
             periods = [5, 10, 20, 60]
@@ -596,6 +597,7 @@ class IndicatorService:
         peak_converged_count = 0
         convergence_ema_max = 0.0
         convergence_ema_min = 0.0
+        last_convergence_idx = -1
 
         for i in range(n - lookback, n):
             price = float(kbar_list[i].close)
@@ -611,6 +613,9 @@ class IndicatorService:
                 converged_count += 1
             else:
                 converged_count = 0
+
+            if converged_count >= min_bars:
+                last_convergence_idx = i
 
             if i < n - 1:
                 prev_spread_pct = sp
@@ -635,16 +640,34 @@ class IndicatorService:
         prev_above_all = prev_price > max(prev_ema_vals)
         prev_below_all = prev_price < min(prev_ema_vals)
 
-        # 價格距離檢查：進場價不能離糾纏區太遠
-        proximity_long = True
-        proximity_short = True
-        if convergence_ema_max > 0:
-            proximity_long = latest_price <= convergence_ema_max * (1 + breakout_proximity_pct / 100)
-        if convergence_ema_min > 0:
-            proximity_short = latest_price >= convergence_ema_min * (1 - breakout_proximity_pct / 100)
+        # 掃描糾纏區之後是否已有先前的完整突破信號（一個糾纏區只產生一個進場機會）
+        prior_breakout_long = False
+        prior_breakout_short = False
+        if last_convergence_idx >= 0 and last_convergence_idx < n - 2:
+            for j in range(last_convergence_idx + 1, n - 1):
+                j_price = float(kbar_list[j].close)
+                if j_price <= 0:
+                    continue
+                j_ema = [ema_lists[p][j].ema_value for p in periods]
+                j_prev_price = float(kbar_list[j - 1].close)
+                j_prev_ema = [ema_lists[p][j - 1].ema_value for p in periods]
+                j_sp = (max(j_ema) - min(j_ema)) / j_price * 100.0
+                j_prev_sp = (
+                    (max(j_prev_ema) - min(j_prev_ema)) / j_prev_price * 100.0
+                    if j_prev_price > 0
+                    else 0.0
+                )
+                j_expanding = j_sp > j_prev_sp
 
-        breakout_long = latest_price > max(all_ema) and not prev_above_all and proximity_long
-        breakout_short = latest_price < min(all_ema) and not prev_below_all and proximity_short
+                if j_price > max(j_ema) and j_prev_price <= max(j_prev_ema) and j_expanding:
+                    prior_breakout_long = True
+                if j_price < min(j_ema) and j_prev_price >= min(j_prev_ema) and j_expanding:
+                    prior_breakout_short = True
+                if prior_breakout_long and prior_breakout_short:
+                    break
+
+        breakout_long = latest_price > max(all_ema) and not prev_above_all and not prior_breakout_long
+        breakout_short = latest_price < min(all_ema) and not prev_below_all and not prior_breakout_short
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
