@@ -35,7 +35,9 @@ class PositionRecord:
     take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
     highest_price: int | None = None  # 進場後最高價（用於重啟恢復移停）
-    sheets_row_number: int | None = None  # Google Sheets 中的行號
+    sheets_row_number: int | None = None  # Google Sheets 中的行號（舊版相容）
+    sheets_row_map: dict | None = None  # leg_id → Google Sheets 行號
+    legs_info: dict | None = None  # leg_id → {entry_price, quantity}
 
     def to_dict(self) -> dict:
         """轉換為字典"""
@@ -53,6 +55,8 @@ class PositionRecord:
             "trailing_stop_active": self.trailing_stop_active,
             "highest_price": self.highest_price,
             "sheets_row_number": self.sheets_row_number,
+            "sheets_row_map": self.sheets_row_map,
+            "legs_info": self.legs_info,
         }
 
     @classmethod
@@ -84,4 +88,6 @@ class PositionRecord:
                 int(data["highest_price"]) if data.get("highest_price") else None
             ),
             sheets_row_number=data.get("sheets_row_number"),
+            sheets_row_map=data.get("sheets_row_map"),
+            legs_info=data.get("legs_info"),
         )

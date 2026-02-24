@@ -258,7 +258,7 @@ class TradingEngine:
             if action.order_type == "Open":
                 self._record_open(action, fill_result.fill_price)
 
-            # 平倉 → 通知 PM 並更新記錄
+            # 平倉 → 通知 PM 並更新 Google Sheets per-leg
             if action.order_type == "Close" and action.leg_id:
                 exit_reason_str = action.metadata.get("exit_reason", "SL")
                 exit_reason = ExitReason(exit_reason_str)
@@ -268,8 +268,9 @@ class TradingEngine:
                     fill_time=fill_result.fill_time or datetime.now(),
                     exit_reason=exit_reason,
                 )
-                self._check_and_record_close(
-                    action, fill_result.fill_price, exit_reason
+                self._record_leg_close(
+                    action, fill_result.fill_price, exit_reason,
+                    leg_ids=[action.leg_id],
                 )
             elif action.order_type == "Close" and "leg_ids" in action.metadata:
                 exit_reason_str = action.metadata.get("exit_reason", "FS")
@@ -281,8 +282,9 @@ class TradingEngine:
                         fill_time=fill_result.fill_time or datetime.now(),
                         exit_reason=exit_reason,
                     )
-                self._check_and_record_close(
-                    action, fill_result.fill_price, exit_reason
+                self._record_leg_close(
+                    action, fill_result.fill_price, exit_reason,
+                    leg_ids=action.metadata["leg_ids"],
                 )
 
             # 發送通知
@@ -370,7 +372,7 @@ class TradingEngine:
         self.position_manager.restore_position(record)
 
     def _record_open(self, action: OrderAction, fill_price: int) -> None:
-        """開倉時保存持倉記錄到 position.json + Google Sheets"""
+        """開倉時保存持倉記錄到 position.json + Google Sheets（每個 leg 一行）"""
         try:
             pm = self.position_manager
             position = pm.position
@@ -381,47 +383,111 @@ class TradingEngine:
             if position.open_legs:
                 sl_price = position.open_legs[0].exit_rule.stop_loss_price
 
+            # 讀取既有的 position record（加碼時保留原始資料）
+            existing_record = self.record_service.get_position(action.sub_symbol)
+            existing_row_map = {}
+            existing_legs_info = {}
+            if existing_record:
+                if existing_record.sheets_row_map:
+                    existing_row_map = dict(existing_record.sheets_row_map)
+                if existing_record.legs_info:
+                    existing_legs_info = dict(existing_record.legs_info)
+
             record = PositionRecord(
                 symbol=action.symbol,
                 sub_symbol=action.sub_symbol,
                 direction=action.action,
-                entry_time=datetime.now(),
+                entry_time=existing_record.entry_time if existing_record else datetime.now(),
                 timeframe=pm.config.timeframe,
-                quantity=action.quantity,
-                entry_price=fill_price,
+                quantity=position.open_quantity,
+                entry_price=position.entry_price,
                 stop_loss_price=sl_price,
-                highest_price=fill_price,
+                highest_price=position.highest_price or fill_price,
+                sheets_row_map=existing_row_map,
+                legs_info=existing_legs_info,
             )
+
+            # 找出尚未記錄的新 legs
+            new_legs = []
+            for leg in position.open_legs:
+                leg_ep = leg.entry_price or fill_price
+                if leg.leg_id not in existing_row_map:
+                    new_legs.append({
+                        "leg_id": leg.leg_id,
+                        "quantity": leg.quantity,
+                        "entry_price": leg_ep,
+                    })
+                if leg.leg_id not in existing_legs_info:
+                    if record.legs_info is None:
+                        record.legs_info = {}
+                    record.legs_info[leg.leg_id] = {
+                        "entry_price": leg_ep,
+                        "quantity": leg.quantity,
+                        "leg_type": leg.leg_type.value,
+                    }
+
+            # 為新 legs 建立 Google Sheets 記錄
+            if new_legs:
+                new_row_map = self.record_service.log_legs_open(record, new_legs)
+                if record.sheets_row_map is None:
+                    record.sheets_row_map = {}
+                record.sheets_row_map.update(new_row_map)
+
             self.record_service.save_position(record)
         except Exception as e:
             print(f"⚠️ 保存開倉記錄失敗: {e}")
 
-    def _check_and_record_close(
+    def _record_leg_close(
         self,
         action: OrderAction,
         fill_price: int,
         exit_reason: ExitReason,
+        leg_ids: list[str],
     ) -> None:
-        """平倉後如果所有 Leg 都已關閉，移除持倉記錄"""
-        pm = self.position_manager
-        if pm.position is not None:
-            return
-
+        """平倉時更新 Google Sheets 對應 leg 的記錄，並在全部平倉後清除 position.json"""
         try:
+            pm = self.position_manager
             strategy_params = {
                 "stop_loss_points": pm.config.stop_loss_points,
                 "start_trailing_stop_points": pm.config.start_trailing_stop_points,
                 "trailing_stop_points": pm.config.trailing_stop_points,
                 "take_profit_points": pm.config.take_profit_points,
             }
-            self.record_service.remove_position(
-                sub_symbol=action.sub_symbol,
-                exit_price=float(fill_price),
-                exit_reason=exit_reason,
-                strategy_params=strategy_params,
-            )
+
+            # 取得 sheets_row_map
+            existing_record = self.record_service.get_position(action.sub_symbol)
+            row_map = {}
+            if existing_record and existing_record.sheets_row_map:
+                row_map = existing_record.sheets_row_map
+
+            # 更新每個被平倉 leg 的 Google Sheets 記錄
+            for leg_id in leg_ids:
+                row_number = row_map.get(leg_id)
+                if row_number:
+                    self.record_service.log_leg_close(
+                        leg_id=leg_id,
+                        row_number=row_number,
+                        exit_price=float(fill_price),
+                        exit_reason=exit_reason,
+                        strategy_params=strategy_params,
+                    )
+
+            # 全部平倉 → 清除 position.json
+            if pm.position is None:
+                self.record_service.remove_position(sub_symbol=action.sub_symbol)
+            else:
+                # 部分平倉 → 更新 position.json（移除已平倉 leg 的條目）
+                legs_info = existing_record.legs_info or {}
+                for leg_id in leg_ids:
+                    row_map.pop(leg_id, None)
+                    legs_info.pop(leg_id, None)
+                existing_record.sheets_row_map = row_map
+                existing_record.legs_info = legs_info
+                existing_record.quantity = pm.position.open_quantity
+                self.record_service.save_position(existing_record)
+
         except Exception as e:
-            print(f"⚠️ 移除平倉記錄失敗: {e}")
+            print(f"⚠️ 記錄平倉失敗: {e}")
 
     def _send_startup_notification(self) -> None:
         """發送系統啟動通知"""

@@ -308,31 +308,16 @@ class PositionManager:
         # 建立 Legs
         position_id = str(uuid.uuid4())[:8]
         legs: list[PositionLeg] = []
+        addon_count = 0
 
-        if self.config.tp_leg_quantity > 0:
-            legs.append(PositionLeg(
-                leg_id=f"{position_id}-TP",
-                leg_type=LegType.TAKE_PROFIT,
-                quantity=self.config.tp_leg_quantity,
-                exit_rule=ExitRule(
-                    stop_loss_price=stop_loss_price,
-                    take_profit_price=take_profit_price,
-                    start_trailing_stop_price=start_ts_price,
-                    trailing_stop_active=record.trailing_stop_active,
-                    trailing_stop_price=trailing_stop_price,
-                    tighten_after_price=tighten_after_price,
-                    tightened_trailing_stop_points=tightened_ts_points,
-                    is_tightened=is_tightened,
-                ),
-                entry_price=entry_price,
-            ))
+        if record.legs_info:
+            # 有 legs_info → 用每個 leg 的真實資料恢復
+            for leg_id, info in record.legs_info.items():
+                leg_type_str = info.get("leg_type", "TS")
+                leg_type = LegType(leg_type_str)
+                leg_ep = int(info["entry_price"])
 
-        if self.config.ts_leg_quantity > 0:
-            legs.append(PositionLeg(
-                leg_id=f"{position_id}-TS",
-                leg_type=LegType.TRAILING_STOP,
-                quantity=self.config.ts_leg_quantity,
-                exit_rule=ExitRule(
+                exit_rule = ExitRule(
                     stop_loss_price=stop_loss_price,
                     start_trailing_stop_price=start_ts_price,
                     trailing_stop_active=record.trailing_stop_active,
@@ -340,9 +325,61 @@ class PositionManager:
                     tighten_after_price=tighten_after_price,
                     tightened_trailing_stop_points=tightened_ts_points,
                     is_tightened=is_tightened,
-                ),
-                entry_price=entry_price,
-            ))
+                )
+                if leg_type == LegType.TAKE_PROFIT:
+                    exit_rule.take_profit_price = take_profit_price
+
+                legs.append(PositionLeg(
+                    leg_id=leg_id,
+                    leg_type=leg_type,
+                    quantity=int(info["quantity"]),
+                    exit_rule=exit_rule,
+                    entry_price=leg_ep,
+                ))
+
+                if "-A" in leg_id:
+                    addon_count += 1
+
+            print(
+                f"🔄 恢復 {len(legs)} 個 legs "
+                f"(含 {addon_count} 個加碼)"
+            )
+        else:
+            # 無 legs_info → 舊版相容，用 config 建立
+            if self.config.tp_leg_quantity > 0:
+                legs.append(PositionLeg(
+                    leg_id=f"{position_id}-TP",
+                    leg_type=LegType.TAKE_PROFIT,
+                    quantity=self.config.tp_leg_quantity,
+                    exit_rule=ExitRule(
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                        start_trailing_stop_price=start_ts_price,
+                        trailing_stop_active=record.trailing_stop_active,
+                        trailing_stop_price=trailing_stop_price,
+                        tighten_after_price=tighten_after_price,
+                        tightened_trailing_stop_points=tightened_ts_points,
+                        is_tightened=is_tightened,
+                    ),
+                    entry_price=entry_price,
+                ))
+
+            if self.config.ts_leg_quantity > 0:
+                legs.append(PositionLeg(
+                    leg_id=f"{position_id}-TS",
+                    leg_type=LegType.TRAILING_STOP,
+                    quantity=self.config.ts_leg_quantity,
+                    exit_rule=ExitRule(
+                        stop_loss_price=stop_loss_price,
+                        start_trailing_stop_price=start_ts_price,
+                        trailing_stop_active=record.trailing_stop_active,
+                        trailing_stop_price=trailing_stop_price,
+                        tighten_after_price=tighten_after_price,
+                        tightened_trailing_stop_points=tightened_ts_points,
+                        is_tightened=is_tightened,
+                    ),
+                    entry_price=entry_price,
+                ))
 
         self.position = ManagedPosition(
             position_id=position_id,
@@ -355,6 +392,7 @@ class PositionManager:
             legs=legs,
             highest_price=highest,
             lowest_price=entry_price,
+            addon_count=addon_count,
         )
 
         ts_info = ""

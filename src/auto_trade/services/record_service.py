@@ -72,44 +72,74 @@ class RecordService:
     # ==================== 本地持倉記錄 ====================
 
     def save_position(self, record: PositionRecord):
-        """保存持倉記錄
+        """保存持倉記錄（僅寫入 position.json，不寫 Google Sheets）
 
         Args:
             record: 持倉記錄
         """
         try:
-            # 讀取現有記錄
             records = self._load_records(self.record_file)
-
-            # 使用 sub_symbol 作為 key
             records[record.sub_symbol] = record.to_dict()
-
-            # 保存
             self.record_file.write_text(
                 json.dumps(records, indent=2, ensure_ascii=False)
             )
             print(f"持倉記錄已保存: {record.sub_symbol}")
-
-            # 記錄開倉到 Google Sheets，並保存行號
-            row_number = self.log_trade_open(
-                trade_date=record.entry_time,
-                symbol=record.sub_symbol,
-                timeframe=record.timeframe,
-                direction="Buy",
-                quantity=record.quantity,
-                entry_price=record.entry_price,
-                stop_loss_price=record.stop_loss_price,
-            )
-
-            # 更新記錄中的行號
-            record.sheets_row_number = row_number
-            records[record.sub_symbol] = record.to_dict()
-            self.record_file.write_text(
-                json.dumps(records, indent=2, ensure_ascii=False)
-            )
-
         except Exception as e:
             print(f"保存持倉記錄失敗: {e}")
+
+    def log_legs_open(
+        self,
+        record: PositionRecord,
+        legs: list[dict],
+    ) -> dict[str, int]:
+        """為每個 leg 在 Google Sheets 各建一行開倉記錄
+
+        Args:
+            record: 持倉記錄（提供 symbol、timeframe 等共用資訊）
+            legs: list of dict, 每個 dict 含 leg_id, quantity, entry_price
+
+        Returns:
+            dict[str, int]: {leg_id: sheets_row_number}
+        """
+        row_map: dict[str, int] = {}
+        for leg in legs:
+            row_number = self.log_trade_open(
+                trade_date=datetime.now(),
+                symbol=record.sub_symbol,
+                timeframe=record.timeframe,
+                direction=record.direction.value,
+                quantity=leg["quantity"],
+                entry_price=leg["entry_price"],
+                stop_loss_price=record.stop_loss_price,
+            )
+            if row_number:
+                row_map[leg["leg_id"]] = row_number
+        return row_map
+
+    def log_leg_close(
+        self,
+        leg_id: str,
+        row_number: int,
+        exit_price: float,
+        exit_reason: ExitReason,
+        strategy_params: dict | None = None,
+    ):
+        """更新單一 leg 的 Google Sheets 平倉記錄
+
+        Args:
+            leg_id: leg 識別碼
+            row_number: Google Sheets 行號
+            exit_price: 出場價格
+            exit_reason: 出場原因
+            strategy_params: 策略參數
+        """
+        self.log_trade_close(
+            row_number=row_number,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            strategy_params=strategy_params,
+        )
+        print(f"✅ Leg {leg_id} 平倉記錄已更新 (row {row_number})")
 
     def get_position(self, sub_symbol: str) -> PositionRecord | None:
         """獲取持倉記錄
@@ -132,37 +162,16 @@ class RecordService:
             print(f"讀取持倉記錄失敗: {e}")
             return None
 
-    def remove_position(
-        self,
-        sub_symbol: str,
-        exit_price: float,
-        exit_reason: ExitReason,
-        strategy_params: dict | None = None,
-    ):
-        """移除持倉記錄並記錄平倉資訊
+    def remove_position(self, sub_symbol: str):
+        """移除本地持倉記錄（Google Sheets 的更新由 log_leg_close 處理）
 
         Args:
             sub_symbol: 子商品代碼
-            exit_price: 出場價格
-            exit_reason: 出場原因
-            strategy_params: 策略參數字典（包含 stop_loss_points, start_trailing_stop_points, trailing_stop_points, take_profit_points）
         """
         try:
             records = self._load_records(self.record_file)
 
             if sub_symbol in records:
-                # 獲取持倉記錄用於記錄到 Google Sheets
-                position_record = PositionRecord.from_dict(records[sub_symbol])
-
-                # 更新 Google Sheets 中的同一筆記錄
-                self.log_trade_close(
-                    row_number=position_record.sheets_row_number,
-                    exit_price=exit_price,
-                    exit_reason=exit_reason,
-                    strategy_params=strategy_params,
-                )
-
-                # 刪除本地記錄
                 del records[sub_symbol]
                 self.record_file.write_text(
                     json.dumps(records, indent=2, ensure_ascii=False)
@@ -379,7 +388,7 @@ class RecordService:
 
             # 更新盈虧公式（R 欄和 S 欄）
             if exit_reason != ExitReason.HOLD:
-                pnl_formula = f"=P{row_number}-N{row_number}"
+                pnl_formula = f'=IF(M{row_number}="Buy",P{row_number}-N{row_number},N{row_number}-P{row_number})'
                 worksheet.update_cell(row_number, 18, pnl_formula)
 
                 twd_formula = f"=K{row_number}*R{row_number}*200"
