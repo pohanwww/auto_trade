@@ -496,6 +496,7 @@ function buildCard(d) {{
       <div class="detail-item"><span class="label">Entry</span><span class="value blue">${{fmt(ep)}}</span></div>
       <div class="detail-item"><span class="label">Held</span><span class="value">${{duration(d.entry_time)}}</span></div>
       <div class="detail-item"><span class="label">Hard Stop</span><span class="value red">${{fmt(sl)}}</span></div>
+      <div class="detail-item"><span class="label">Trailing Stop</span><span class="value orange">${{tsp ? fmt(tsp) : (d.trailing_stop_active ? 'Active (syncing...)' : 'Inactive')}}</span></div>
       <div class="detail-item"><span class="label">Effective Stop</span><span class="value red">${{fmt(effectiveStop)}}</span></div>
       <div class="detail-item"><span class="label">Highest</span><span class="value green">${{fmt(d.highest_price)}}</span></div>
       <div class="detail-item"><span class="label">Per Lot P&L</span><span class="value ${{pnlClass === 'positive' ? 'green' : pnlClass === 'negative' ? 'red' : ''}}">${{pnlPerUnit != null ? (pnlPerUnit >= 0 ? '+' : '') + 'NT$' + fmt(pnlPerUnit) : '—'}}</span></div>
