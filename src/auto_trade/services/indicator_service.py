@@ -540,6 +540,7 @@ class IndicatorService:
         threshold_pct: float = 0.3,
         min_bars: int = 3,
         convergence_lookback: int = 30,
+        breakout_proximity_pct: float = 1.0,
     ) -> dict:
         """檢測多條 EMA 是否處於糾纏（收斂）狀態
 
@@ -551,6 +552,8 @@ class IndicatorService:
             periods: EMA 週期列表（預設 [5, 10, 20, 60]）
             threshold_pct: 最大 spread 占價格的百分比（預設 0.3%）
             min_bars: 最少持續幾根 K 棒算有效糾纏（預設 3）
+            convergence_lookback: 糾纏後最多幾根 K 棒內可觸發進場
+            breakout_proximity_pct: 進場價格不能超過糾纏區 EMA 上/下緣的百分比
 
         Returns:
             dict:
@@ -562,6 +565,8 @@ class IndicatorService:
                 breakout_long: 價格收在所有 EMA 之上（突破做多）
                 breakout_short: 價格收在所有 EMA 之下（突破做空）
                 spread_expanding: spread 正在擴張（相比前一根）
+                convergence_ema_max: 糾纏區最高 EMA 值（用於視覺化）
+                convergence_ema_min: 糾纏區最低 EMA 值（用於視覺化）
         """
         if periods is None:
             periods = [5, 10, 20, 60]
@@ -577,6 +582,8 @@ class IndicatorService:
                 "breakout_long": False,
                 "breakout_short": False,
                 "spread_expanding": False,
+                "convergence_ema_max": 0.0,
+                "convergence_ema_min": 0.0,
             }
 
         ema_lists = {p: self.calculate_ema(kbar_list, p) for p in periods}
@@ -587,6 +594,8 @@ class IndicatorService:
         converged_count = 0
         prev_spread_pct = 0.0
         peak_converged_count = 0
+        convergence_ema_max = 0.0
+        convergence_ema_min = 0.0
 
         for i in range(n - lookback, n):
             price = float(kbar_list[i].close)
@@ -607,6 +616,8 @@ class IndicatorService:
                 prev_spread_pct = sp
                 if converged_count >= min_bars:
                     peak_converged_count = converged_count
+                    convergence_ema_max = max(ema_vals)
+                    convergence_ema_min = min(ema_vals)
 
         # 最新一根 K 棒
         latest_price = float(kbar_list[-1].close)
@@ -624,9 +635,16 @@ class IndicatorService:
         prev_above_all = prev_price > max(prev_ema_vals)
         prev_below_all = prev_price < min(prev_ema_vals)
 
-        # 只有前一根尚未突破、當根才突破的才算有效突破
-        breakout_long = latest_price > max(all_ema) and not prev_above_all
-        breakout_short = latest_price < min(all_ema) and not prev_below_all
+        # 價格距離檢查：進場價不能離糾纏區太遠
+        proximity_long = True
+        proximity_short = True
+        if convergence_ema_max > 0:
+            proximity_long = latest_price <= convergence_ema_max * (1 + breakout_proximity_pct / 100)
+        if convergence_ema_min > 0:
+            proximity_short = latest_price >= convergence_ema_min * (1 - breakout_proximity_pct / 100)
+
+        breakout_long = latest_price > max(all_ema) and not prev_above_all and proximity_long
+        breakout_short = latest_price < min(all_ema) and not prev_below_all and proximity_short
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
@@ -638,6 +656,8 @@ class IndicatorService:
             "breakout_long": breakout_long,
             "breakout_short": breakout_short,
             "spread_expanding": spread_expanding,
+            "convergence_ema_max": convergence_ema_max,
+            "convergence_ema_min": convergence_ema_min,
         }
 
     # ──────────────────────────────────────────────
