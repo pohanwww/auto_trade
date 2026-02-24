@@ -99,8 +99,8 @@ if bars_since_convergence > 1 and bars_since_convergence <= conv_lookback
             prior_breakout_short := true
             break
 
-breakout_long  = close > ema_max and not is_converged and not prior_breakout_long
-breakout_short = close < ema_min and not is_converged and not prior_breakout_short
+breakout_long  = close > ema_max and not prior_breakout_long
+breakout_short = close < ema_min and not prior_breakout_short
 
 // Spread 正在擴張
 spread_expanding = spread_pct > spread_pct[1]

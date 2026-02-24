@@ -660,8 +660,8 @@ class IndicatorService:
                 if prior_breakout_long and prior_breakout_short:
                     break
 
-        breakout_long = latest_price > max(all_ema) and not is_converged and not prior_breakout_long
-        breakout_short = latest_price < min(all_ema) and not is_converged and not prior_breakout_short
+        breakout_long = latest_price > max(all_ema) and not prior_breakout_long
+        breakout_short = latest_price < min(all_ema) and not prior_breakout_short
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
