@@ -76,13 +76,7 @@ else
 
 had_valid_convergence = bars_since_convergence <= conv_lookback
 
-// 突破條件：前一根未突破 + 當根突破（確保是「新」突破）
-prev_ema_max = math.max(ema1[1], ema2[1], ema3[1], ema4[1])
-prev_ema_min = math.min(ema1[1], ema2[1], ema3[1], ema4[1])
-prev_above_all = close[1] > prev_ema_max
-prev_below_all = close[1] < prev_ema_min
-
-// 掃描糾纏區到當前 K 棒之間，是否已有先前的完整突破（一個糾纏區一個進場）
+// 掃描糾纏區到當前 K 棒之間，是否已有先前的突破（一個糾纏區一個進場）
 prior_breakout_long  = false
 prior_breakout_short = false
 if bars_since_convergence > 1 and bars_since_convergence <= conv_lookback
@@ -98,15 +92,15 @@ if bars_since_convergence > 1 and bars_since_convergence <= conv_lookback
         i_prev_spread = (i_prev_ema_max - i_prev_ema_min) / i_prev_close * 100
         i_expanding  = i_spread > i_prev_spread
 
-        if i_close > i_ema_max and i_prev_close <= i_prev_ema_max and i_expanding
+        if i_close > i_ema_max and i_expanding
             prior_breakout_long := true
             break
-        if i_close < i_ema_min and i_prev_close >= i_prev_ema_min and i_expanding
+        if i_close < i_ema_min and i_expanding
             prior_breakout_short := true
             break
 
-breakout_long  = close > ema_max and not prev_above_all and not prior_breakout_long
-breakout_short = close < ema_min and not prev_below_all and not prior_breakout_short
+breakout_long  = close > ema_max and not is_converged and not prior_breakout_long
+breakout_short = close < ema_min and not is_converged and not prior_breakout_short
 
 // Spread 正在擴張
 spread_expanding = spread_pct > spread_pct[1]

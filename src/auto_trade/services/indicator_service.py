@@ -634,13 +634,7 @@ class IndicatorService:
         is_converged = latest_spread_pct < threshold_pct
         was_converged = peak_converged_count >= min_bars
 
-        # 前一根 K 棒的收盤價與 EMA 關係（用於判斷是否為「新」突破）
-        prev_price = float(kbar_list[-2].close)
-        prev_ema_vals = [ema_lists[p][-2].ema_value for p in periods]
-        prev_above_all = prev_price > max(prev_ema_vals)
-        prev_below_all = prev_price < min(prev_ema_vals)
-
-        # 掃描糾纏區之後是否已有先前的完整突破信號（一個糾纏區只產生一個進場機會）
+        # 掃描糾纏區之後是否已有先前的突破信號（一個糾纏區只產生一個進場機會）
         prior_breakout_long = False
         prior_breakout_short = False
         if last_convergence_idx >= 0 and last_convergence_idx < n - 2:
@@ -659,15 +653,15 @@ class IndicatorService:
                 )
                 j_expanding = j_sp > j_prev_sp
 
-                if j_price > max(j_ema) and j_prev_price <= max(j_prev_ema) and j_expanding:
+                if j_price > max(j_ema) and j_expanding:
                     prior_breakout_long = True
-                if j_price < min(j_ema) and j_prev_price >= min(j_prev_ema) and j_expanding:
+                if j_price < min(j_ema) and j_expanding:
                     prior_breakout_short = True
                 if prior_breakout_long and prior_breakout_short:
                     break
 
-        breakout_long = latest_price > max(all_ema) and not prev_above_all and not prior_breakout_long
-        breakout_short = latest_price < min(all_ema) and not prev_below_all and not prior_breakout_short
+        breakout_long = latest_price > max(all_ema) and not is_converged and not prior_breakout_long
+        breakout_short = latest_price < min(all_ema) and not is_converged and not prior_breakout_short
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
