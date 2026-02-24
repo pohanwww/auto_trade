@@ -469,25 +469,6 @@ function buildCard(d) {{
       </div>
     </div>`;
 
-  // Trailing stop highlight box
-  let tsBox = '';
-  if (tsp) {{
-    const tsDistance = cp ? Math.abs(cp - tsp) : null;
-    tsBox = `
-    <div style="background:rgba(219,109,40,0.08);border:1px solid rgba(219,109,40,0.25);border-radius:8px;padding:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
-      <div>
-        <div style="color:var(--orange);font-size:0.78rem;font-weight:600;">Trailing Stop</div>
-        <div style="color:var(--orange);font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums;">${{fmt(tsp)}}</div>
-      </div>
-      <div style="text-align:right;">
-        <div style="color:var(--text-muted);font-size:0.78rem;">Distance</div>
-        <div style="color:var(--text-muted);font-size:1rem;font-weight:600;">${{tsDistance != null ? fmt(tsDistance) + ' pts' : '—'}}</div>
-      </div>
-    </div>`;
-  }} else if (d.trailing_stop_active) {{
-    tsBox = `<div style="background:rgba(219,109,40,0.08);border:1px solid rgba(219,109,40,0.25);border-radius:8px;padding:12px;margin-bottom:14px;"><div style="color:var(--orange);font-size:0.85rem;">Trailing Stop: Activating...</div></div>`;
-  }}
-
   // Details grid
   const details = `
     <div class="details">
@@ -545,7 +526,6 @@ function buildCard(d) {{
         ${{badge}}
       </div>
       ${{pnlHero}}
-      ${{tsBox}}
       ${{details}}
       ${{stopBar}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
