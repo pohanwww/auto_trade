@@ -15,7 +15,7 @@ from datetime import datetime
 
 from auto_trade.executors.base_executor import BaseExecutor
 from auto_trade.models.position import OrderAction
-from auto_trade.models.position_record import ExitReason
+from auto_trade.models.position_record import ExitReason, PositionRecord
 from auto_trade.models.trading_unit import TradingUnit
 from auto_trade.services.account_service import AccountService
 from auto_trade.services.indicator_service import IndicatorService
@@ -106,6 +106,9 @@ class TradingEngine:
 
         print(f"🚀 啟動 TradingEngine: {self.trading_unit.name}")
 
+        # 檢查是否有未平倉的持倉記錄 → 恢復到 PositionManager
+        self._try_restore_position()
+
         # 訂閱商品
         self.market_service.subscribe_symbol(self.symbol, self.sub_symbol, init_days=30)
 
@@ -144,6 +147,9 @@ class TradingEngine:
                     # 執行 PM 產生的指令
                     for action in actions:
                         self._execute_action(action)
+
+                    # 持倉狀態有變動時同步到 position.json
+                    self._sync_position_record()
 
                     # 日誌（每 5 分鐘一次）
                     if current_time.minute % 5 == 0 and not print_flag:
@@ -184,9 +190,7 @@ class TradingEngine:
                     # 執行開倉指令
                     for action in actions:
                         fill_result = self._execute_action(action)
-                        if fill_result and action.order_type == "Open":
-                            # 更新 PM 的 position 入場價
-                            if self.position_manager.position:
+                        if fill_result and action.order_type == "Open" and self.position_manager.position:
                                 self.position_manager.position.entry_price = fill_result
                                 self.position_manager.position.highest_price = (
                                     fill_result
@@ -225,7 +229,11 @@ class TradingEngine:
                 f"({action.reason})"
             )
 
-            # 如果是平倉，通知 PM
+            # 開倉 → 保存持倉記錄
+            if action.order_type == "Open":
+                self._record_open(action, fill_result.fill_price)
+
+            # 平倉 → 通知 PM 並更新記錄
             if action.order_type == "Close" and action.leg_id:
                 exit_reason_str = action.metadata.get("exit_reason", "SL")
                 exit_reason = ExitReason(exit_reason_str)
@@ -235,8 +243,10 @@ class TradingEngine:
                     fill_time=fill_result.fill_time or datetime.now(),
                     exit_reason=exit_reason,
                 )
+                self._check_and_record_close(
+                    action, fill_result.fill_price, exit_reason
+                )
             elif action.order_type == "Close" and "leg_ids" in action.metadata:
-                # 批量平倉（如 MACD 快速停損）
                 exit_reason_str = action.metadata.get("exit_reason", "FS")
                 exit_reason = ExitReason(exit_reason_str)
                 for leg_id in action.metadata["leg_ids"]:
@@ -246,6 +256,9 @@ class TradingEngine:
                         fill_time=fill_result.fill_time or datetime.now(),
                         exit_reason=exit_reason,
                     )
+                self._check_and_record_close(
+                    action, fill_result.fill_price, exit_reason
+                )
 
             # 發送通知
             if self.line_bot_service:
@@ -266,6 +279,115 @@ class TradingEngine:
         else:
             print(f"❌ 下單失敗: {fill_result.message}")
             return None
+
+    _last_synced_highest: int = 0
+    _last_synced_ts_active: bool = False
+    _last_synced_sl: int = 0
+
+    def _sync_position_record(self) -> None:
+        """持倉狀態有變動時同步到 position.json"""
+        pm = self.position_manager
+        if not pm.position or not self.sub_symbol:
+            return
+
+        pos = pm.position
+        has_active_ts = any(
+            leg.exit_rule.trailing_stop_active for leg in pos.open_legs
+        )
+        sl_price = pos.open_legs[0].exit_rule.stop_loss_price or 0 if pos.open_legs else 0
+
+        # 沒有變動就跳過
+        if (
+            pos.highest_price == self._last_synced_highest
+            and has_active_ts == self._last_synced_ts_active
+            and sl_price == self._last_synced_sl
+        ):
+            return
+
+        try:
+            import json
+
+            records = self.record_service._load_records(self.record_service.record_file)
+            if self.sub_symbol in records:
+                records[self.sub_symbol]["highest_price"] = pos.highest_price
+                records[self.sub_symbol]["trailing_stop_active"] = has_active_ts
+                records[self.sub_symbol]["stop_loss_price"] = sl_price
+                self.record_service.record_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False)
+                )
+
+            self._last_synced_highest = pos.highest_price
+            self._last_synced_ts_active = has_active_ts
+            self._last_synced_sl = sl_price
+        except Exception as e:
+            print(f"⚠️ 同步持倉記錄失敗: {e}")
+
+    def _try_restore_position(self) -> None:
+        """啟動時檢查 position.json，如有未平倉記錄則恢復到 PositionManager"""
+        if not self.sub_symbol:
+            return
+
+        record = self.record_service.get_position(self.sub_symbol)
+        if record is None:
+            print("📋 無未平倉記錄，正常啟動")
+            return
+
+        print(f"📋 發現未平倉記錄: {record.sub_symbol} @ {record.entry_price}")
+        self.position_manager.restore_position(record)
+
+    def _record_open(self, action: OrderAction, fill_price: int) -> None:
+        """開倉時保存持倉記錄到 position.json + Google Sheets"""
+        try:
+            pm = self.position_manager
+            position = pm.position
+            if not position:
+                return
+
+            sl_price = None
+            if position.open_legs:
+                sl_price = position.open_legs[0].exit_rule.stop_loss_price
+
+            record = PositionRecord(
+                symbol=action.symbol,
+                sub_symbol=action.sub_symbol,
+                direction=action.action,
+                entry_time=datetime.now(),
+                timeframe=pm.config.timeframe,
+                quantity=action.quantity,
+                entry_price=fill_price,
+                stop_loss_price=sl_price,
+                highest_price=fill_price,
+            )
+            self.record_service.save_position(record)
+        except Exception as e:
+            print(f"⚠️ 保存開倉記錄失敗: {e}")
+
+    def _check_and_record_close(
+        self,
+        action: OrderAction,
+        fill_price: int,
+        exit_reason: ExitReason,
+    ) -> None:
+        """平倉後如果所有 Leg 都已關閉，移除持倉記錄"""
+        pm = self.position_manager
+        if pm.position is not None:
+            return
+
+        try:
+            strategy_params = {
+                "stop_loss_points": pm.config.stop_loss_points,
+                "start_trailing_stop_points": pm.config.start_trailing_stop_points,
+                "trailing_stop_points": pm.config.trailing_stop_points,
+                "take_profit_points": pm.config.take_profit_points,
+            }
+            self.record_service.remove_position(
+                sub_symbol=action.sub_symbol,
+                exit_price=float(fill_price),
+                exit_reason=exit_reason,
+                strategy_params=strategy_params,
+            )
+        except Exception as e:
+            print(f"⚠️ 移除平倉記錄失敗: {e}")
 
     def _send_startup_notification(self) -> None:
         """發送系統啟動通知"""

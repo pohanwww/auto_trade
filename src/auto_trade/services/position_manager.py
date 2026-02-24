@@ -24,7 +24,7 @@ from auto_trade.models.position import (
     PositionLeg,
     PositionStatus,
 )
-from auto_trade.models.position_record import ExitReason
+from auto_trade.models.position_record import ExitReason, PositionRecord
 from auto_trade.models.strategy import SignalType, StrategySignal
 from auto_trade.services.indicator_service import IndicatorService
 from auto_trade.utils import calculate_points
@@ -209,6 +209,139 @@ class PositionManager:
     def _close_action(self) -> Action:
         """平倉動作方向（做多用 Sell 平倉，做空用 Buy 平倉）"""
         return Action.Sell if self._is_long else Action.Buy
+
+    def restore_position(self, record: PositionRecord) -> None:
+        """從 PositionRecord 恢復倉位（程式重啟後使用）
+
+        根據 record 中的資訊和當前 config 重建完整的 ManagedPosition，
+        包含 Legs、ExitRules、移停狀態等。
+        """
+        entry_price = record.entry_price
+        is_long = record.direction == Action.Buy
+        stop_loss_price = record.stop_loss_price or (
+            entry_price - 100 if is_long else entry_price + 100
+        )
+
+        # 計算停利
+        tp_pts = calculate_points(
+            self.config.take_profit_points,
+            self.config.take_profit_points_rate,
+            entry_price,
+        )
+        take_profit_price = entry_price + tp_pts if is_long else entry_price - tp_pts
+
+        # 計算啟動移停價格
+        start_ts_price = (
+            entry_price + self.config.start_trailing_stop_points
+            if is_long
+            else entry_price - self.config.start_trailing_stop_points
+        )
+
+        # 收緊移停
+        tighten_after_price: int | None = None
+        tightened_ts_points: int | None = None
+        if self.config.has_tightened_trailing_stop:
+            tighten_after_pts = calculate_points(
+                self.config.tighten_after_points,
+                self.config.tighten_after_points_rate,
+                entry_price,
+            )
+            tighten_after_price = (
+                entry_price + tighten_after_pts
+                if is_long
+                else entry_price - tighten_after_pts
+            )
+            tightened_ts_points = calculate_points(
+                self.config.tightened_trailing_stop_points,
+                self.config.tightened_trailing_stop_points_rate,
+                entry_price,
+            )
+
+        # 恢復 highest_price（用於移停計算）
+        highest = record.highest_price or entry_price
+
+        # 計算當前移停價格（如果移停已啟動）
+        trailing_stop_price: int | None = None
+        is_tightened = False
+        if record.trailing_stop_active:
+            ts_points = calculate_points(
+                self.config.trailing_stop_points,
+                self.config.trailing_stop_points_rate,
+                entry_price,
+            )
+            # 檢查是否已進入收緊模式
+            if tighten_after_price is not None and tightened_ts_points is not None:
+                past_tighten = (
+                    highest >= tighten_after_price if is_long
+                    else highest <= tighten_after_price
+                )
+                if past_tighten:
+                    ts_points = tightened_ts_points
+                    is_tightened = True
+            trailing_stop_price = (
+                highest - ts_points if is_long else highest + ts_points
+            )
+
+        # 建立 Legs
+        position_id = str(uuid.uuid4())[:8]
+        legs: list[PositionLeg] = []
+
+        if self.config.tp_leg_quantity > 0:
+            legs.append(PositionLeg(
+                leg_id=f"{position_id}-TP",
+                leg_type=LegType.TAKE_PROFIT,
+                quantity=self.config.tp_leg_quantity,
+                exit_rule=ExitRule(
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    start_trailing_stop_price=start_ts_price,
+                    trailing_stop_active=record.trailing_stop_active,
+                    trailing_stop_price=trailing_stop_price,
+                    tighten_after_price=tighten_after_price,
+                    tightened_trailing_stop_points=tightened_ts_points,
+                    is_tightened=is_tightened,
+                ),
+            ))
+
+        if self.config.ts_leg_quantity > 0:
+            legs.append(PositionLeg(
+                leg_id=f"{position_id}-TS",
+                leg_type=LegType.TRAILING_STOP,
+                quantity=self.config.ts_leg_quantity,
+                exit_rule=ExitRule(
+                    stop_loss_price=stop_loss_price,
+                    start_trailing_stop_price=start_ts_price,
+                    trailing_stop_active=record.trailing_stop_active,
+                    trailing_stop_price=trailing_stop_price,
+                    tighten_after_price=tighten_after_price,
+                    tightened_trailing_stop_points=tightened_ts_points,
+                    is_tightened=is_tightened,
+                ),
+            ))
+
+        self.position = ManagedPosition(
+            position_id=position_id,
+            symbol=record.symbol,
+            sub_symbol=record.sub_symbol,
+            direction=record.direction,
+            total_quantity=record.quantity,
+            entry_price=entry_price,
+            entry_time=record.entry_time,
+            legs=legs,
+            highest_price=highest,
+            lowest_price=entry_price,
+        )
+
+        ts_info = ""
+        if record.trailing_stop_active:
+            ts_info = f", 移停={trailing_stop_price}"
+            if is_tightened:
+                ts_info += "(收緊)"
+        print(
+            f"🔄 恢復倉位: {'做多' if is_long else '做空'} "
+            f"入場={entry_price}, 停損={stop_loss_price}, "
+            f"最高={highest}{ts_info}"
+        )
 
     def on_signal(
         self,

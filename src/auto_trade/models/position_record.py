@@ -34,6 +34,7 @@ class PositionRecord:
     start_trailing_stop_price: int | None = None  # 啟動移動停損的價格
     take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
+    highest_price: int | None = None  # 進場後最高價（用於重啟恢復移停）
     sheets_row_number: int | None = None  # Google Sheets 中的行號
 
     def to_dict(self) -> dict:
@@ -50,6 +51,7 @@ class PositionRecord:
             "start_trailing_stop_price": self.start_trailing_stop_price,
             "take_profit_price": self.take_profit_price,
             "trailing_stop_active": self.trailing_stop_active,
+            "highest_price": self.highest_price,
             "sheets_row_number": self.sheets_row_number,
         }
 
@@ -78,5 +80,8 @@ class PositionRecord:
                 else None
             ),  # 向後兼容
             trailing_stop_active=data.get("trailing_stop_active", False),
-            sheets_row_number=data.get("sheets_row_number"),  # 向後兼容
+            highest_price=(
+                int(data["highest_price"]) if data.get("highest_price") else None
+            ),
+            sheets_row_number=data.get("sheets_row_number"),
         )
