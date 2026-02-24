@@ -289,6 +289,7 @@ class TradingEngine:
     _last_synced_highest: int = 0
     _last_synced_ts_active: bool = False
     _last_synced_sl: int = 0
+    _last_synced_ts_price: int = 0
 
     def _sync_position_record(self) -> None:
         """持倉狀態有變動時同步到 position.json"""
@@ -297,27 +298,34 @@ class TradingEngine:
             return
 
         pos = pm.position
+        is_long = pos.direction.value == "Buy"
         has_active_ts = any(
             leg.exit_rule.trailing_stop_active for leg in pos.open_legs
         )
         sl_price = pos.open_legs[0].exit_rule.stop_loss_price or 0 if pos.open_legs else 0
 
-        # 沒有變動就跳過
+        ts_prices = [
+            leg.exit_rule.trailing_stop_price
+            for leg in pos.open_legs
+            if leg.exit_rule.trailing_stop_active and leg.exit_rule.trailing_stop_price
+        ]
+        ts_price = (max(ts_prices) if is_long else min(ts_prices)) if ts_prices else 0
+
         if (
             pos.highest_price == self._last_synced_highest
             and has_active_ts == self._last_synced_ts_active
             and sl_price == self._last_synced_sl
+            and ts_price == self._last_synced_ts_price
         ):
             return
 
         try:
-            import json
-
             records = self.record_service._load_records(self.record_service.record_file)
             if self.sub_symbol in records:
                 records[self.sub_symbol]["highest_price"] = pos.highest_price
                 records[self.sub_symbol]["trailing_stop_active"] = has_active_ts
                 records[self.sub_symbol]["stop_loss_price"] = sl_price
+                records[self.sub_symbol]["trailing_stop_price"] = ts_price or None
                 self.record_service.record_file.write_text(
                     json.dumps(records, indent=2, ensure_ascii=False)
                 )
@@ -325,6 +333,7 @@ class TradingEngine:
             self._last_synced_highest = pos.highest_price
             self._last_synced_ts_active = has_active_ts
             self._last_synced_sl = sl_price
+            self._last_synced_ts_price = ts_price
         except Exception as e:
             print(f"⚠️ 同步持倉記錄失敗: {e}")
 
@@ -413,11 +422,17 @@ class TradingEngine:
         }
 
         if pos:
+            is_long = pos.direction.value == "Buy"
             ts_prices = [
                 leg.exit_rule.trailing_stop_price
                 for leg in pos.open_legs
                 if leg.exit_rule.trailing_stop_active and leg.exit_rule.trailing_stop_price
             ]
+            ts_price = (
+                (max(ts_prices) if is_long else min(ts_prices))
+                if ts_prices
+                else None
+            )
             data.update({
                 "direction": pos.direction.value,
                 "entry_price": pos.entry_price,
@@ -430,7 +445,7 @@ class TradingEngine:
                 "trailing_stop_active": any(
                     leg.exit_rule.trailing_stop_active for leg in pos.open_legs
                 ),
-                "trailing_stop_price": max(ts_prices) if ts_prices else None,
+                "trailing_stop_price": ts_price,
                 "take_profit_price": (
                     pos.open_legs[0].exit_rule.take_profit_price
                     if pos.open_legs and pos.open_legs[0].exit_rule.take_profit_price

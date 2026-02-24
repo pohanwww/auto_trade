@@ -10,15 +10,15 @@
 
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 app = FastAPI(title="Trading Dashboard")
 
 STATE_DIR = Path("data/state")
+LOGS_DIR = Path("logs")
 POINT_VALUE = 50  # MXF: 1 point = NT$50
 
 
@@ -52,7 +52,6 @@ def _collect_strategies() -> list[dict]:
         if status:
             info.update(status)
         elif position:
-            # Fallback: only position.json exists (engine not running or no status yet)
             sub_sym = next(iter(position), None)
             if sub_sym and isinstance(position[sub_sym], dict):
                 rec = position[sub_sym]
@@ -64,6 +63,7 @@ def _collect_strategies() -> list[dict]:
                 info["stop_loss_price"] = rec.get("stop_loss_price")
                 info["highest_price"] = rec.get("highest_price")
                 info["trailing_stop_active"] = rec.get("trailing_stop_active", False)
+                info["trailing_stop_price"] = rec.get("trailing_stop_price")
                 info["entry_time"] = rec.get("entry_time")
             else:
                 info["has_position"] = False
@@ -86,13 +86,63 @@ def api_status(token: str | None = Query(None)):
     return _collect_strategies()
 
 
+@app.get("/api/logs")
+def api_logs_list(token: str | None = Query(None)):
+    """List available log files, newest first."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not LOGS_DIR.exists():
+        return []
+    files = sorted(
+        (
+            {"name": f.name, "size": f.stat().st_size, "modified": f.stat().st_mtime}
+            for f in LOGS_DIR.iterdir()
+            if f.is_file() and f.suffix == ".log"
+        ),
+        key=lambda x: x["modified"],
+        reverse=True,
+    )
+    return files
+
+
+@app.get("/api/logs/{filename}")
+def api_logs_content(
+    filename: str,
+    tail: int = Query(500, ge=1, le=10000),
+    token: str | None = Query(None),
+):
+    """Read last N lines of a log file."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    safe_name = Path(filename).name
+    log_path = LOGS_DIR / safe_name
+    if not log_path.exists() or not log_path.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+        return {"filename": safe_name, "total_lines": len(lines), "lines": lines[-tail:]}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, token: str | None = Query(None)):
+def index(token: str | None = Query(None)):
     if not _check_token(token):
         return HTMLResponse("<h1>Unauthorized</h1>", status_code=401)
 
     token_param = f"&token={token}" if token else ""
     return HTMLResponse(_build_html(token_param))
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs_page(token: str | None = Query(None)):
+    if not _check_token(token):
+        return HTMLResponse("<h1>Unauthorized</h1>", status_code=401)
+
+    token_param = f"&token={token}" if token else ""
+    return HTMLResponse(_build_logs_html(token_param))
 
 
 def _build_html(token_param: str) -> str:
@@ -279,6 +329,24 @@ def _build_html(token_param: str) -> str:
   }}
   .ts-label.active {{ background: rgba(219,109,40,0.15); color: var(--orange); }}
   .ts-label.inactive {{ background: rgba(139,148,158,0.1); color: var(--text-muted); }}
+  nav {{
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }}
+  nav a {{
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }}
+  nav a:hover {{ color: var(--text); background: rgba(255,255,255,0.05); }}
+  nav a.active {{ color: var(--blue); background: rgba(88,166,255,0.1); }}
   @media (max-width: 480px) {{
     body {{ padding: 12px; }}
     .grid {{ grid-template-columns: 1fr; }}
@@ -288,6 +356,10 @@ def _build_html(token_param: str) -> str:
 </style>
 </head>
 <body>
+  <nav>
+    <a href="/?{token_param.lstrip('&')}" class="active">Positions</a>
+    <a href="/logs?{token_param.lstrip('&')}">Logs</a>
+  </nav>
   <div class="header">
     <h1>Trading Dashboard</h1>
     <div class="meta">
@@ -333,12 +405,14 @@ function buildCard(d) {{
   const hasPos = d.has_position;
   const cp = d.current_price;
   const ep = d.entry_price;
+  const qty = d.quantity || 0;
   const engineOnline = !!d.timestamp;
 
-  let pnlPts = null, pnlAmt = null, pnlClass = 'zero';
+  let pnlPts = null, pnlPerUnit = null, pnlTotal = null, pnlClass = 'zero';
   if (hasPos && cp && ep) {{
     pnlPts = isLong ? cp - ep : ep - cp;
-    pnlAmt = pnlPts * POINT_VALUE * (d.quantity || 1);
+    pnlPerUnit = pnlPts * POINT_VALUE;
+    pnlTotal = pnlPts * POINT_VALUE * qty;
     pnlClass = pnlPts > 0 ? 'positive' : pnlPts < 0 ? 'negative' : 'zero';
   }}
 
@@ -355,85 +429,113 @@ function buildCard(d) {{
 
   let tsLabel = '';
   if (hasPos) {{
-    if (d.trailing_stop_active) {{
-      tsLabel = '<span class="ts-label active">TS Active</span>';
-    }} else {{
-      tsLabel = '<span class="ts-label inactive">TS Inactive</span>';
-    }}
+    tsLabel = d.trailing_stop_active
+      ? '<span class="ts-label active">TS Active</span>'
+      : '<span class="ts-label inactive">TS Inactive</span>';
   }}
 
-  let priceRow = '';
-  if (hasPos) {{
-    priceRow = `
-      <div class="price-row">
+  // --- No position: simple display ---
+  if (!hasPos) {{
+    const engineStatus = engineOnline
+      ? `<span style="font-size:0.75rem;color:var(--text-muted)">Updated ${{timeSince(d.timestamp)}}</span>`
+      : '';
+    let priceRow = cp
+      ? `<div class="price-row"><div class="current-price">${{fmt(cp)}}</div><div class="pnl zero">No Position</div></div>`
+      : '';
+    return `<div class="card"><div class="card-header"><span class="name">${{d.strategy}}</span>${{badge}}</div>${{priceRow}}<div style="margin-top:10px;text-align:right;">${{engineStatus}}</div></div>`;
+  }}
+
+  // --- Has position ---
+  const sl = d.stop_loss_price;
+  const tsp = d.trailing_stop_price;
+  const tp = d.take_profit_price;
+  const effectiveStop = (tsp && sl) ? (isLong ? Math.max(tsp, sl) : Math.min(tsp, sl)) : (tsp || sl);
+
+  // P&L hero section
+  const pnlHero = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:16px;">
+      <div>
+        <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:2px;">Current Price</div>
         <div class="current-price">${{fmt(cp || ep)}}</div>
-        <div>
-          <div class="pnl ${{pnlClass}}">
-            ${{pnlPts != null ? (pnlPts >= 0 ? '+' : '') + fmt(pnlPts) + ' pts' : '—'}}
-          </div>
-          <div class="pnl ${{pnlClass}}" style="font-size:0.9rem;">
-            ${{pnlAmt != null ? (pnlAmt >= 0 ? '+' : '') + 'NT$' + fmt(pnlAmt) : ''}}
-          </div>
+      </div>
+      <div style="text-align:right;">
+        <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:2px;">Unrealized P&L</div>
+        <div class="pnl ${{pnlClass}}" style="font-size:1.6rem;">
+          ${{pnlPts != null ? (pnlPts >= 0 ? '+' : '') + fmt(pnlPts) + ' pts' : '—'}}
         </div>
-      </div>`;
-  }} else if (cp) {{
-    priceRow = `<div class="price-row"><div class="current-price">${{fmt(cp)}}</div><div class="pnl zero">No Position</div></div>`;
+        <div class="pnl ${{pnlClass}}" style="font-size:1.1rem;">
+          ${{pnlTotal != null ? (pnlTotal >= 0 ? '+' : '') + 'NT$' + fmt(pnlTotal) + ' (' + qty + ' lots)' : ''}}
+        </div>
+      </div>
+    </div>`;
+
+  // Trailing stop highlight box
+  let tsBox = '';
+  if (tsp) {{
+    const tsDistance = cp ? Math.abs(cp - tsp) : null;
+    tsBox = `
+    <div style="background:rgba(219,109,40,0.08);border:1px solid rgba(219,109,40,0.25);border-radius:8px;padding:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="color:var(--orange);font-size:0.78rem;font-weight:600;">Trailing Stop</div>
+        <div style="color:var(--orange);font-size:1.4rem;font-weight:700;font-variant-numeric:tabular-nums;">${{fmt(tsp)}}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="color:var(--text-muted);font-size:0.78rem;">Distance</div>
+        <div style="color:var(--text-muted);font-size:1rem;font-weight:600;">${{tsDistance != null ? fmt(tsDistance) + ' pts' : '—'}}</div>
+      </div>
+    </div>`;
+  }} else if (d.trailing_stop_active) {{
+    tsBox = `<div style="background:rgba(219,109,40,0.08);border:1px solid rgba(219,109,40,0.25);border-radius:8px;padding:12px;margin-bottom:14px;"><div style="color:var(--orange);font-size:0.85rem;">Trailing Stop: Activating...</div></div>`;
   }}
 
-  let details = '';
-  if (hasPos) {{
-    const sl = d.stop_loss_price;
-    const tsp = d.trailing_stop_price;
-    const tp = d.take_profit_price;
-    const effectiveStop = (tsp && sl) ? (isLong ? Math.max(tsp, sl) : Math.min(tsp, sl)) : (tsp || sl);
+  // Details grid
+  const details = `
+    <div class="details">
+      <div class="detail-item"><span class="label">Contract</span><span class="value">${{d.sub_symbol || '—'}}</span></div>
+      <div class="detail-item"><span class="label">Quantity</span><span class="value">${{qty}} lots</span></div>
+      <div class="detail-item"><span class="label">Entry</span><span class="value blue">${{fmt(ep)}}</span></div>
+      <div class="detail-item"><span class="label">Held</span><span class="value">${{duration(d.entry_time)}}</span></div>
+      <div class="detail-item"><span class="label">Hard Stop</span><span class="value red">${{fmt(sl)}}</span></div>
+      <div class="detail-item"><span class="label">Effective Stop</span><span class="value red">${{fmt(effectiveStop)}}</span></div>
+      <div class="detail-item"><span class="label">Highest</span><span class="value green">${{fmt(d.highest_price)}}</span></div>
+      <div class="detail-item"><span class="label">Per Lot P&L</span><span class="value ${{pnlClass === 'positive' ? 'green' : pnlClass === 'negative' ? 'red' : ''}}">${{pnlPerUnit != null ? (pnlPerUnit >= 0 ? '+' : '') + 'NT$' + fmt(pnlPerUnit) : '—'}}</span></div>
+    </div>`;
 
-    details = `
-      <div class="details">
-        <div class="detail-item"><span class="label">Contract</span><span class="value">${{d.sub_symbol || '—'}}</span></div>
-        <div class="detail-item"><span class="label">Quantity</span><span class="value">${{d.quantity || '—'}}</span></div>
-        <div class="detail-item"><span class="label">Entry</span><span class="value blue">${{fmt(ep)}}</span></div>
-        <div class="detail-item"><span class="label">Held</span><span class="value">${{duration(d.entry_time)}}</span></div>
-        <div class="detail-item"><span class="label">Stop Loss</span><span class="value red">${{fmt(sl)}}</span></div>
-        <div class="detail-item"><span class="label">Trailing Stop</span><span class="value orange">${{fmt(tsp) || '—'}}</span></div>
-        <div class="detail-item"><span class="label">Effective Stop</span><span class="value red">${{fmt(effectiveStop)}}</span></div>
-        <div class="detail-item"><span class="label">Highest</span><span class="value green">${{fmt(d.highest_price)}}</span></div>
+  // Stop bar
+  let stopBar = '';
+  if (ep && (sl || tsp)) {{
+    const prices = [sl, ep, cp, tsp, tp].filter(p => p != null);
+    const lo = Math.min(...prices) - 20;
+    const hi = Math.max(...prices) + 20;
+    const range = hi - lo || 1;
+    const pct = (v) => ((v - lo) / range * 100).toFixed(1);
+
+    let markers = '';
+    if (sl) markers += `<div class="bar-marker sl" style="left:${{pct(sl)}}%" title="SL: ${{sl}}"></div>`;
+    markers += `<div class="bar-marker entry" style="left:${{pct(ep)}}%" title="Entry: ${{ep}}"></div>`;
+    if (tsp) markers += `<div class="bar-marker ts" style="left:${{pct(tsp)}}%" title="TS: ${{tsp}}"></div>`;
+    if (cp) markers += `<div class="bar-marker current" style="left:${{pct(cp)}}%" title="Current: ${{cp}}"></div>`;
+    if (tp) markers += `<div class="bar-marker tp" style="left:${{pct(tp)}}%" title="TP: ${{tp}}"></div>`;
+
+    let labels = '<span>';
+    if (sl) labels += `<span style="color:var(--red)">SL ${{fmt(sl)}}</span>`;
+    labels += '</span><span>';
+    labels += `<span style="color:var(--blue)">Entry ${{fmt(ep)}}</span>`;
+    if (tsp) labels += ` | <span style="color:var(--orange)">TS ${{fmt(tsp)}}</span>`;
+    if (cp) labels += ` | Current ${{fmt(cp)}}`;
+    labels += '</span>';
+
+    stopBar = `
+      <div class="stop-bar">
+        <div class="bar-title">Price Levels</div>
+        <div class="bar-track">${{markers}}</div>
+        <div class="bar-labels">${{labels}}</div>
       </div>`;
-
-    // Stop bar visualization
-    if (ep && (sl || tsp)) {{
-      const prices = [sl, ep, cp, tsp, tp].filter(p => p != null);
-      const lo = Math.min(...prices) - 20;
-      const hi = Math.max(...prices) + 20;
-      const range = hi - lo || 1;
-      const pct = (v) => ((v - lo) / range * 100).toFixed(1);
-
-      let markers = '';
-      if (sl) markers += `<div class="bar-marker sl" style="left:${{pct(sl)}}%" title="SL: ${{sl}}"></div>`;
-      markers += `<div class="bar-marker entry" style="left:${{pct(ep)}}%" title="Entry: ${{ep}}"></div>`;
-      if (tsp) markers += `<div class="bar-marker ts" style="left:${{pct(tsp)}}%" title="TS: ${{tsp}}"></div>`;
-      if (cp) markers += `<div class="bar-marker current" style="left:${{pct(cp)}}%" title="Current: ${{cp}}"></div>`;
-      if (tp) markers += `<div class="bar-marker tp" style="left:${{pct(tp)}}%" title="TP: ${{tp}}"></div>`;
-
-      let labels = '<span>';
-      if (sl) labels += `<span style="color:var(--red)">SL ${{fmt(sl)}}</span>`;
-      labels += '</span><span>';
-      labels += `<span style="color:var(--blue)">Entry ${{fmt(ep)}}</span>`;
-      if (tsp) labels += ` | <span style="color:var(--orange)">TS ${{fmt(tsp)}}</span>`;
-      if (cp) labels += ` | Current ${{fmt(cp)}}`;
-      labels += '</span>';
-
-      details += `
-        <div class="stop-bar" style="grid-column: 1 / -1;">
-          <div class="bar-title">Price Levels</div>
-          <div class="bar-track">${{markers}}</div>
-          <div class="bar-labels">${{labels}}</div>
-        </div>`;
-    }}
   }}
 
   const engineStatus = engineOnline
     ? `<span style="font-size:0.75rem;color:var(--text-muted)">Updated ${{timeSince(d.timestamp)}}</span>`
-    : (hasPos ? '<span style="font-size:0.75rem;color:var(--yellow)">Engine offline — showing last saved state</span>' : '');
+    : '<span style="font-size:0.75rem;color:var(--yellow)">Engine offline — showing last saved state</span>';
 
   return `
     <div class="card">
@@ -441,8 +543,10 @@ function buildCard(d) {{
         <span class="name">${{d.strategy}} ${{tsLabel}}</span>
         ${{badge}}
       </div>
-      ${{priceRow}}
+      ${{pnlHero}}
+      ${{tsBox}}
       ${{details}}
+      ${{stopBar}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
     </div>`;
 }}
@@ -474,13 +578,261 @@ setInterval(refresh, REFRESH_MS);
 </html>"""
 
 
+def _build_logs_html(token_param: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Logs</title>
+<style>
+  :root {{
+    --bg: #0d1117;
+    --card-bg: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --yellow: #d29922;
+    --orange: #db6d28;
+  }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    min-height: 100vh;
+  }}
+  nav {{
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }}
+  nav a {{
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }}
+  nav a:hover {{ color: var(--text); background: rgba(255,255,255,0.05); }}
+  nav a.active {{ color: var(--blue); background: rgba(88,166,255,0.1); }}
+  .toolbar {{
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }}
+  select, button {{
+    background: var(--card-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 0.88rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }}
+  select:hover, button:hover {{ border-color: var(--blue); }}
+  select:focus, button:focus {{ outline: none; border-color: var(--blue); }}
+  select {{ min-width: 280px; }}
+  button.active {{ background: rgba(88,166,255,0.15); border-color: var(--blue); }}
+  .file-meta {{
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-left: auto;
+  }}
+  .log-container {{
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }}
+  .log-content {{
+    padding: 16px;
+    overflow-x: auto;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    white-space: pre;
+    tab-size: 4;
+  }}
+  .log-content .line {{
+    display: block;
+    padding: 0 12px;
+    border-radius: 3px;
+  }}
+  .log-content .line:hover {{
+    background: rgba(255,255,255,0.03);
+  }}
+  .log-content .line.error {{
+    color: var(--red);
+    background: rgba(248,81,73,0.06);
+  }}
+  .log-content .line.warn {{
+    color: var(--yellow);
+  }}
+  .log-content .line.success {{
+    color: var(--green);
+  }}
+  .log-content .line.info-blue {{
+    color: var(--blue);
+  }}
+  .empty-state {{
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+  }}
+  .line-num {{
+    display: inline-block;
+    width: 50px;
+    color: var(--text-muted);
+    opacity: 0.4;
+    text-align: right;
+    margin-right: 16px;
+    user-select: none;
+    font-size: 0.78rem;
+  }}
+  @media (max-width: 480px) {{
+    body {{ padding: 12px; }}
+    .toolbar {{ flex-direction: column; align-items: stretch; }}
+    select {{ min-width: unset; }}
+    .file-meta {{ margin-left: 0; }}
+    .log-content {{ max-height: calc(100vh - 280px); font-size: 0.75rem; }}
+    .line-num {{ width: 36px; margin-right: 8px; }}
+  }}
+</style>
+</head>
+<body>
+  <nav>
+    <a href="/?{token_param.lstrip('&')}">Positions</a>
+    <a href="/logs?{token_param.lstrip('&')}" class="active">Logs</a>
+  </nav>
+  <div class="toolbar">
+    <select id="fileSelect"><option value="">Select a log file...</option></select>
+    <button id="btnTail" class="active" title="Show last 500 lines">Tail 500</button>
+    <button id="btnFull" title="Load full file">Full</button>
+    <button id="btnRefresh" title="Reload current file">Refresh</button>
+    <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:0.85rem;">
+      <input type="checkbox" id="autoScroll" checked> Auto-scroll
+    </label>
+    <span class="file-meta" id="fileMeta"></span>
+  </div>
+  <div class="log-container">
+    <div class="log-content" id="logContent">
+      <div class="empty-state">Select a log file to view</div>
+    </div>
+  </div>
+
+<script>
+const TOKEN_PARAM = "{token_param}";
+let currentFile = '';
+let tailMode = true;
+
+function fmtSize(bytes) {{
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}}
+
+function classifyLine(text) {{
+  if (/\\u274c|error|failed|exception|traceback/i.test(text)) return 'error';
+  if (/\\u26a0|warn|warning/i.test(text)) return 'warn';
+  if (/\\u2705|success|\\u1f4c8|filled|open/i.test(text)) return 'success';
+  if (/\\u1f680|\\u1f527|\\u1f4cb|started|config/i.test(text)) return 'info-blue';
+  return '';
+}}
+
+async function loadFileList() {{
+  const res = await fetch('/api/logs?_t=' + Date.now() + TOKEN_PARAM);
+  const files = await res.json();
+  const sel = document.getElementById('fileSelect');
+  sel.innerHTML = '<option value="">Select a log file...</option>';
+  files.forEach(f => {{
+    const opt = document.createElement('option');
+    opt.value = f.name;
+    const d = new Date(f.modified * 1000);
+    opt.textContent = f.name + '  (' + fmtSize(f.size) + ', ' + d.toLocaleDateString() + ')';
+    sel.appendChild(opt);
+  }});
+  if (files.length > 0 && !currentFile) {{
+    sel.value = files[0].name;
+    currentFile = files[0].name;
+    loadFile();
+  }}
+}}
+
+async function loadFile() {{
+  if (!currentFile) return;
+  const tail = tailMode ? 500 : 10000;
+  const res = await fetch('/api/logs/' + encodeURIComponent(currentFile) + '?tail=' + tail + '&_t=' + Date.now() + TOKEN_PARAM);
+  if (!res.ok) return;
+  const data = await res.json();
+
+  const meta = document.getElementById('fileMeta');
+  meta.textContent = data.total_lines + ' total lines' + (tailMode ? ' (showing last 500)' : '');
+
+  const container = document.getElementById('logContent');
+  const startLine = data.total_lines - data.lines.length + 1;
+  container.innerHTML = data.lines.map((line, i) => {{
+    const cls = classifyLine(line);
+    const num = startLine + i;
+    return '<span class="line' + (cls ? ' ' + cls : '') + '"><span class="line-num">' + num + '</span>' + escapeHtml(line) + '</span>';
+  }}).join('\\n');
+
+  if (document.getElementById('autoScroll').checked) {{
+    container.scrollTop = container.scrollHeight;
+  }}
+}}
+
+function escapeHtml(text) {{
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}}
+
+document.getElementById('fileSelect').addEventListener('change', (e) => {{
+  currentFile = e.target.value;
+  if (currentFile) loadFile();
+}});
+
+document.getElementById('btnTail').addEventListener('click', () => {{
+  tailMode = true;
+  document.getElementById('btnTail').classList.add('active');
+  document.getElementById('btnFull').classList.remove('active');
+  loadFile();
+}});
+
+document.getElementById('btnFull').addEventListener('click', () => {{
+  tailMode = false;
+  document.getElementById('btnFull').classList.add('active');
+  document.getElementById('btnTail').classList.remove('active');
+  loadFile();
+}});
+
+document.getElementById('btnRefresh').addEventListener('click', () => loadFile());
+
+loadFileList();
+</script>
+</body>
+</html>"""
+
+
 def main():
     import uvicorn
 
     port = int(os.environ.get("DASHBOARD_PORT", "8080"))
     print(f"🖥️  Dashboard starting on http://0.0.0.0:{port}")
     if os.environ.get("DASHBOARD_TOKEN"):
-        print(f"🔒 Token auth enabled — append ?token=<your-token> to the URL")
+        print("🔒 Token auth enabled — append ?token=<your-token> to the URL")
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
