@@ -66,6 +66,7 @@ def _collect_strategies() -> list[dict]:
             info["trailing_stop_active"] = rec.get("trailing_stop_active", False)
             info["trailing_stop_price"] = rec.get("trailing_stop_price")
             info["entry_time"] = rec.get("entry_time")
+            info["legs_info"] = rec.get("legs_info")
 
         results.append(info)
     return results
@@ -482,6 +483,43 @@ function buildCard(d) {{
       <div class="detail-item"><span class="label">Per Lot P&L</span><span class="value ${{pnlClass === 'positive' ? 'green' : pnlClass === 'negative' ? 'red' : ''}}">${{pnlPerUnit != null ? (pnlPerUnit >= 0 ? '+' : '') + 'NT$' + fmt(pnlPerUnit) : '—'}}</span></div>
     </div>`;
 
+  // Legs detail (for addon positions)
+  let legsSection = '';
+  if (d.legs_info && Object.keys(d.legs_info).length > 1) {{
+    let rows = '';
+    const entries = Object.entries(d.legs_info);
+    entries.forEach(([legId, info]) => {{
+      const legEp = info.entry_price;
+      const legQty = info.quantity;
+      const legType = info.leg_type || 'TS';
+      const isAddon = legId.includes('-A');
+      let legPnl = '—';
+      let legPnlClass = '';
+      if (cp && legEp) {{
+        const pts = isLong ? cp - legEp : legEp - cp;
+        const twd = pts * POINT_VALUE * legQty;
+        legPnlClass = pts > 0 ? 'green' : pts < 0 ? 'red' : '';
+        legPnl = (pts >= 0 ? '+' : '') + fmt(pts) + ' pts / ' + (twd >= 0 ? '+' : '') + 'NT$' + fmt(twd);
+      }}
+      const label = isAddon ? '加碼' : '底倉';
+      const tagColor = isAddon ? 'var(--yellow)' : 'var(--blue)';
+      rows += `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(48,54,61,0.5);font-size:0.85rem;">
+          <div>
+            <span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:0.72rem;font-weight:600;background:rgba(255,255,255,0.06);color:${{tagColor}};margin-right:6px;">${{label}}</span>
+            <span style="color:var(--text-muted)">${{legType}} x${{legQty}}</span>
+            <span style="margin-left:8px;">@ ${{fmt(legEp)}}</span>
+          </div>
+          <div class="value ${{legPnlClass}}" style="font-variant-numeric:tabular-nums;font-weight:500;">${{legPnl}}</div>
+        </div>`;
+    }});
+    legsSection = `
+      <div style="margin-top:14px;background:rgba(48,54,61,0.3);border-radius:8px;padding:12px;">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px;font-weight:600;">Legs Detail</div>
+        ${{rows}}
+      </div>`;
+  }}
+
   // Stop bar
   let stopBar = '';
   if (ep && (sl || tsp)) {{
@@ -526,6 +564,7 @@ function buildCard(d) {{
       </div>
       ${{pnlHero}}
       ${{details}}
+      ${{legsSection}}
       ${{stopBar}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
     </div>`;
