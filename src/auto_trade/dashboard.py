@@ -584,25 +584,35 @@ function buildCard(d) {{
     const pct = (v) => ((v - lo) / range * 100).toFixed(1);
 
     let markers = '';
-    if (sl) markers += `<div class="bar-marker sl" style="left:${{pct(sl)}}%" title="SL: ${{sl}}"></div>`;
-    markers += `<div class="bar-marker entry" style="left:${{pct(ep)}}%" title="Entry: ${{ep}}"></div>`;
-    if (tsp) markers += `<div class="bar-marker ts" style="left:${{pct(tsp)}}%" title="TS: ${{tsp}}"></div>`;
-    if (cp) markers += `<div class="bar-marker current" style="left:${{pct(cp)}}%" title="Current: ${{cp}}"></div>`;
-    if (tp) markers += `<div class="bar-marker tp" style="left:${{pct(tp)}}%" title="TP: ${{tp}}"></div>`;
+    let labelsBelow = '';
+    let labelsAbove = '';
 
-    let labels = '<span>';
-    if (sl) labels += `<span style="color:var(--red)">SL ${{fmt(sl)}}</span>`;
-    labels += '</span><span>';
-    labels += `<span style="color:var(--blue)">Entry ${{fmt(ep)}}</span>`;
-    if (tsp) labels += ` | <span style="color:var(--orange)">TS ${{fmt(tsp)}}</span>`;
-    if (cp) labels += ` | Current ${{fmt(cp)}}`;
-    labels += '</span>';
+    if (sl) {{
+      markers += `<div style="position:absolute;left:${{pct(sl)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--red);" title="SL: ${{sl}}"></div>`;
+      labelsBelow += `<span style="position:absolute;left:${{pct(sl)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--red);white-space:nowrap;">SL ${{fmt(sl)}}</span>`;
+    }}
+    markers += `<div style="position:absolute;left:${{pct(ep)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--blue);" title="Entry: ${{ep}}"></div>`;
+    labelsBelow += `<span style="position:absolute;left:${{pct(ep)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--blue);white-space:nowrap;">${{fmt(ep)}}</span>`;
+    if (tsp) {{
+      markers += `<div style="position:absolute;left:${{pct(tsp)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--orange);" title="TS: ${{tsp}}"></div>`;
+      labelsBelow += `<span style="position:absolute;left:${{pct(tsp)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--orange);white-space:nowrap;">TS ${{fmt(tsp)}}</span>`;
+    }}
+    if (tp) {{
+      markers += `<div style="position:absolute;left:${{pct(tp)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--green);" title="TP: ${{tp}}"></div>`;
+      labelsBelow += `<span style="position:absolute;left:${{pct(tp)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--green);white-space:nowrap;">TP ${{fmt(tp)}}</span>`;
+    }}
+    if (cp) {{
+      const cpCol = pnlPts > 0 ? 'var(--green)' : pnlPts < 0 ? 'var(--red)' : 'var(--text-primary)';
+      markers += `<div style="position:absolute;left:${{pct(cp)}}%;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${{cpCol}};transform:translateX(-5px);" title="Current: ${{cp}}"></div>`;
+      labelsAbove += `<span style="position:absolute;left:${{pct(cp)}}%;top:-18px;transform:translateX(-50%);font-size:0.68rem;color:${{cpCol}};white-space:nowrap;font-weight:600;">${{fmt(cp)}}</span>`;
+    }}
 
     stopBar = `
-      <div class="stop-bar">
-        <div class="bar-title">Price Levels</div>
-        <div class="bar-track">${{markers}}</div>
-        <div class="bar-labels">${{labels}}</div>
+      <div style="margin-top:16px;background:rgba(48,54,61,0.5);border-radius:6px;padding:12px;">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;">Price Levels</div>
+        <div style="position:relative;height:6px;background:rgba(48,54,61,0.6);border-radius:3px;margin:20px 0 22px;">
+          ${{markers}}${{labelsBelow}}${{labelsAbove}}
+        </div>
       </div>`;
   }}
 
