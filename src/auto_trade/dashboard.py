@@ -467,17 +467,16 @@ function buildCard(d) {{
         const cpColor = cpAbove ? 'var(--green)' : cpBelow ? 'var(--red)' : 'var(--text-primary)';
         barHtml = `
           <div style="margin-top:12px;">
-            <div style="position:relative;height:6px;background:rgba(48,54,61,0.6);border-radius:3px;margin:8px 0;">
+            <div style="position:relative;height:6px;background:rgba(48,54,61,0.6);border-radius:3px;margin:8px 0 20px;">
               <div style="position:absolute;left:${{pct(ss.or_low)}}%;width:${{(pct(ss.or_high) - pct(ss.or_low))}}%;height:100%;background:rgba(255,255,255,0.08);border-radius:3px;"></div>
-              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_low)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--red);" title="OR Low: ${{ss.or_low}}"></div>
-              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_mid)}}%;top:-2px;width:2px;height:10px;border-radius:2px;background:var(--text-muted);" title="OR Mid: ${{ss.or_mid}}"></div>
-              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_high)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--green);" title="OR High: ${{ss.or_high}}"></div>
+              <div style="position:absolute;left:${{pct(ss.or_low)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--red);" title="OR Low: ${{ss.or_low}}"></div>
+              <div style="position:absolute;left:${{pct(ss.or_mid)}}%;top:-2px;width:2px;height:10px;border-radius:2px;background:var(--text-muted);" title="OR Mid: ${{ss.or_mid}}"></div>
+              <div style="position:absolute;left:${{pct(ss.or_high)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--green);" title="OR High: ${{ss.or_high}}"></div>
               <div style="position:absolute;left:${{pct(cp)}}%;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${{cpColor}};transform:translateX(-5px);" title="Current: ${{cp}}"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--text-muted);">
-              <span style="color:var(--red)">Low ${{fmt(ss.or_low)}}</span>
-              <span>Mid ${{fmt(ss.or_mid)}}</span>
-              <span style="color:var(--green)">High ${{fmt(ss.or_high)}}</span>
+              <span style="position:absolute;left:${{pct(ss.or_low)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--red);white-space:nowrap;">${{fmt(ss.or_low)}}</span>
+              <span style="position:absolute;left:${{pct(ss.or_mid)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--text-muted);white-space:nowrap;">${{fmt(ss.or_mid)}}</span>
+              <span style="position:absolute;left:${{pct(ss.or_high)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--green);white-space:nowrap;">${{fmt(ss.or_high)}}</span>
+              <span style="position:absolute;left:${{pct(cp)}}%;top:-18px;transform:translateX(-50%);font-size:0.68rem;color:${{cpColor}};white-space:nowrap;font-weight:600;">${{fmt(cp)}}</span>
             </div>
           </div>`;
       }}
