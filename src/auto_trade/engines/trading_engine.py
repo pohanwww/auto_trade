@@ -345,6 +345,10 @@ class TradingEngine:
                 "sub_symbol": self.sub_symbol,
             }
 
+            pending = self.trading_unit.strategy.get_pending_state()
+            if pending:
+                records["_live"]["strategy_state"] = pending
+
             if pos and self.sub_symbol in records:
                 is_long = pos.direction.value == "Buy"
                 ts_prices = [

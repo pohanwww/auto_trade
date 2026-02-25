@@ -1004,6 +1004,19 @@ class ORBStrategy(BaseStrategy):
     # 主要評估邏輯
     # ──────────────────────────────────────────────
 
+    def get_pending_state(self) -> dict | None:
+        """回傳 ORB 待觸發的關鍵價位與狀態機狀態"""
+        if self._or_high is None:
+            return None
+        return {
+            "or_high": self._or_high,
+            "or_low": self._or_low,
+            "or_mid": self._or_mid,
+            "or_range": self._or_range,
+            "long_state": self._long_state.value,
+            "short_state": self._short_state.value,
+        }
+
     def evaluate(
         self,
         kbar_list: KBarList,

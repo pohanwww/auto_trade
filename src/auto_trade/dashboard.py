@@ -51,6 +51,7 @@ def _collect_strategies() -> list[dict]:
         if live:
             info["current_price"] = live.get("current_price")
             info["timestamp"] = live.get("timestamp")
+            info["strategy_state"] = live.get("strategy_state")
 
         # Position record (keyed by sub_symbol, e.g. "MXF202603")
         sub_sym = next(iter(data), None)
@@ -442,7 +443,61 @@ function buildCard(d) {{
     let priceRow = cp
       ? `<div class="price-row"><div class="current-price">${{fmt(cp)}}</div><div class="pnl zero">No Position</div></div>`
       : '';
-    return `<div class="card"><div class="card-header"><span class="name">${{d.strategy}}</span>${{badge}}</div>${{priceRow}}<div style="margin-top:10px;text-align:right;">${{engineStatus}}</div></div>`;
+
+    // Strategy pending state (e.g. ORB key prices)
+    let stateSection = '';
+    const ss = d.strategy_state;
+    if (ss && ss.or_high) {{
+      const longLabel = ss.long_state === 'IDLE'
+        ? '<span style="color:var(--text-muted)">Waiting</span>'
+        : `<span style="color:var(--yellow)">${{ss.long_state}}</span>`;
+      const shortLabel = ss.short_state === 'IDLE'
+        ? '<span style="color:var(--text-muted)">Waiting</span>'
+        : `<span style="color:var(--yellow)">${{ss.short_state}}</span>`;
+
+      let barHtml = '';
+      if (cp && ss.or_high && ss.or_low) {{
+        const prices = [ss.or_low, ss.or_mid, ss.or_high, cp].filter(p => p != null);
+        const lo = Math.min(...prices) - 30;
+        const hi = Math.max(...prices) + 30;
+        const range = hi - lo || 1;
+        const pct = (v) => ((v - lo) / range * 100).toFixed(1);
+        const cpAbove = cp > ss.or_high;
+        const cpBelow = cp < ss.or_low;
+        const cpColor = cpAbove ? 'var(--green)' : cpBelow ? 'var(--red)' : 'var(--text-primary)';
+        barHtml = `
+          <div style="margin-top:12px;">
+            <div style="position:relative;height:6px;background:rgba(48,54,61,0.6);border-radius:3px;margin:8px 0;">
+              <div style="position:absolute;left:${{pct(ss.or_low)}}%;width:${{(pct(ss.or_high) - pct(ss.or_low))}}%;height:100%;background:rgba(255,255,255,0.08);border-radius:3px;"></div>
+              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_low)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--red);" title="OR Low: ${{ss.or_low}}"></div>
+              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_mid)}}%;top:-2px;width:2px;height:10px;border-radius:2px;background:var(--text-muted);" title="OR Mid: ${{ss.or_mid}}"></div>
+              <div class="bar-marker" style="position:absolute;left:${{pct(ss.or_high)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--green);" title="OR High: ${{ss.or_high}}"></div>
+              <div style="position:absolute;left:${{pct(cp)}}%;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${{cpColor}};transform:translateX(-5px);" title="Current: ${{cp}}"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--text-muted);">
+              <span style="color:var(--red)">Low ${{fmt(ss.or_low)}}</span>
+              <span>Mid ${{fmt(ss.or_mid)}}</span>
+              <span style="color:var(--green)">High ${{fmt(ss.or_high)}}</span>
+            </div>
+          </div>`;
+      }}
+
+      stateSection = `
+        <div style="margin-top:12px;background:rgba(48,54,61,0.3);border-radius:8px;padding:12px;">
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;font-weight:600;">Opening Range</div>
+          <div class="details" style="margin:0;">
+            <div class="detail-item"><span class="label">OR High</span><span class="value green">${{fmt(ss.or_high)}}</span></div>
+            <div class="detail-item"><span class="label">OR Low</span><span class="value red">${{fmt(ss.or_low)}}</span></div>
+            <div class="detail-item"><span class="label">OR Mid</span><span class="value">${{fmt(ss.or_mid)}}</span></div>
+            <div class="detail-item"><span class="label">OR Range</span><span class="value">${{fmt(ss.or_range)}} pts</span></div>
+            <div class="detail-item"><span class="label">Long</span><span class="value">${{longLabel}}</span></div>
+            <div class="detail-item"><span class="label">Short</span><span class="value">${{shortLabel}}</span></div>
+          </div>
+          ${{barHtml}}
+        </div>`;
+    }}
+
+    return `<div class="card"><div class="card-header"><span class="name">${{d.strategy}}</span>${{badge}}</div>${{priceRow}}${{stateSection}}<div style="margin-top:10px;text-align:right;">${{engineStatus}}</div></div>`;
   }}
 
   // --- Has position ---

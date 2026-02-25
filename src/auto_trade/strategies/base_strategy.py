@@ -48,6 +48,14 @@ class BaseStrategy(ABC):
         """
         ...
 
+    def get_pending_state(self) -> dict | None:  # noqa: B027
+        """回傳策略目前等待中的關鍵狀態（供 dashboard 顯示）
+
+        子類可覆寫此方法，回傳如待觸發價位等資訊。
+        預設回傳 None（無額外狀態）。
+        """
+        return None
+
     def on_position_closed(self) -> None:  # noqa: B027
         """平倉後回呼（可選覆寫）
 
