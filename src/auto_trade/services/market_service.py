@@ -201,11 +201,21 @@ class MarketService:
 
         print(f"🔄 同步 K 線緩存: {symbol}/{sub_symbol} ({days} 天)")
 
-        # 從 API 獲取歷史數據
-        kbars_1m = self.get_futures_historical_kbars(symbol, sub_symbol, days)
+        # 從 API 獲取歷史數據（失敗自動重試）
+        max_retries = 3
+        retry_delay = 10
+        kbars_1m = None
+        for attempt in range(1, max_retries + 1):
+            kbars_1m = self.get_futures_historical_kbars(symbol, sub_symbol, days)
+            if kbars_1m.kbars and len(kbars_1m.kbars) > 0:
+                break
+            print(f"⚠️  同步失敗：API 返回空數據 (第 {attempt}/{max_retries} 次)")
+            if attempt < max_retries:
+                print(f"⏳ {retry_delay} 秒後重試...")
+                time.sleep(retry_delay)
 
-        if not kbars_1m.kbars or len(kbars_1m.kbars) == 0:
-            print("⚠️  同步失敗：API 返回空數據")
+        if not kbars_1m or not kbars_1m.kbars or len(kbars_1m.kbars) == 0:
+            print("❌ 同步失敗：重試後仍無數據")
             return
 
         # 檢查緩存是否存在

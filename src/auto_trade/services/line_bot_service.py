@@ -79,8 +79,10 @@ class LineBotService:
             equity_str = f"{total_equity:,.0f}" if total_equity is not None else "N/A"
 
             # 使用等寬字體確保對齊
+            status_line = f"Status: {status}\n" if status else ""
             message = (
                 f"ℹ️ Auto Trade Started\n\n"
+                f"{status_line}"
                 f"Time: {timestamp}\n"
                 f"Total Equity: {equity_str}\n"
                 f"Subscribe: {contract}\n"
