@@ -51,6 +51,9 @@ class MACDGoldenCrossStrategy(BaseStrategy):
         self.swing_period = swing_period
         self.swing_lookback_days = swing_lookback_days
 
+        # Dedup: prevent re-emitting signal on the same bar across multiple checks
+        self._last_signal_bar_time: datetime | None = None
+
     def _build_key_level_metadata(
         self, kbar_list: KBarList, entry_price: int, is_long: bool
     ) -> dict:
@@ -146,12 +149,16 @@ class MACDGoldenCrossStrategy(BaseStrategy):
         # 檢查金叉
         is_golden_cross = self.indicator_service.check_golden_cross(macd_list)
 
+        # Dedup: skip if we already signaled on this same bar
+        latest_bar_time = kbar_list.get_latest(1)[-1].time if kbar_list.kbars else None
+
         # MACD 金叉策略：MACD 均值 < threshold 且金叉時產生做多信號
         if (
             current_macd
             and (current_macd.macd_line + current_macd.signal_line) / 2
             < self.macd_threshold
             and is_golden_cross
+            and latest_bar_time != self._last_signal_bar_time
         ):
             # 量能過濾
             vol_passed, vol_pct = self._check_volume_filter(kbar_list)
@@ -182,6 +189,7 @@ class MACDGoldenCrossStrategy(BaseStrategy):
                 )
                 meta.update(kl_meta)
 
+            self._last_signal_bar_time = latest_bar_time
             return StrategySignal(
                 signal_type=SignalType.ENTRY_LONG,
                 symbol=symbol,
