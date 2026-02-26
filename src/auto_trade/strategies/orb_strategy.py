@@ -240,6 +240,9 @@ class ORBStrategy(BaseStrategy):
         self._daily_adx: float | None = None
         self._daily_direction: str = "both"  # "long", "short", "both"
 
+        # 狀態恢復標記：replay 歷史 bar 時為 True，抑制 BUY 信號
+        self._restoring: bool = False
+
     @staticmethod
     def _parse_time(time_str: str) -> time:
         """解析 HH:MM 格式的時間字串"""
@@ -353,7 +356,75 @@ class ORBStrategy(BaseStrategy):
         if self._prev_night:
             print(f"      Prev Night: {self._prev_night}")
 
+        # Replay post-OR bars to restore state machine (e.g. after mid-day restart)
+        self._restore_state_from_history(kbar_list)
+
         return True
+
+    def _restore_state_from_history(self, kbar_list: KBarList) -> None:
+        """Replay completed bars after OR period to rebuild state machine.
+
+        On a mid-session restart, the state machine starts at IDLE. This method
+        feeds historical bars through the state machine so it can reach
+        WAITING_PULLBACK or TESTING_LEVEL. BUY signals are suppressed during
+        replay — the strategy must see a fresh confirmation bar before entering.
+        """
+        if self._or_high is None or self._current_date is None:
+            return
+
+        # Bars after OR that are complete (already in kbar_list which has
+        # the incomplete bar stripped by evaluate())
+        post_or_bars = []
+        for kbar in kbar_list.kbars:
+            if (
+                kbar.time.date() == self._current_date.date()
+                and kbar.time.time() >= self.or_start_time
+                and kbar.time.time() < self.session_end_time
+            ):
+                post_or_bars.append(kbar)
+
+        # Skip the OR bars themselves — state machine starts after OR
+        replay_bars = post_or_bars[self.or_bars:]
+        if not replay_bars:
+            return
+
+        print(f"  🔄 Restoring state: replaying {len(replay_bars)} bars after OR...")
+
+        self._restoring = True
+        try:
+            for kbar in replay_bars:
+                close = int(kbar.close)
+                # Build a temporary kbar_list ending at this bar for
+                # _classify_breakout / candle_strength to work correctly
+                idx = kbar_list.kbars.index(kbar)
+                temp_kbar_list = KBarList(
+                    kbars=kbar_list.kbars[: idx + 1],
+                    symbol=kbar_list.symbol,
+                    timeframe=kbar_list.timeframe,
+                )
+
+                # Sweep tracking
+                self._update_sweep_tracking(kbar)
+
+                # State machine (both directions)
+                allow_long = self._daily_direction in ("long", "both") or self.long_only
+                allow_short = (
+                    self._daily_direction in ("short", "both")
+                    and not self.long_only
+                )
+                if allow_long:
+                    self._update_long_state(temp_kbar_list, close)
+                if allow_short:
+                    self._update_short_state(temp_kbar_list, close)
+        finally:
+            self._restoring = False
+
+        print(
+            f"  🔄 State restored: "
+            f"L={self._long_state.value} S={self._short_state.value} "
+            f"(bars_L={self._long_bars_since_breakout} "
+            f"bars_S={self._short_bars_since_breakout})"
+        )
 
     def _calculate_previous_sessions(self, kbar_list: KBarList) -> None:
         """從歷史 K 棒中計算前日日盤和夜盤的 OHLC"""
@@ -666,6 +737,9 @@ class ORBStrategy(BaseStrategy):
             if close > or_high:
                 is_strong = self._classify_breakout(kbar_list, is_long=True)
                 if is_strong:
+                    if self._restoring:
+                        self._long_trades_today += 1
+                        return None
                     # 強突破 → 通過 filters 後立即進場
                     reject = self._run_filters(kbar_list, close, is_long=True)
                     if reject:
@@ -693,6 +767,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                     )
                 elif self._swept_low:
+                    if self._restoring:
+                        self._long_trades_today += 1
+                        return None
                     # 掃底後突破 → 通過 filters 後立即進場
                     reject = self._run_filters(kbar_list, close, is_long=True)
                     if reject:
@@ -786,6 +863,10 @@ class ORBStrategy(BaseStrategy):
                 f"bar={self._long_bars_since_breakout}"
             )
             if close > or_high and strength >= self.min_bounce_strength:
+                if self._restoring:
+                    self._long_trades_today += 1
+                    self._long_state = BreakoutState.IDLE
+                    return None
                 # 通過 filters
                 reject = self._run_filters(kbar_list, close, is_long=True)
                 if reject:
@@ -839,6 +920,9 @@ class ORBStrategy(BaseStrategy):
             if close < or_low:
                 is_strong = self._classify_breakout(kbar_list, is_long=False)
                 if is_strong:
+                    if self._restoring:
+                        self._short_trades_today += 1
+                        return None
                     reject = self._run_filters(
                         kbar_list, close, is_long=False
                     )
@@ -867,6 +951,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                     )
                 elif self._swept_high:
+                    if self._restoring:
+                        self._short_trades_today += 1
+                        return None
                     # 掃頂後跌破 → 通過 filters 後立即進場
                     reject = self._run_filters(
                         kbar_list, close, is_long=False
@@ -958,6 +1045,10 @@ class ORBStrategy(BaseStrategy):
                 f"bar={self._short_bars_since_breakout}"
             )
             if close < or_low and bear_strength >= self.min_bounce_strength:
+                if self._restoring:
+                    self._short_trades_today += 1
+                    self._short_state = BreakoutState.IDLE
+                    return None
                 reject = self._run_filters(kbar_list, close, is_long=False)
                 if reject:
                     return None
@@ -1043,8 +1134,16 @@ class ORBStrategy(BaseStrategy):
         5. 更新多/空方向狀態機
         6. 如有進場信號 → 返回
         """
-        if len(kbar_list) < 2:
+        if len(kbar_list) < 3:
             return self._hold(symbol, current_price, "Insufficient data")
+
+        # The last bar in kbar_list is the current forming (incomplete) bar.
+        # Strip it so all decisions use only fully closed bars.
+        kbar_list = KBarList(
+            kbars=kbar_list.kbars[:-1],
+            symbol=kbar_list.symbol,
+            timeframe=kbar_list.timeframe,
+        )
 
         latest_kbar = kbar_list.get_latest(1)[-1]
         bar_time = latest_kbar.time
