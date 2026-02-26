@@ -114,7 +114,7 @@ class TradingEngine:
         self._try_restore_position()
 
         # 訂閱商品
-        self.market_service.subscribe_symbol(self.symbol, self.sub_symbol, init_days=30)
+        self.market_service.subscribe_symbol(self.symbol, self.sub_symbol, init_days=14)
 
         # 發送啟動通知
         self._send_startup_notification()
