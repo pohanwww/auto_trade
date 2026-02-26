@@ -411,10 +411,24 @@ function buildCard(d) {{
 
   let pnlPts = null, pnlPerUnit = null, pnlTotal = null, pnlClass = 'zero';
   if (hasPos && cp && ep) {{
-    pnlPts = isLong ? cp - ep : ep - cp;
-    pnlPerUnit = pnlPts * POINT_VALUE;
-    pnlTotal = pnlPts * POINT_VALUE * qty;
-    pnlClass = pnlPts > 0 ? 'positive' : pnlPts < 0 ? 'negative' : 'zero';
+    // When legs exist, sum P&L per leg for accurate total
+    const legs = d.legs_info && Object.keys(d.legs_info).length > 0 ? d.legs_info : null;
+    if (legs) {{
+      pnlTotal = 0;
+      let totalPts = 0;
+      Object.values(legs).forEach(leg => {{
+        const legPts = isLong ? cp - leg.entry_price : leg.entry_price - cp;
+        pnlTotal += legPts * POINT_VALUE * leg.quantity;
+        totalPts += legPts * leg.quantity;
+      }});
+      pnlPts = qty > 0 ? Math.round(totalPts / qty) : 0;
+      pnlPerUnit = qty > 0 ? Math.round(pnlTotal / qty) : 0;
+    }} else {{
+      pnlPts = isLong ? cp - ep : ep - cp;
+      pnlPerUnit = pnlPts * POINT_VALUE;
+      pnlTotal = pnlPts * POINT_VALUE * qty;
+    }}
+    pnlClass = pnlTotal > 0 ? 'positive' : pnlTotal < 0 ? 'negative' : 'zero';
   }}
 
   let badge = '';
