@@ -780,6 +780,11 @@ class ORBStrategy(BaseStrategy):
 
             # 確認反彈：close 回到 OR_High 之上 + K 棒力道確認
             strength = self.indicator_service.candle_strength(latest_kbar)
+            print(
+                f"  🔍 Long TESTING: close={close}, or_high={or_high}, "
+                f"strength={strength:.3f} (need>={self.min_bounce_strength}), "
+                f"bar={self._long_bars_since_breakout}"
+            )
             if close > or_high and strength >= self.min_bounce_strength:
                 # 通過 filters
                 reject = self._run_filters(kbar_list, close, is_long=True)
@@ -947,6 +952,11 @@ class ORBStrategy(BaseStrategy):
             # 確認反彈：close 回到 OR_Low 之下 + K 棒力道確認
             strength = self.indicator_service.candle_strength(latest_kbar)
             bear_strength = 1.0 - strength
+            print(
+                f"  🔍 Short TESTING: close={close}, or_low={or_low}, "
+                f"bear_strength={bear_strength:.3f} (need>={self.min_bounce_strength}), "
+                f"bar={self._short_bars_since_breakout}"
+            )
             if close < or_low and bear_strength >= self.min_bounce_strength:
                 reject = self._run_filters(kbar_list, close, is_long=False)
                 if reject:
