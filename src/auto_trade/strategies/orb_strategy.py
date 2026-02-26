@@ -1075,14 +1075,6 @@ class ORBStrategy(BaseStrategy):
                 f"OR Range too small ({self._or_range}pts)",
             )
 
-        # 5. ADX 環境過濾
-        adx_ok, adx_reason = self._check_adx_filter()
-        if not adx_ok:
-            return self._hold(symbol, current_price, adx_reason)
-
-        # 6. 不在交易窗口 → HOLD（但仍繼續追蹤狀態機以便印 log）
-        in_window = self._is_in_trading_window(bar_time)
-
         close = int(latest_kbar.close)
 
         print(
@@ -1091,8 +1083,17 @@ class ORBStrategy(BaseStrategy):
             f"L={int(latest_kbar.low)} C={close} | "
             f"L_state={self._long_state.value} "
             f"S_state={self._short_state.value} | "
-            f"OR=[{self._or_low},{self._or_high}] range={self._or_range}"
+            f"OR=[{self._or_low},{self._or_high}] range={self._or_range} | "
+            f"ADX={self._daily_adx:.1f}"
         )
+
+        # 5. ADX 環境過濾
+        adx_ok, adx_reason = self._check_adx_filter()
+        if not adx_ok:
+            return self._hold(symbol, current_price, adx_reason)
+
+        # 6. 不在交易窗口 → HOLD（但仍繼續追蹤狀態機以便印 log）
+        in_window = self._is_in_trading_window(bar_time)
 
         # 7. 追蹤掃底/掃頂事件（每根 K 棒都更新，不受交易窗口限制）
         self._update_sweep_tracking(latest_kbar)
