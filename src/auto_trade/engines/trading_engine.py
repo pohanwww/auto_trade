@@ -308,7 +308,23 @@ class TradingEngine:
                             reason=action.reason,
                         )
                     elif action.order_type == "Close":
-                        entry_price = pm.position.entry_price if pm.position else 0
+                        # Use the specific leg's entry price for accurate P&L
+                        entry_price = 0
+                        if pm.position:
+                            close_leg_ids = []
+                            if action.leg_id:
+                                close_leg_ids = [action.leg_id]
+                            elif "leg_ids" in action.metadata:
+                                close_leg_ids = action.metadata["leg_ids"]
+                            if close_leg_ids:
+                                leg_eps = [
+                                    leg.entry_price for leg in pm.position.legs
+                                    if leg.leg_id in close_leg_ids and leg.entry_price
+                                ]
+                                if leg_eps:
+                                    entry_price = sum(leg_eps) // len(leg_eps)
+                            if not entry_price:
+                                entry_price = pm.position.entry_price
                         self.line_bot_service.send_close_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
