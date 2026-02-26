@@ -214,13 +214,14 @@ class TradingEngine:
                     for action in actions:
                         fill_result = self._execute_action(action)
                         if fill_result and action.order_type == "Open" and self.position_manager.position:
-                                self.position_manager.position.entry_price = fill_result
-                                self.position_manager.position.highest_price = (
-                                    fill_result
-                                )
-                                self.position_manager.position.lowest_price = (
-                                    fill_result
-                                )
+                                pos = self.position_manager.position
+                                signal_price = pos.entry_price
+                                pos.entry_price = fill_result
+                                pos.highest_price = fill_result
+                                pos.lowest_price = fill_result
+                                for leg in pos.legs:
+                                    if leg.entry_price == signal_price:
+                                        leg.entry_price = fill_result
 
                     if not actions:
                         print("無交易訊號")
@@ -429,11 +430,14 @@ class TradingEngine:
                 legs_info=existing_legs_info,
             )
 
-            # 找出尚未記錄的新 legs
+            # 找出尚未記錄的新 legs — use actual fill_price
             new_legs = []
             for leg in position.open_legs:
+                is_new = leg.leg_id not in existing_row_map
+                if is_new:
+                    leg.entry_price = fill_price
                 leg_ep = leg.entry_price or fill_price
-                if leg.leg_id not in existing_row_map:
+                if is_new:
                     new_legs.append({
                         "leg_id": leg.leg_id,
                         "quantity": leg.quantity,
