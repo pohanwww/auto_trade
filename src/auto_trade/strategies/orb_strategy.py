@@ -661,6 +661,11 @@ class ORBStrategy(BaseStrategy):
         latest_kbar = kbar_list.get_latest(1)[-1]
         bar_time = latest_kbar.time
 
+        print(
+            f"  [DEBUG] long_state={self._long_state.value}, close={close}, "
+            f"or_high={or_high}, or_range={or_range}, tol={tolerance}"
+        )
+
         if self._long_state == BreakoutState.IDLE:
             # 偵測突破：close > OR_High
             if close > or_high:
