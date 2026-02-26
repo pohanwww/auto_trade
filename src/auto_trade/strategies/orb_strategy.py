@@ -661,11 +661,6 @@ class ORBStrategy(BaseStrategy):
         latest_kbar = kbar_list.get_latest(1)[-1]
         bar_time = latest_kbar.time
 
-        print(
-            f"  [DEBUG] long_state={self._long_state.value}, close={close}, "
-            f"or_high={or_high}, or_range={or_range}, tol={tolerance}"
-        )
-
         if self._long_state == BreakoutState.IDLE:
             # 偵測突破：close > OR_High
             if close > or_high:
@@ -1089,6 +1084,15 @@ class ORBStrategy(BaseStrategy):
         in_window = self._is_in_trading_window(bar_time)
 
         close = int(latest_kbar.close)
+
+        print(
+            f"  [BAR] {bar_time.strftime('%H:%M')} "
+            f"O={int(latest_kbar.open)} H={int(latest_kbar.high)} "
+            f"L={int(latest_kbar.low)} C={close} | "
+            f"L_state={self._long_state.value} "
+            f"S_state={self._short_state.value} | "
+            f"OR=[{self._or_low},{self._or_high}] range={self._or_range}"
+        )
 
         # 7. 追蹤掃底/掃頂事件（每根 K 棒都更新，不受交易窗口限制）
         self._update_sweep_tracking(latest_kbar)
