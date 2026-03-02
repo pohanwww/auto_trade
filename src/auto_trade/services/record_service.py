@@ -391,7 +391,10 @@ class RecordService:
                 pnl_formula = f'=IF(M{row_number}="Buy",P{row_number}-N{row_number},N{row_number}-P{row_number})'
                 worksheet.update_cell(row_number, 18, pnl_formula)
 
-                twd_formula = f"=K{row_number}*R{row_number}*200"
+                twd_formula = (
+                    f'=K{row_number}*R{row_number}'
+                    f'*IF(LEFT(J{row_number},3)="MXF",50,200)'
+                )
                 worksheet.update_cell(row_number, 19, twd_formula)
 
             # 更新策略參數（T 欄）- 追加出場參數到策略名稱後

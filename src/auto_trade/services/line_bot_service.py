@@ -110,10 +110,15 @@ class LineBotService:
         stop_loss_price: float,
         strategy_name: str = "",
         reason: str = "",
+        total_quantity: int = 0,
     ) -> bool:
         """發送開倉通知訊息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         direction = "做多" if action in ("Buy", "buy") else "做空"
+
+        qty_str = f"{quantity} 口"
+        if total_quantity and total_quantity != quantity:
+            qty_str += f" (總 {total_quantity} 口)"
 
         message = (
             f"📈 開倉通知\n\n"
@@ -122,7 +127,7 @@ class LineBotService:
             f"商品: {symbol} ({sub_symbol})\n"
             f"方向: {direction}\n"
             f"價格: {price:,.0f}\n"
-            f"數量: {quantity} 口\n"
+            f"數量: {qty_str}\n"
             f"停損: {stop_loss_price:,.0f}"
         )
         if reason:
@@ -139,12 +144,18 @@ class LineBotService:
         exit_reason: str,
         entry_price: float = 0,
         strategy_name: str = "",
+        remaining_quantity: int = 0,
     ) -> bool:
         """發送平倉通知訊息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         pnl_pts = price - entry_price if entry_price else 0
-        pnl_twd = pnl_pts * quantity * 50
+        point_value = 50 if symbol.startswith("MXF") else 200
+        pnl_twd = pnl_pts * quantity * point_value
         pnl_sign = "+" if pnl_pts >= 0 else ""
+
+        qty_str = f"{quantity} 口"
+        if remaining_quantity > 0:
+            qty_str += f" (剩 {remaining_quantity} 口)"
 
         message = (
             f"📉 平倉通知\n\n"
@@ -152,7 +163,7 @@ class LineBotService:
             f"時間: {timestamp}\n"
             f"商品: {symbol} ({sub_symbol})\n"
             f"平倉價格: {price:,.0f}\n"
-            f"數量: {quantity} 口\n"
+            f"數量: {qty_str}\n"
             f"原因: {exit_reason}\n"
             f"盈虧: {pnl_sign}{pnl_pts:,.0f} 點 / {pnl_sign}NT${pnl_twd:,.0f}"
         )

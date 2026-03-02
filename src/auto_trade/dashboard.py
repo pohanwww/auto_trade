@@ -591,7 +591,10 @@ function buildCard(d) {{
   // Stop bar
   let stopBar = '';
   if (ep && (sl || tsp)) {{
-    const prices = [sl, ep, cp, tsp, tp].filter(p => p != null);
+    const ss = d.strategy_state;
+    const orH = ss && ss.or_high ? ss.or_high : null;
+    const orL = ss && ss.or_low ? ss.or_low : null;
+    const prices = [sl, ep, cp, tsp, tp, orH, orL].filter(p => p != null);
     const lo = Math.min(...prices) - 20;
     const hi = Math.max(...prices) + 20;
     const range = hi - lo || 1;
@@ -601,6 +604,13 @@ function buildCard(d) {{
     let labelsBelow = '';
     let labelsAbove = '';
 
+    if (orL && orH) {{
+      markers += `<div style="position:absolute;left:${{pct(orL)}}%;width:${{(pct(orH) - pct(orL))}}%;height:100%;background:rgba(255,200,50,0.1);border-radius:3px;"></div>`;
+      markers += `<div style="position:absolute;left:${{pct(orL)}}%;top:-3px;width:2px;height:12px;border-radius:2px;background:var(--yellow);opacity:0.6;" title="OR Low: ${{orL}}"></div>`;
+      markers += `<div style="position:absolute;left:${{pct(orH)}}%;top:-3px;width:2px;height:12px;border-radius:2px;background:var(--yellow);opacity:0.6;" title="OR High: ${{orH}}"></div>`;
+      labelsAbove += `<span style="position:absolute;left:${{pct(orL)}}%;top:-18px;transform:translateX(-50%);font-size:0.62rem;color:var(--yellow);white-space:nowrap;opacity:0.7;">L ${{fmt(orL)}}</span>`;
+      labelsAbove += `<span style="position:absolute;left:${{pct(orH)}}%;top:-18px;transform:translateX(-50%);font-size:0.62rem;color:var(--yellow);white-space:nowrap;opacity:0.7;">H ${{fmt(orH)}}</span>`;
+    }}
     if (sl) {{
       markers += `<div style="position:absolute;left:${{pct(sl)}}%;top:-3px;width:3px;height:12px;border-radius:2px;background:var(--red);" title="SL: ${{sl}}"></div>`;
       labelsBelow += `<span style="position:absolute;left:${{pct(sl)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:var(--red);white-space:nowrap;">SL ${{fmt(sl)}}</span>`;
@@ -618,7 +628,7 @@ function buildCard(d) {{
     if (cp) {{
       const cpCol = pnlPts > 0 ? 'var(--green)' : pnlPts < 0 ? 'var(--red)' : 'var(--text-primary)';
       markers += `<div style="position:absolute;left:${{pct(cp)}}%;top:-4px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${{cpCol}};transform:translateX(-5px);" title="Current: ${{cp}}"></div>`;
-      labelsAbove += `<span style="position:absolute;left:${{pct(cp)}}%;top:-18px;transform:translateX(-50%);font-size:0.68rem;color:${{cpCol}};white-space:nowrap;font-weight:600;">${{fmt(cp)}}</span>`;
+      labelsBelow += `<span style="position:absolute;left:${{pct(cp)}}%;top:10px;transform:translateX(-50%);font-size:0.68rem;color:${{cpCol}};white-space:nowrap;font-weight:600;">Now ${{fmt(cp)}}</span>`;
     }}
 
     stopBar = `

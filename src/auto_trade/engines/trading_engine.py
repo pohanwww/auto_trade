@@ -295,8 +295,10 @@ class TradingEngine:
                     pm = self.position_manager
                     if action.order_type == "Open":
                         sl_price = 0
+                        total_qty = 0
                         if pm.position and pm.position.open_legs:
                             sl_price = pm.position.open_legs[0].exit_rule.stop_loss_price or 0
+                            total_qty = pm.position.open_quantity
                         self.line_bot_service.send_open_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
@@ -306,6 +308,7 @@ class TradingEngine:
                             stop_loss_price=sl_price,
                             strategy_name=strategy,
                             reason=action.reason,
+                            total_quantity=total_qty,
                         )
                     elif action.order_type == "Close":
                         # Use the specific leg's entry price for accurate P&L
@@ -325,6 +328,7 @@ class TradingEngine:
                                     entry_price = sum(leg_eps) // len(leg_eps)
                             if not entry_price:
                                 entry_price = pm.position.entry_price
+                        remaining_qty = pm.position.open_quantity if pm.position else 0
                         self.line_bot_service.send_close_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
@@ -333,6 +337,7 @@ class TradingEngine:
                             exit_reason=action.reason,
                             entry_price=entry_price,
                             strategy_name=strategy,
+                            remaining_quantity=remaining_qty,
                         )
                 except Exception as e:
                     print(f"發送通知失敗: {e}")
