@@ -33,6 +33,34 @@ class IndicatorService:
     - K棒型態識別
     """
 
+    def __init__(self) -> None:
+        self._ema_cache: dict[tuple[str, str, int], list[float]] = {}
+
+    def _get_ema_array(self, kbar_list: KBarList, period: int) -> list[float]:
+        """取得 EMA 原始 float 陣列（含增量快取）"""
+        cache_key = (kbar_list.symbol, kbar_list.timeframe, period)
+        cached = self._ema_cache.get(cache_key)
+        n = len(kbar_list)
+
+        if cached is not None and len(cached) >= n:
+            return cached
+
+        k = 2.0 / (period + 1)
+
+        if cached is not None and len(cached) > 0:
+            start = len(cached)
+            arr = cached
+        else:
+            arr = [float(kbar_list[0].close)]
+            start = 1
+
+        for i in range(start, n):
+            price = float(kbar_list[i].close)
+            arr.append(price * k + arr[-1] * (1 - k))
+
+        self._ema_cache[cache_key] = arr
+        return arr
+
     def calculate_ema(self, kbar_list: KBarList, period: int) -> EMAList:
         """計算指數移動平均線 (EMA)
 
@@ -43,19 +71,13 @@ class IndicatorService:
         Returns:
             EMAList: 計算好的 EMA 資料列表
         """
-        prices = pd.Series([kbar.close for kbar in kbar_list])
-        ema_values = prices.ewm(span=period).mean()
+        arr = self._get_ema_array(kbar_list, period)
+        n = len(kbar_list)
 
-        ema_data = []
-        for i, kbar in enumerate(kbar_list):
-            ema_data.append(
-                EMAData(
-                    time=kbar.time,
-                    ema_value=float(ema_values.iloc[i])
-                    if not pd.isna(ema_values.iloc[i])
-                    else 0.0,
-                )
-            )
+        ema_data = [
+            EMAData(time=kbar_list[i].time, ema_value=arr[i])
+            for i in range(n)
+        ]
 
         return EMAList(
             ema_data=ema_data,
@@ -539,7 +561,8 @@ class IndicatorService:
         periods: list[int] | None = None,
         threshold_pct: float = 0.3,
         min_bars: int = 3,
-        convergence_lookback: int = 30,
+        max_bars_after: int = 2,
+        allow_entry_during_convergence: bool = False,
     ) -> dict:
         """檢測多條 EMA 是否處於糾纏（收斂）狀態
 
@@ -554,20 +577,21 @@ class IndicatorService:
             periods: EMA 週期列表（預設 [5, 10, 20, 60]）
             threshold_pct: 最大 spread 占價格的百分比（預設 0.3%）
             min_bars: 最少持續幾根 K 棒算有效糾纏（預設 3）
-            convergence_lookback: 糾纏後最多幾根 K 棒內可觸發進場
+            max_bars_after: 糾纏結束後最多幾根 K 棒內可觸發進場（預設 2）
 
         Returns:
             dict:
                 converged: 最新 K 棒是否處於糾纏狀態
                 converged_bars: 目前已連續糾纏的 K 棒數
-                was_converged: lookback 內是否有有效糾纏（≥ min_bars）
+                was_converged: 是否有有效糾纏（≥ min_bars）
                 spread_pct: 最新一根的 spread 占價格百分比
                 ema_values: 最新一根各 EMA 值 {period: value}
-                breakout_long: 做多突破（第一進場點 + proximity OK）
-                breakout_short: 做空突破（第一進場點 + proximity OK）
+                breakout_long: 做多突破（時效內 + 第一進場點）
+                breakout_short: 做空突破（時效內 + 第一進場點）
                 spread_expanding: spread 正在擴張（相比前一根）
                 convergence_ema_max: 糾纏區最高 EMA 值
                 convergence_ema_min: 糾纏區最低 EMA 值
+                bars_since_convergence: 距離上次有效糾纏的 K 棒數
         """
         if periods is None:
             periods = [5, 10, 20, 60]
@@ -585,12 +609,13 @@ class IndicatorService:
                 "spread_expanding": False,
                 "convergence_ema_max": 0.0,
                 "convergence_ema_min": 0.0,
+                "bars_since_convergence": 9999,
             }
 
-        ema_lists = {p: self.calculate_ema(kbar_list, p) for p in periods}
+        ema_arrays = {p: self._get_ema_array(kbar_list, p) for p in periods}
 
         n = len(kbar_list)
-        lookback = min(n, convergence_lookback + min_bars)
+        lookback = min(n, 100)
 
         converged_count = 0
         prev_spread_pct = 0.0
@@ -605,7 +630,7 @@ class IndicatorService:
                 converged_count = 0
                 continue
 
-            ema_vals = [ema_lists[p][i].ema_value for p in periods]
+            ema_vals = [ema_arrays[p][i] for p in periods]
             spread = max(ema_vals) - min(ema_vals)
             sp = (spread / price) * 100.0
 
@@ -626,7 +651,7 @@ class IndicatorService:
 
         # 最新一根 K 棒
         latest_price = float(kbar_list[-1].close)
-        latest_ema_vals = {p: ema_lists[p][-1].ema_value for p in periods}
+        latest_ema_vals = {p: ema_arrays[p][n - 1] for p in periods}
         all_ema = list(latest_ema_vals.values())
         latest_spread = max(all_ema) - min(all_ema)
         latest_spread_pct = (latest_spread / latest_price) * 100.0 if latest_price > 0 else 0.0
@@ -634,34 +659,20 @@ class IndicatorService:
         is_converged = latest_spread_pct < threshold_pct
         was_converged = peak_converged_count >= min_bars
 
-        # 掃描糾纏區之後是否已有先前的突破信號（一個糾纏區只產生一個進場機會）
-        prior_breakout_long = False
-        prior_breakout_short = False
-        if last_convergence_idx >= 0 and last_convergence_idx < n - 2:
-            for j in range(last_convergence_idx + 1, n - 1):
-                j_price = float(kbar_list[j].close)
-                if j_price <= 0:
-                    continue
-                j_ema = [ema_lists[p][j].ema_value for p in periods]
-                j_prev_price = float(kbar_list[j - 1].close)
-                j_prev_ema = [ema_lists[p][j - 1].ema_value for p in periods]
-                j_sp = (max(j_ema) - min(j_ema)) / j_price * 100.0
-                j_prev_sp = (
-                    (max(j_prev_ema) - min(j_prev_ema)) / j_prev_price * 100.0
-                    if j_prev_price > 0
-                    else 0.0
-                )
-                j_expanding = j_sp > j_prev_sp
+        bars_since = (n - 1) - last_convergence_idx if last_convergence_idx >= 0 else 9999
+        if allow_entry_during_convergence:
+            in_window = was_converged and bars_since <= max_bars_after
+        else:
+            in_window = was_converged and bars_since >= 1 and bars_since <= max_bars_after
 
-                if j_price > max(j_ema) and j_expanding:
-                    prior_breakout_long = True
-                if j_price < min(j_ema) and j_expanding:
-                    prior_breakout_short = True
-                if prior_breakout_long and prior_breakout_short:
-                    break
-
-        breakout_long = latest_price > max(all_ema) and not prior_breakout_long
-        breakout_short = latest_price < min(all_ema) and not prior_breakout_short
+        breakout_long = (
+            in_window
+            and latest_price > max(all_ema)
+        )
+        breakout_short = (
+            in_window
+            and latest_price < min(all_ema)
+        )
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
@@ -675,6 +686,7 @@ class IndicatorService:
             "spread_expanding": spread_expanding,
             "convergence_ema_max": convergence_ema_max,
             "convergence_ema_min": convergence_ema_min,
+            "bars_since_convergence": bars_since,
         }
 
     # ──────────────────────────────────────────────

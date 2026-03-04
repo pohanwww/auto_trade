@@ -236,11 +236,7 @@ class BacktestEngine:
 
             executor.set_market_state(current_open, current_time)
 
-            current_kbars = KBarList(
-                kbars=kbar_list.kbars[: i + 1],
-                symbol=kbar_list.symbol,
-                timeframe=kbar_list.timeframe,
-            )
+            current_kbars = kbar_list.view(i + 1)
 
             # ── Step 1: 處理延遲進場（上一根 K 棒的信號，用本根 Open 成交）──
             if _deferred_signal is not None:

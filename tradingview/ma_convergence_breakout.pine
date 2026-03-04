@@ -16,9 +16,10 @@ ema3_len = input.int(20,  "EMA 3", group="均線設定")
 ema4_len = input.int(60,  "EMA 4", group="均線設定")
 
 // 糾纏參數
-conv_threshold = input.float(0.4, "收斂門檻 (%)", step=0.05, group="糾纏參數", tooltip="EMA spread < 價格 × 此百分比 = 糾纏")
-conv_min_bars  = input.int(3, "最少糾纏 K 棒數", minval=1, group="糾纏參數")
-conv_lookback  = input.int(30, "糾纏記憶 (bars)", minval=1, group="糾纏參數", tooltip="糾纏後最多幾根 K 棒內可觸發進場（越小越嚴格）")
+conv_threshold = input.float(0.3, "收斂門檻 (%)", step=0.05, group="糾纏參數", tooltip="EMA spread < 價格 × 此百分比 = 糾纏")
+breakout_threshold = input.float(0.4, "突破確認門檻 (%)", step=0.05, group="糾纏參數", tooltip="spread 須擴張超過此值才確認突破 (0=不啟用)")
+conv_min_bars  = input.int(10, "最少糾纏 K 棒數", minval=1, group="糾纏參數")
+conv_max_after = input.int(2, "糾纏後時效 (bars)", minval=1, group="糾纏參數", tooltip="糾纏結束後最多幾根 K 棒內可觸發進場")
 cooldown_bars  = input.int(5, "進場冷卻 K 棒數", minval=0, group="糾纏參數")
 
 // 出場參數（MA 策略：tp_leg=0, ts_leg=2，只有 SL + 移停，沒有停利）
@@ -28,6 +29,11 @@ ts_start_pts  = input.int(200,   "啟動移停 (點)",       group="出場參數
 ts_rate       = input.float(0.6, "移停距離 (%)",        step=0.05, group="出場參數") / 100
 tighten_rate  = input.float(1.6, "收緊移停觸發 (%)",    step=0.1,  group="出場參數") / 100
 tightened_rate = input.float(0.3, "收緊後移停距離 (%)", step=0.05, group="出場參數") / 100
+
+// 成交量確認
+vol_confirm   = input.bool(true, "成交量確認", group="量能過濾", tooltip="突破時成交量需高於歷史百分位")
+vol_pct_threshold = input.float(0.5, "量能門檻 (百分位)", step=0.05, minval=0, maxval=1, group="量能過濾")
+vol_lookback  = input.int(100, "量能回看 (bars)", minval=10, group="量能過濾")
 
 long_only = input.bool(true, "只做多", group="方向")
 
@@ -62,61 +68,90 @@ if is_converged
 else
     converged_count := 0
 
-// 追蹤距離上次有效糾纏過了幾根 bar（匹配回測的 lookback 窗口）
+// 追蹤距離上次有效糾纏過了幾根 bar（糾纏結束後才開始計數）
 var int bars_since_convergence = 9999
+var bool was_converged = false
 var float conv_zone_ema_max = na
 var float conv_zone_ema_min = na
 
-if converged_count >= conv_min_bars
-    bars_since_convergence := 0
+currently_converged = converged_count >= conv_min_bars
+
+if currently_converged
+    was_converged := true
     conv_zone_ema_max := ema_max
     conv_zone_ema_min := ema_min
+    bars_since_convergence := 0
 else
-    bars_since_convergence += 1
+    if was_converged and bars_since_convergence == 0
+        bars_since_convergence := 1
+    else
+        bars_since_convergence += 1
 
-had_valid_convergence = bars_since_convergence <= conv_lookback
+in_window = was_converged and bars_since_convergence <= conv_max_after
 
-// 掃描糾纏區到當前 K 棒之間，是否已有先前的突破（一個糾纏區一個進場）
-prior_breakout_long  = false
-prior_breakout_short = false
-if bars_since_convergence > 1 and bars_since_convergence <= conv_lookback
-    scan_len = bars_since_convergence - 1
-    for i = 1 to scan_len
-        i_close     = close[i]
-        i_prev_close = close[i + 1]
-        i_ema_max    = math.max(ema1[i], ema2[i], ema3[i], ema4[i])
-        i_ema_min    = math.min(ema1[i], ema2[i], ema3[i], ema4[i])
-        i_prev_ema_max = math.max(ema1[i+1], ema2[i+1], ema3[i+1], ema4[i+1])
-        i_prev_ema_min = math.min(ema1[i+1], ema2[i+1], ema3[i+1], ema4[i+1])
-        i_spread     = (i_ema_max - i_ema_min) / i_close * 100
-        i_prev_spread = (i_prev_ema_max - i_prev_ema_min) / i_prev_close * 100
-        i_expanding  = i_spread > i_prev_spread
+// 狀態旗標：一個糾纏區只允許一次開倉，主訊號觸發後等待確認
+var bool entry_taken_for_zone = false
+var bool armed_long  = false
+var bool armed_short = false
 
-        if i_close > i_ema_max and i_expanding
-            prior_breakout_long := true
-            break
-        if i_close < i_ema_min and i_expanding
-            prior_breakout_short := true
-            break
+if currently_converged
+    entry_taken_for_zone := false
+    armed_long  := false
+    armed_short := false
 
-breakout_long  = close > ema_max and not prior_breakout_long
-breakout_short = close < ema_min and not prior_breakout_short
+breakout_long  = close > ema_max
+breakout_short = close < ema_min
 
 // Spread 正在擴張
 spread_expanding = spread_pct > spread_pct[1]
+spread_confirmed = breakout_threshold <= 0 or spread_pct >= breakout_threshold
+
+// 主訊號：突破 + 均線開花 + spread 超過突破門檻 → armed
+if in_window and not entry_taken_for_zone
+    if breakout_long and spread_expanding and spread_confirmed
+        armed_long := true
+    if breakout_short and spread_expanding and spread_confirmed
+        armed_short := true
 
 // ═══════════════════════════════════════════════
-// 進場信號
+// 成交量百分位計算
+// ═══════════════════════════════════════════════
+
+vol_rank() =>
+    count = 0
+    total = 0
+    cur_vol = volume
+    for i = 1 to vol_lookback
+        if not na(volume[i])
+            total += 1
+            if cur_vol > volume[i]
+                count += 1
+    total > 0 ? count / total : 0.0
+
+vol_pct = vol_rank()
+vol_passed = not vol_confirm or vol_pct >= vol_pct_threshold
+
+// ═══════════════════════════════════════════════
+// 進場信號（確認訊號：armed + 價格仍在突破方向 + 量能確認）
 // ═══════════════════════════════════════════════
 
 var int bars_since_entry = 999
 
-entry_long  = had_valid_convergence and breakout_long  and spread_expanding and bars_since_entry >= cooldown_bars
-entry_short = had_valid_convergence and breakout_short and spread_expanding and bars_since_entry >= cooldown_bars and not long_only
+entry_long  = in_window and armed_long  and breakout_long  and vol_passed and bars_since_entry >= cooldown_bars and not entry_taken_for_zone
+entry_short = in_window and armed_short and breakout_short and vol_passed and bars_since_entry >= cooldown_bars and not long_only and not entry_taken_for_zone
 
-// 突破後重置糾纏記錄
+// 開倉後或窗口過期：重置
 if entry_long or entry_short
+    entry_taken_for_zone := true
+    armed_long  := false
+    armed_short := false
     bars_since_convergence := 9999
+    was_converged := false
+
+if bars_since_convergence > conv_max_after
+    was_converged := false
+    armed_long  := false
+    armed_short := false
 
 bars_since_entry += 1
 
@@ -211,8 +246,9 @@ if strategy.position_size == 0
 // 視覺化
 // ═══════════════════════════════════════════════
 
-// 糾纏背景
+// 糾纏背景 & 進場窗口背景
 bgcolor(is_converged and converged_count >= conv_min_bars ? color.new(color.yellow, 88) : na, title="糾纏區間")
+bgcolor(in_window ? color.new(color.blue, 90) : na, title="進場窗口")
 
 // 進場標記
 plotshape(entry_long,  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, title="做多進場")
@@ -224,7 +260,9 @@ plot(strategy.position_size > 0 and ts_active ? trailing_stop : na, "移停線",
 plot(strategy.position_size < 0 and ts_active ? trailing_stop : na, "移停線(空)", color=color.orange, linewidth=2, style=plot.style_linebr)
 
 // Spread 指標
-var spreadTable = table.new(position.top_right, 1, 2, bgcolor=color.new(color.black, 70))
+var spreadTable = table.new(position.top_right, 1, 3, bgcolor=color.new(color.black, 70))
 if barstate.islast
     table.cell(spreadTable, 0, 0, "Spread: " + str.tostring(spread_pct, "#.###") + "%", text_color=is_converged ? color.yellow : color.gray, text_size=size.normal)
     table.cell(spreadTable, 0, 1, "糾纏: " + str.tostring(converged_count) + " bars", text_color=converged_count >= conv_min_bars ? color.green : color.gray, text_size=size.normal)
+    vol_str = vol_confirm ? "Vol: " + str.tostring(vol_pct * 100, "#.0") + "%" + (vol_passed ? " ✓" : " ✗") : "Vol: OFF"
+    table.cell(spreadTable, 0, 2, vol_str, text_color=vol_passed ? color.green : color.red, text_size=size.normal)

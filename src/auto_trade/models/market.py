@@ -42,38 +42,42 @@ class KBar:
 
 @dataclass
 class KBarList:
-    """K線資料列表模型"""
+    """K線資料列表模型
+
+    支援 view 模式：透過 view(end) 建立輕量視窗，共享底層資料不複製。
+    """
 
     kbars: list[KBar] = field(default_factory=list)
     symbol: str = ""
     timeframe: str = "1m"
 
     def __len__(self) -> int:
-        """返回K線數量"""
         return len(self.kbars)
 
     def __getitem__(self, index: int) -> KBar:
-        """支持索引訪問"""
         return self.kbars[index]
 
     def __iter__(self):
-        """支持迭代"""
         return iter(self.kbars)
 
+    def view(self, end: int) -> "KBarList":
+        """建立視窗，共享 KBar 物件但限制範圍（切片只複製參考不複製物件）"""
+        v = KBarList.__new__(KBarList)
+        v.kbars = self.kbars[:end]
+        v.symbol = self.symbol
+        v.timeframe = self.timeframe
+        return v
+
     def append(self, kbar: KBar) -> None:
-        """添加K線"""
         self.kbars.append(kbar)
 
     def extend(self, kbars: list[KBar]) -> None:
-        """擴展K線列表"""
         self.kbars.extend(kbars)
 
     def get_latest(self, count: int = 1) -> list[KBar]:
-        """取得最新的K線"""
         return self.kbars[-count:] if count > 0 else []
 
     def get_oldest(self, count: int = 1) -> list[KBar]:
-        """取得最舊的K線"""
         return self.kbars[:count] if count > 0 else []
 
     def get_price_range(self) -> tuple[float, float]:

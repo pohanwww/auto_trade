@@ -157,8 +157,10 @@ def build_trading_units_from_config(
             "ema_periods",
             "convergence_threshold_pct",
             "convergence_min_bars",
-            "convergence_lookback",
+            "max_bars_after_convergence",
             "volume_confirm",
+            "allow_entry_during_convergence",
+            "breakout_threshold_pct",
             "cooldown_bars",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
@@ -389,6 +391,11 @@ def main():
     if not units:
         print("❌ 沒有可測試的策略")
         return
+
+    # CLI --timeframe 覆蓋每個 unit 的 timeframe
+    if args.timeframe:
+        for unit in units:
+            unit.pm_config.timeframe = args.timeframe
 
     print(f"\n🎯 測試 {len(units)} 個策略配置:")
     for i, unit in enumerate(units, 1):

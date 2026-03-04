@@ -35,7 +35,9 @@ class MAConvergenceStrategy(BaseStrategy):
         volume_percentile_threshold: float = 0.5,
         volume_percentile_lookback: int = 100,
         cooldown_bars: int = 5,
-        convergence_lookback: int = 30,
+        max_bars_after_convergence: int = 2,
+        allow_entry_during_convergence: bool = False,
+        breakout_threshold_pct: float | None = None,
         **kwargs,  # noqa: ARG002
     ):
         super().__init__(indicator_service, name="MA Convergence Breakout")
@@ -47,10 +49,15 @@ class MAConvergenceStrategy(BaseStrategy):
         self.volume_percentile_threshold = volume_percentile_threshold
         self.volume_percentile_lookback = volume_percentile_lookback
         self.cooldown_bars = cooldown_bars
-        self.convergence_lookback = convergence_lookback
+        self.max_bars_after_convergence = max_bars_after_convergence
+        self.allow_entry_during_convergence = allow_entry_during_convergence
+        self.breakout_threshold_pct = breakout_threshold_pct
 
         self._bars_since_entry = 0
         self._had_position = False
+        self._zone_entered = False
+        self._armed_long = False
+        self._armed_short = False
 
     def on_position_closed(self) -> None:
         self._bars_since_entry = 0
@@ -91,7 +98,8 @@ class MAConvergenceStrategy(BaseStrategy):
             periods=self.ema_periods,
             threshold_pct=self.convergence_threshold_pct,
             min_bars=self.convergence_min_bars,
-            convergence_lookback=self.convergence_lookback,
+            max_bars_after=self.max_bars_after_convergence,
+            allow_entry_during_convergence=self.allow_entry_during_convergence,
         )
 
         ema_vals = conv["ema_values"]
@@ -100,6 +108,12 @@ class MAConvergenceStrategy(BaseStrategy):
         breakout_long = conv["breakout_long"]
         breakout_short = conv["breakout_short"]
         spread_expanding = conv["spread_expanding"]
+        bars_since = conv.get("bars_since_convergence", 9999)
+
+        if bars_since == 0:
+            self._zone_entered = False
+            self._armed_long = False
+            self._armed_short = False
 
         if not ema_vals:
             return StrategySignal(
@@ -122,8 +136,19 @@ class MAConvergenceStrategy(BaseStrategy):
                 timestamp=now,
             )
 
-        # Breakout long
-        if breakout_long and spread_expanding:
+        # 主訊號：突破 + 均線開花（+ spread 超過突破門檻）→ armed
+        spread_confirmed = (
+            self.breakout_threshold_pct is None
+            or spread_pct >= self.breakout_threshold_pct
+        )
+        if not self._zone_entered:
+            if breakout_long and spread_expanding and spread_confirmed:
+                self._armed_long = True
+            if not self.long_only and breakout_short and spread_expanding and spread_confirmed:
+                self._armed_short = True
+
+        # 確認訊號：armed + 價格仍在突破方向 + 量能確認
+        if self._armed_long and breakout_long and not self._zone_entered:
             if self.volume_confirm:
                 vol_pct = self.indicator_service.volume_percentile(
                     kbar_list, self.volume_percentile_lookback
@@ -133,10 +158,12 @@ class MAConvergenceStrategy(BaseStrategy):
                         signal_type=SignalType.HOLD,
                         symbol=symbol,
                         price=current_price,
-                        reason=f"MA breakout long but low volume ({vol_pct:.0%})",
+                        reason=f"MA armed long, waiting volume ({vol_pct:.0%})",
                         timestamp=now,
                     )
 
+            self._zone_entered = True
+            self._armed_long = False
             self._had_position = True
             self._bars_since_entry = 0
 
@@ -156,8 +183,7 @@ class MAConvergenceStrategy(BaseStrategy):
                 },
             )
 
-        # Breakout short
-        if not self.long_only and breakout_short and spread_expanding:
+        if self._armed_short and breakout_short and not self._zone_entered:
             if self.volume_confirm:
                 vol_pct = self.indicator_service.volume_percentile(
                     kbar_list, self.volume_percentile_lookback
@@ -167,10 +193,12 @@ class MAConvergenceStrategy(BaseStrategy):
                         signal_type=SignalType.HOLD,
                         symbol=symbol,
                         price=current_price,
-                        reason=f"MA breakout short but low volume ({vol_pct:.0%})",
+                        reason=f"MA armed short, waiting volume ({vol_pct:.0%})",
                         timestamp=now,
                     )
 
+            self._zone_entered = True
+            self._armed_short = False
             self._had_position = True
             self._bars_since_entry = 0
 
