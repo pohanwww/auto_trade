@@ -36,9 +36,9 @@ max_addon_count = input.int(2,     "最大加碼次數",   group="加碼參數")
 [macd_line, signal_line, hist] = ta.macd(close, fast_len, slow_len, signal_len)
 macd_avg = (macd_line + signal_line) / 2
 
-// 金叉偵測：使用已確認 K 線 [1] 和 [2]（不用正在形成的 [0]）
-golden_cross = macd_line[2] <= signal_line[2] and macd_line[1] > signal_line[1]
-macd_condition = macd_avg[1] < macd_threshold and golden_cross
+// 金叉偵測：[0] 在 Pine Script 中已是收盤確認的 K 線
+golden_cross = macd_line[1] <= signal_line[1] and macd_line[0] > signal_line[0]
+macd_condition = macd_avg[0] < macd_threshold and golden_cross
 
 // ═══════════════════════════════════════════════
 // 進場信號
@@ -133,6 +133,9 @@ if strategy.position_size == 0
 // 進場標記
 plotshape(entry_long, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="金叉進場")
 plotshape(addon_signal and strategy.position_size > 0, style=shape.diamond, location=location.belowbar, color=color.lime, size=size.tiny, title="加碼")
+
+// Debug: 金叉偵測（有金叉但可能被 threshold 或 position 擋住）
+plotshape(golden_cross and not entry_long, style=shape.xcross, location=location.belowbar, color=color.yellow, size=size.tiny, title="金叉(未進場)")
 
 // 停損線 & 移停線 & 停利線
 plot(strategy.position_size > 0 and not na(sl_price) ? sl_price : na, "停損線", color=color.red, linewidth=1, style=plot.style_linebr)
