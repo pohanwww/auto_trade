@@ -16,8 +16,8 @@ ema3_len = input.int(20,  "EMA 3", group="均線設定")
 ema4_len = input.int(60,  "EMA 4", group="均線設定")
 
 // 糾纏參數
-conv_threshold = input.float(0.3, "收斂門檻 (%)", step=0.05, group="糾纏參數", tooltip="EMA spread < 價格 × 此百分比 = 糾纏")
-breakout_threshold = input.float(0.4, "突破確認門檻 (%)", step=0.05, group="糾纏參數", tooltip="spread 須擴張超過此值才確認突破 (0=不啟用)")
+conv_threshold = input.float(0.4, "收斂門檻 (%)", step=0.05, group="糾纏參數", tooltip="EMA spread < 價格 × 此百分比 = 糾纏")
+breakout_threshold = input.float(0.0, "突破確認門檻 (%)", step=0.05, group="糾纏參數", tooltip="spread 須擴張超過此值才確認突破 (0=不啟用)")
 conv_min_bars  = input.int(10, "最少糾纏 K 棒數", minval=1, group="糾纏參數")
 conv_max_after = input.int(2, "糾纏後時效 (bars)", minval=1, group="糾纏參數", tooltip="糾纏結束後最多幾根 K 棒內可觸發進場")
 cooldown_bars  = input.int(5, "進場冷卻 K 棒數", minval=0, group="糾纏參數")
@@ -31,7 +31,7 @@ tighten_rate  = input.float(1.6, "收緊移停觸發 (%)",    step=0.1,  group="
 tightened_rate = input.float(0.3, "收緊後移停距離 (%)", step=0.05, group="出場參數") / 100
 
 // 成交量確認
-vol_confirm   = input.bool(true, "成交量確認", group="量能過濾", tooltip="突破時成交量需高於歷史百分位")
+vol_confirm   = input.bool(false, "成交量確認", group="量能過濾", tooltip="突破時成交量需高於歷史百分位")
 vol_pct_threshold = input.float(0.5, "量能門檻 (百分位)", step=0.05, minval=0, maxval=1, group="量能過濾")
 vol_lookback  = input.int(100, "量能回看 (bars)", minval=10, group="量能過濾")
 

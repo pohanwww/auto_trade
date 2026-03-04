@@ -1,0 +1,149 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// MACD Golden Cross Strategy (MACD 金叉做多 + 加碼 + 收緊移停)
+
+//@version=6
+strategy("MACD 金叉波段", overlay=true, default_qty_type=strategy.fixed, default_qty_value=4, initial_capital=10000000, currency=currency.TWD, commission_type=strategy.commission.cash_per_order, commission_value=100, margin_long=4, margin_short=4, pyramiding=3)
+
+// ═══════════════════════════════════════════════
+// 參數設定
+// ═══════════════════════════════════════════════
+
+// MACD 參數
+fast_len   = input.int(12, "MACD Fast", group="MACD 參數")
+slow_len   = input.int(26, "MACD Slow", group="MACD 參數")
+signal_len = input.int(9,  "Signal",    group="MACD 參數")
+macd_threshold = input.float(50, "MACD 均值門檻", group="MACD 參數", tooltip="(MACD + Signal) / 2 須低於此值才允許進場")
+
+// 出場參數（全部 TS legs：停損 + 移動停損 + 停利）
+sl_rate       = input.float(0.35, "停損 buffer (%)",     step=0.05, group="出場參數") / 100
+sl_lookback   = input.int(31,     "停損 Swing Lookback", minval=5,  group="出場參數")
+ts_start_pts  = input.int(200,    "啟動移停 (點)",       group="出場參數")
+ts_rate       = input.float(0.92, "移停距離 (%)",        step=0.05, group="出場參數") / 100
+tp_rate       = input.float(2.1,  "停利 (%)",            step=0.1,  group="出場參數") / 100
+tighten_rate  = input.float(2.1,  "收緊移停觸發 (%)",    step=0.1,  group="出場參數") / 100
+tightened_rate = input.float(0.4, "收緊後移停距離 (%)",  step=0.05, group="出場參數") / 100
+
+// 加碼參數
+enable_addon    = input.bool(true, "啟用加碼",       group="加碼參數")
+addon_qty       = input.int(2,     "加碼口數",       group="加碼參數")
+max_addon_count = input.int(2,     "最大加碼次數",   group="加碼參數")
+
+// ═══════════════════════════════════════════════
+// MACD 計算
+// ═══════════════════════════════════════════════
+
+[macd_line, signal_line, hist] = ta.macd(close, fast_len, slow_len, signal_len)
+macd_avg = (macd_line + signal_line) / 2
+
+// 金叉偵測：使用已確認 K 線 [1] 和 [2]（不用正在形成的 [0]）
+golden_cross = macd_line[2] <= signal_line[2] and macd_line[1] > signal_line[1]
+macd_condition = macd_avg[1] < macd_threshold and golden_cross
+
+// ═══════════════════════════════════════════════
+// 進場信號
+// ═══════════════════════════════════════════════
+
+var int addon_count = 0
+
+entry_long = macd_condition and strategy.position_size == 0
+
+if entry_long
+    strategy.entry("Long", strategy.long)
+    addon_count := 0
+
+// 加碼：有倉位 + 金叉 + 價格高於進場均價
+addon_signal = enable_addon and macd_condition and strategy.position_size > 0 and addon_count < max_addon_count
+if addon_signal
+    avg_entry = strategy.opentrades.entry_price(0)
+    if close > avg_entry
+        addon_count += 1
+        strategy.entry("Addon" + str.tostring(addon_count), strategy.long, qty=addon_qty)
+
+// ═══════════════════════════════════════════════
+// 出場管理
+// ═══════════════════════════════════════════════
+
+var float entry_price = na
+var float highest_since_entry = na
+var float trailing_stop = na
+var float sl_price = na
+var float tp_price = na
+var bool  ts_active = false
+var bool  ts_tightened = false
+
+// 偵測新倉位建立
+if strategy.position_size > 0 and strategy.position_size[1] == 0
+    entry_price := strategy.opentrades.entry_price(strategy.opentrades - 1)
+    highest_since_entry := entry_price
+    trailing_stop := na
+    ts_active := false
+    ts_tightened := false
+    sl_price := na
+    tp_price := entry_price * (1 + tp_rate)
+
+// Swing Low 停損
+swing_low = ta.lowest(low, sl_lookback)
+
+if strategy.position_size > 0 and not na(entry_price)
+    if na(sl_price)
+        sl_price := swing_low[1] - entry_price * sl_rate
+
+    if high > highest_since_entry
+        highest_since_entry := high
+
+    // 啟動移動停損
+    if not ts_active and highest_since_entry >= entry_price + ts_start_pts
+        ts_active := true
+
+    if ts_active
+        // 收緊判定
+        tighten_trigger = entry_price * (1 + tighten_rate)
+        if not ts_tightened and highest_since_entry >= tighten_trigger
+            ts_tightened := true
+
+        ts_pts = ts_tightened ? entry_price * tightened_rate : entry_price * ts_rate
+        new_ts = highest_since_entry - ts_pts
+        trailing_stop := na(trailing_stop) ? new_ts : math.max(trailing_stop, new_ts)
+
+    // 用最緊的停損出場（SL / TS / TP）
+    effective_stop = not na(trailing_stop) and trailing_stop > sl_price ? trailing_stop : sl_price
+    strategy.exit("Exit", "Long", stop=effective_stop, limit=tp_price)
+
+    // 加碼部位也用相同出場
+    if addon_count >= 1
+        strategy.exit("Exit-A1", "Addon1", stop=effective_stop, limit=tp_price)
+    if addon_count >= 2
+        strategy.exit("Exit-A2", "Addon2", stop=effective_stop, limit=tp_price)
+
+// 清理狀態
+if strategy.position_size == 0
+    entry_price := na
+    sl_price := na
+    tp_price := na
+    trailing_stop := na
+    ts_active := false
+    ts_tightened := false
+    addon_count := 0
+
+// ═══════════════════════════════════════════════
+// 視覺化
+// ═══════════════════════════════════════════════
+
+// 進場標記
+plotshape(entry_long, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="金叉進場")
+plotshape(addon_signal and strategy.position_size > 0, style=shape.diamond, location=location.belowbar, color=color.lime, size=size.tiny, title="加碼")
+
+// 停損線 & 移停線 & 停利線
+plot(strategy.position_size > 0 and not na(sl_price) ? sl_price : na, "停損線", color=color.red, linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size > 0 and ts_active ? trailing_stop : na, "移停線", color=color.orange, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size > 0 and not na(tp_price) ? tp_price : na, "停利線", color=color.teal, linewidth=1, style=plot.style_linebr)
+
+// MACD 資訊表
+var infoTable = table.new(position.top_right, 1, 4, bgcolor=color.new(color.black, 70))
+if barstate.islast
+    table.cell(infoTable, 0, 0, "MACD: " + str.tostring(macd_line, "#.#"), text_color=macd_line > signal_line ? color.green : color.red, text_size=size.normal)
+    table.cell(infoTable, 0, 1, "Signal: " + str.tostring(signal_line, "#.#"), text_color=color.gray, text_size=size.normal)
+    table.cell(infoTable, 0, 2, "Avg: " + str.tostring(macd_avg, "#.#") + (macd_avg < macd_threshold ? " ✓" : " ✗"), text_color=macd_avg < macd_threshold ? color.green : color.red, text_size=size.normal)
+    addon_str = enable_addon ? "Addon: " + str.tostring(addon_count) + "/" + str.tostring(max_addon_count) : "Addon: OFF"
+    table.cell(infoTable, 0, 3, addon_str, text_color=color.gray, text_size=size.normal)
