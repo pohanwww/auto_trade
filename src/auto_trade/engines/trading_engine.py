@@ -259,6 +259,27 @@ class TradingEngine:
             if action.order_type == "Open":
                 self._record_open(action, fill_result.fill_price)
 
+            # 平倉 → 先取 entry_price（on_fill 後 position 可能變 None）
+            close_entry_price = 0
+            close_remaining_qty = 0
+            if action.order_type == "Close" and self.position_manager.position:
+                pos = self.position_manager.position
+                close_leg_ids = []
+                if action.leg_id:
+                    close_leg_ids = [action.leg_id]
+                elif "leg_ids" in action.metadata:
+                    close_leg_ids = action.metadata["leg_ids"]
+                if close_leg_ids:
+                    leg_eps = [
+                        leg.entry_price for leg in pos.legs
+                        if leg.leg_id in close_leg_ids and leg.entry_price
+                    ]
+                    if leg_eps:
+                        close_entry_price = sum(leg_eps) // len(leg_eps)
+                if not close_entry_price:
+                    close_entry_price = pos.entry_price
+                close_remaining_qty = pos.open_quantity - action.quantity
+
             # 平倉 → 通知 PM 並更新 Google Sheets per-leg
             if action.order_type == "Close" and action.leg_id:
                 exit_reason_str = action.metadata.get("exit_reason", "SL")
@@ -311,33 +332,15 @@ class TradingEngine:
                             total_quantity=total_qty,
                         )
                     elif action.order_type == "Close":
-                        # Use the specific leg's entry price for accurate P&L
-                        entry_price = 0
-                        if pm.position:
-                            close_leg_ids = []
-                            if action.leg_id:
-                                close_leg_ids = [action.leg_id]
-                            elif "leg_ids" in action.metadata:
-                                close_leg_ids = action.metadata["leg_ids"]
-                            if close_leg_ids:
-                                leg_eps = [
-                                    leg.entry_price for leg in pm.position.legs
-                                    if leg.leg_id in close_leg_ids and leg.entry_price
-                                ]
-                                if leg_eps:
-                                    entry_price = sum(leg_eps) // len(leg_eps)
-                            if not entry_price:
-                                entry_price = pm.position.entry_price
-                        remaining_qty = pm.position.open_quantity if pm.position else 0
                         self.line_bot_service.send_close_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
                             price=fill_result.fill_price,
                             quantity=action.quantity,
                             exit_reason=action.reason,
-                            entry_price=entry_price,
+                            entry_price=close_entry_price,
                             strategy_name=strategy,
-                            remaining_quantity=remaining_qty,
+                            remaining_quantity=max(close_remaining_qty, 0),
                         )
                 except Exception as e:
                     print(f"發送通知失敗: {e}")
@@ -547,11 +550,16 @@ class TradingEngine:
             margin = self.account_service.get_margin()
 
             strategy = self.record_service.strategy_name if self.record_service else "unknown"
+            pos_qty = (
+                self.position_manager.position.open_quantity
+                if self.position_manager.has_position
+                else 0
+            )
             self.line_bot_service.send_status_message(
                 total_equity=margin.equity_amount,
                 contract=self.sub_symbol,
                 price=current_price,
-                position=0,
+                position=pos_qty,
                 status=f"策略 [{strategy}] 已啟動",
             )
         except Exception as e:
