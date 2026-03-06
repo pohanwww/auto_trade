@@ -136,17 +136,24 @@ class TradingEngine:
 
                 if self.position_manager.has_position:
                     # === 有倉位：高頻監控 ===
-                    kbar_list = self.market_service.get_futures_kbars_with_timeframe(
-                        self.symbol,
-                        self.sub_symbol,
-                        self.trading_unit.pm_config.timeframe,
-                        days=15,
+
+                    # 0. 時間強制平倉（日內策略用，如 ORB 13:30 收盤）
+                    actions = self.position_manager.check_time_exit(
+                        current_time, current_price
                     )
 
-                    # 讓 PM 處理價格更新
-                    actions = self.position_manager.on_price_update(
-                        current_price, kbar_list
-                    )
+                    if not actions:
+                        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                            self.symbol,
+                            self.sub_symbol,
+                            self.trading_unit.pm_config.timeframe,
+                            days=15,
+                        )
+
+                        # 讓 PM 處理價格更新
+                        actions = self.position_manager.on_price_update(
+                            current_price, kbar_list
+                        )
 
                     # 執行 PM 產生的指令
                     for action in actions:
