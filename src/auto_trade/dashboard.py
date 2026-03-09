@@ -10,6 +10,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -80,11 +81,33 @@ def _check_token(token: str | None) -> bool:
     return token == expected
 
 
+PROJECT_DIR = os.environ.get(
+    "PROJECT_DIR", str(Path(__file__).resolve().parent.parent.parent)
+)
+
+
+def _engine_process_pattern(strategy: str) -> str:
+    """Build pgrep pattern matching start_trading.sh convention."""
+    return f"uv run main.*--config strategy_{strategy}.yaml"
+
+
+def _is_engine_running(strategy: str) -> bool:
+    pattern = _engine_process_pattern(strategy)
+    result = subprocess.run(
+        ["pgrep", "-f", pattern],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 @app.get("/api/status")
 def api_status(token: str | None = Query(None)):
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return _collect_strategies()
+    strategies = _collect_strategies()
+    for s in strategies:
+        s["engine_running"] = _is_engine_running(s["strategy"])
+    return strategies
 
 
 @app.get("/api/logs")
@@ -124,6 +147,68 @@ def api_logs_content(
     try:
         lines = log_path.read_text(errors="replace").splitlines()
         return {"filename": safe_name, "total_lines": len(lines), "lines": lines[-tail:]}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Strategy Control Endpoints ──────────────────────────────
+
+
+@app.post("/api/strategy/{strategy}/stop")
+def api_strategy_stop(strategy: str, token: str | None = Query(None)):
+    """Stop a running engine process (SIGTERM)."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if not _is_engine_running(strategy):
+        return {"ok": False, "message": "Engine is not running"}
+
+    pattern = _engine_process_pattern(strategy)
+    subprocess.run(["pkill", "-TERM", "-f", pattern])
+    return {"ok": True, "message": f"Sent SIGTERM to strategy_{strategy}"}
+
+
+@app.post("/api/strategy/{strategy}/start")
+def api_strategy_start(strategy: str, token: str | None = Query(None)):
+    """Start an engine process via start_trading.sh."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if _is_engine_running(strategy):
+        return {"ok": False, "message": "Engine is already running"}
+
+    config_file = f"strategy_{strategy}.yaml"
+    script = Path(PROJECT_DIR) / "start_trading.sh"
+    if not script.exists():
+        return JSONResponse(
+            {"error": "start_trading.sh not found"}, status_code=500
+        )
+
+    subprocess.Popen(
+        [str(script), config_file],
+        cwd=PROJECT_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"ok": True, "message": f"Starting strategy_{strategy}"}
+
+
+@app.post("/api/strategy/{strategy}/clear-position")
+def api_clear_position(strategy: str, token: str | None = Query(None)):
+    """Clear position record from position.json, preserving _live metadata."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    path = STATE_DIR / strategy / "position.json"
+    if not path.exists():
+        return {"ok": False, "message": "No position.json found"}
+
+    try:
+        data = json.loads(path.read_text())
+        live = data.get("_live")
+        new_data = {"_live": live} if live else {}
+        path.write_text(json.dumps(new_data, indent=2, ensure_ascii=False))
+        return {"ok": True, "message": "Position cleared"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -348,6 +433,34 @@ def _build_html(token_param: str) -> str:
   }}
   nav a:hover {{ color: var(--text); background: rgba(255,255,255,0.05); }}
   nav a.active {{ color: var(--blue); background: rgba(88,166,255,0.1); }}
+  .ctrl-row {{
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }}
+  .ctrl-btn {{
+    flex: 1;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: transparent;
+    font-family: inherit;
+  }}
+  .ctrl-btn:hover {{ filter: brightness(1.2); }}
+  .ctrl-btn:active {{ transform: scale(0.97); }}
+  .ctrl-btn:disabled {{ opacity: 0.4; cursor: not-allowed; filter: none; }}
+  .ctrl-btn.stop {{ color: var(--red); border-color: rgba(248,81,73,0.3); }}
+  .ctrl-btn.stop:hover {{ background: rgba(248,81,73,0.1); }}
+  .ctrl-btn.start {{ color: var(--green); border-color: rgba(63,185,80,0.3); }}
+  .ctrl-btn.start:hover {{ background: rgba(63,185,80,0.1); }}
+  .ctrl-btn.clear {{ color: var(--yellow); border-color: rgba(210,153,34,0.3); }}
+  .ctrl-btn.clear:hover {{ background: rgba(210,153,34,0.1); }}
   @media (max-width: 480px) {{
     body {{ padding: 12px; }}
     .grid {{ grid-template-columns: 1fr; }}
@@ -399,6 +512,43 @@ function timeSince(isoStr) {{
   if (s < 60) return s + 's ago';
   if (s < 300) return Math.floor(s/60) + 'm ago';
   return '> 5m ago (engine may be offline)';
+}}
+
+async function engineAction(strategy, action, btn) {{
+  const labels = {{
+    stop: ['Stopping...', `確定要停止 ${{strategy}} 嗎？`],
+    start: ['Starting...', `確定要啟動 ${{strategy}} 嗎？`],
+    'clear-position': ['Clearing...', `確定要清除 ${{strategy}} 的倉位紀錄嗎？\n\n⚠️ 這只會清除紀錄，不會實際平倉！`],
+  }};
+  const [busyText, confirmMsg] = labels[action];
+  if (!confirm(confirmMsg)) return;
+
+  btn.disabled = true;
+  btn.textContent = busyText;
+  try {{
+    const res = await fetch(`/api/strategy/${{strategy}}/${{action}}?_t=${{Date.now()}}${{TOKEN_PARAM}}`, {{method: 'POST'}});
+    const data = await res.json();
+    if (!data.ok && data.error) alert(data.error);
+  }} catch (e) {{
+    alert('Request failed: ' + e.message);
+  }}
+  setTimeout(refresh, 1500);
+}}
+
+function buildCtrlRow(d) {{
+  const s = d.strategy;
+  const running = d.engine_running;
+  let html = '<div class="ctrl-row">';
+  if (running) {{
+    html += `<button class="ctrl-btn stop" onclick="engineAction('${{s}}','stop',this)">Stop Engine</button>`;
+  }} else {{
+    html += `<button class="ctrl-btn start" onclick="engineAction('${{s}}','start',this)">Start Engine</button>`;
+  }}
+  if (d.has_position) {{
+    html += `<button class="ctrl-btn clear" onclick="engineAction('${{s}}','clear-position',this)">Clear Position</button>`;
+  }}
+  html += '</div>';
+  return html;
 }}
 
 function buildCard(d) {{
@@ -510,7 +660,7 @@ function buildCard(d) {{
         </div>`;
     }}
 
-    return `<div class="card"><div class="card-header"><span class="name">${{d.strategy}}</span>${{badge}}</div>${{priceRow}}${{stateSection}}<div style="margin-top:10px;text-align:right;">${{engineStatus}}</div></div>`;
+    return `<div class="card"><div class="card-header"><span class="name">${{d.strategy}}</span>${{badge}}</div>${{priceRow}}${{stateSection}}<div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>${{buildCtrlRow(d)}}</div>`;
   }}
 
   // --- Has position ---
@@ -655,6 +805,7 @@ function buildCard(d) {{
       ${{legsSection}}
       ${{stopBar}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
+      ${{buildCtrlRow(d)}}
     </div>`;
 }}
 
