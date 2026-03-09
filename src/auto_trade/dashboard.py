@@ -13,8 +13,11 @@ import os
 import subprocess
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+
+load_dotenv(override=True)
 
 app = FastAPI(title="Trading Dashboard")
 
