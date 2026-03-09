@@ -76,12 +76,16 @@ class TradingEngine:
         # 加碼信號去重
         self._addon_checked_this_interval: bool = False
 
+        # 配置檔名（用於 dashboard 辨識程序）
+        self.config_file: str | None = None
+
     def configure(
         self,
         symbol: str,
         sub_symbol: str,
         signal_check_interval: int = 5,
         position_check_interval: int = 5,
+        config_file: str | None = None,
     ) -> None:
         """設定交易參數
 
@@ -90,7 +94,9 @@ class TradingEngine:
             sub_symbol: 子商品代碼
             signal_check_interval: 信號檢測間隔（分鐘）
             position_check_interval: 持倉檢測間隔（秒）
+            config_file: YAML 配置檔名（如 strategy_ma.yaml）
         """
+        self.config_file = config_file
         self.symbol = symbol
         self.sub_symbol = sub_symbol
         self.signal_check_interval = signal_check_interval
@@ -375,6 +381,7 @@ class TradingEngine:
                 "strategy": self.record_service.strategy_name,
                 "symbol": self.symbol,
                 "sub_symbol": self.sub_symbol,
+                "config_file": self.config_file,
             }
 
             pending = self.trading_unit.strategy.get_pending_state()

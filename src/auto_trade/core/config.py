@@ -43,6 +43,7 @@ class Config:
 
         # === 交易策略配置（從 YAML 讀取）===
         self._config_file = config_file or "strategy.yaml"
+        self.config_file: str = self._config_file
         self._load_trading_config()
 
     def _load_trading_config(self):

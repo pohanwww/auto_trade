@@ -53,6 +53,7 @@ def _collect_strategies() -> list[dict]:
             info["current_price"] = live.get("current_price")
             info["timestamp"] = live.get("timestamp")
             info["strategy_state"] = live.get("strategy_state")
+            info["config_file"] = live.get("config_file")
 
         # Position record (keyed by sub_symbol, e.g. "MXF202603")
         sub_sym = next(iter(data), None)
@@ -86,13 +87,13 @@ PROJECT_DIR = os.environ.get(
 )
 
 
-def _engine_process_pattern(strategy: str) -> str:
+def _engine_process_pattern(config_file: str) -> str:
     """Build pgrep pattern matching start_trading.sh convention."""
-    return f"uv run main.*--config strategy_{strategy}.yaml"
+    return f"uv run main.*--config {config_file}"
 
 
-def _is_engine_running(strategy: str) -> bool:
-    pattern = _engine_process_pattern(strategy)
+def _is_engine_running(config_file: str) -> bool:
+    pattern = _engine_process_pattern(config_file)
     result = subprocess.run(
         ["pgrep", "-f", pattern],
         capture_output=True,
@@ -106,7 +107,8 @@ def api_status(token: str | None = Query(None)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     strategies = _collect_strategies()
     for s in strategies:
-        s["engine_running"] = _is_engine_running(s["strategy"])
+        cf = s.get("config_file")
+        s["engine_running"] = _is_engine_running(cf) if cf else False
     return strategies
 
 
@@ -154,18 +156,31 @@ def api_logs_content(
 # ── Strategy Control Endpoints ──────────────────────────────
 
 
+def _get_config_file(strategy: str) -> str | None:
+    """Read config_file from position.json _live metadata."""
+    data = _read_json(STATE_DIR / strategy / "position.json")
+    live = data.get("_live")
+    return live.get("config_file") if live else None
+
+
 @app.post("/api/strategy/{strategy}/stop")
 def api_strategy_stop(strategy: str, token: str | None = Query(None)):
     """Stop a running engine process (SIGTERM)."""
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    if not _is_engine_running(strategy):
+    config_file = _get_config_file(strategy)
+    if not config_file:
+        return JSONResponse(
+            {"error": "config_file not found in _live metadata"}, status_code=400
+        )
+
+    if not _is_engine_running(config_file):
         return {"ok": False, "message": "Engine is not running"}
 
-    pattern = _engine_process_pattern(strategy)
+    pattern = _engine_process_pattern(config_file)
     subprocess.run(["pkill", "-TERM", "-f", pattern])
-    return {"ok": True, "message": f"Sent SIGTERM to strategy_{strategy}"}
+    return {"ok": True, "message": f"Sent SIGTERM to {strategy}"}
 
 
 @app.post("/api/strategy/{strategy}/start")
@@ -174,10 +189,15 @@ def api_strategy_start(strategy: str, token: str | None = Query(None)):
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    if _is_engine_running(strategy):
+    config_file = _get_config_file(strategy)
+    if not config_file:
+        return JSONResponse(
+            {"error": "config_file not found in _live metadata"}, status_code=400
+        )
+
+    if _is_engine_running(config_file):
         return {"ok": False, "message": "Engine is already running"}
 
-    config_file = f"strategy_{strategy}.yaml"
     script = Path(PROJECT_DIR) / "start_trading.sh"
     if not script.exists():
         return JSONResponse(
@@ -190,7 +210,7 @@ def api_strategy_start(strategy: str, token: str | None = Query(None)):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    return {"ok": True, "message": f"Starting strategy_{strategy}"}
+    return {"ok": True, "message": f"Starting {strategy}"}
 
 
 @app.post("/api/strategy/{strategy}/clear-position")

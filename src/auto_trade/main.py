@@ -111,6 +111,7 @@ def main():
         sub_symbol=config.sub_symbol,
         signal_check_interval=config.signal_check_interval,
         position_check_interval=config.position_check_interval,
+        config_file=config.config_file,
     )
 
     # 啟動交易引擎
