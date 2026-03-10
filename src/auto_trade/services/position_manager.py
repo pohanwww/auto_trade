@@ -478,11 +478,11 @@ class PositionManager:
         ):
             fast_stop_triggered = self._check_macd_fast_stop(current_price, kbar_list)
             if fast_stop_triggered:
-                # 快速停損觸發：關閉所有 open legs
                 actions.extend(
                     self._close_all_legs(current_price, ExitReason.FAST_STOP)
                 )
                 return actions
+
 
         # 檢查動能衰竭停利（整個 Position 級別）
         if (
@@ -561,6 +561,74 @@ class PositionManager:
             return self._close_all_legs(current_price, ExitReason.TIME_EXIT)
 
         return []
+
+    def update_entry_on_fill(self, fill_price: int) -> None:
+        """成交後更新進場價格及所有依賴 entry_price 的出場參數
+
+        信號價格與實際成交價格可能有差異（滑價），
+        此方法將 position 和所有 leg 的 entry_price 統一為實際成交價，
+        並重新計算 start_trailing_stop_price、tighten_after_price、take_profit_price。
+        stop_loss_price 基於結構性低點，不受 entry_price 影響，不需重算。
+        """
+        pos = self.position
+        if not pos:
+            return
+
+        old_price = pos.entry_price
+        if old_price == fill_price:
+            return
+
+        pos.entry_price = fill_price
+        pos.update_price_tracking(fill_price)
+        is_long = pos.direction == Action.Buy
+
+        # 重算啟動移停價格
+        start_ts_pts = self.config.start_trailing_stop_points
+        new_start_ts = (
+            fill_price + start_ts_pts if is_long else fill_price - start_ts_pts
+        )
+
+        # 重算收緊移停門檻
+        new_tighten_after: int | None = None
+        new_tightened_pts: int | None = None
+        if self.config.has_tightened_trailing_stop:
+            tighten_after_pts = calculate_points(
+                self.config.tighten_after_points,
+                self.config.tighten_after_points_rate,
+                fill_price,
+            )
+            new_tighten_after = (
+                fill_price + tighten_after_pts
+                if is_long
+                else fill_price - tighten_after_pts
+            )
+            new_tightened_pts = calculate_points(
+                self.config.tightened_trailing_stop_points,
+                self.config.tightened_trailing_stop_points_rate,
+                fill_price,
+            )
+
+        # 重算停利價格
+        tp_pts = calculate_points(
+            self.config.take_profit_points,
+            self.config.take_profit_points_rate,
+            fill_price,
+        )
+        new_tp = fill_price + tp_pts if is_long else fill_price - tp_pts
+
+        for leg in pos.open_legs:
+            leg.entry_price = fill_price
+            leg.exit_rule.start_trailing_stop_price = new_start_ts
+            leg.exit_rule.tighten_after_price = new_tighten_after
+            leg.exit_rule.tightened_trailing_stop_points = new_tightened_pts
+            if leg.leg_type == LegType.TAKE_PROFIT:
+                leg.exit_rule.take_profit_price = new_tp
+
+        print(
+            f"📝 成交價更新: {old_price} → {fill_price} "
+            f"(滑價 {fill_price - old_price:+d}pts), "
+            f"移停啟動 {new_start_ts}"
+        )
 
     def reset(self) -> None:
         """重置 PositionManager 狀態"""
@@ -1162,7 +1230,6 @@ class PositionManager:
                     )
                     if should_tighten:
                         exit_rule.is_tightened = True
-                        # 立即用收緊距離更新移停價
                         new_stop_price = (
                             current_price - exit_rule.tightened_trailing_stop_points
                             if is_long
@@ -1197,7 +1264,6 @@ class PositionManager:
                 ts_points = self._get_trailing_stop_points(exit_rule)
 
                 if is_long:
-                    # 做多：移停價只往上調（追蹤最高價）
                     new_stop_price = current_price - ts_points
                     if (
                         exit_rule.trailing_stop_price is None
@@ -1206,7 +1272,6 @@ class PositionManager:
                         exit_rule.trailing_stop_price = new_stop_price
                         print(f"📊 {leg.leg_id} 移動停損更新: {new_stop_price}")
                 else:
-                    # 做空：移停價只往下調（追蹤最低價）
                     new_stop_price = current_price + ts_points
                     if (
                         exit_rule.trailing_stop_price is None

@@ -406,6 +406,11 @@ class TradingEngine:
                     if pos.open_legs
                     else 0
                 )
+                rec["start_trailing_stop_price"] = (
+                    pos.open_legs[0].exit_rule.start_trailing_stop_price
+                    if pos.open_legs
+                    else None
+                )
                 rec["trailing_stop_price"] = (
                     (max(ts_prices) if is_long else min(ts_prices))
                     if ts_prices
@@ -454,6 +459,10 @@ class TradingEngine:
                 if existing_record.legs_info:
                     existing_legs_info = dict(existing_record.legs_info)
 
+            # 新倉位：用實際成交價更新 entry_price 及所有出場參數
+            if not existing_record:
+                pm.update_entry_on_fill(fill_price)
+
             record = PositionRecord(
                 symbol=action.symbol,
                 sub_symbol=action.sub_symbol,
@@ -463,17 +472,30 @@ class TradingEngine:
                 quantity=position.open_quantity,
                 entry_price=position.entry_price,
                 stop_loss_price=sl_price,
+                start_trailing_stop_price=(
+                    position.open_legs[0].exit_rule.start_trailing_stop_price
+                    if position.open_legs
+                    else None
+                ),
+                take_profit_price=(
+                    position.open_legs[0].exit_rule.take_profit_price
+                    if position.open_legs
+                    else None
+                ),
+                trailing_stop_active=(
+                    position.open_legs[0].exit_rule.trailing_stop_active
+                    if position.open_legs
+                    else False
+                ),
                 highest_price=position.highest_price or fill_price,
                 sheets_row_map=existing_row_map,
                 legs_info=existing_legs_info,
             )
 
-            # 找出尚未記錄的新 legs — use actual fill_price
+            # 找出尚未記錄的新 legs
             new_legs = []
             for leg in position.open_legs:
                 is_new = leg.leg_id not in existing_row_map
-                if is_new:
-                    leg.entry_price = fill_price
                 leg_ep = leg.entry_price or fill_price
                 if is_new:
                     new_legs.append({

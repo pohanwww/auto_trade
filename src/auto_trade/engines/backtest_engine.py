@@ -196,7 +196,7 @@ class BacktestEngine:
             sub_symbol=self.config.sub_symbol,
             start_date=self.config.start_date,
             end_date=self.config.end_date,
-            timeframe=self.config.timeframe,
+            timeframe=unit.pm_config.timeframe,
             initial_capital=self.config.initial_capital,
             order_quantity=unit.pm_config.total_quantity,
             stop_loss_points=unit.pm_config.stop_loss_points,
@@ -624,7 +624,8 @@ class BacktestEngine:
             f"{self.config.end_date.strftime('%Y-%m-%d')}"
         )
         report.append(f"📈 商品: {self.config.symbol} ({self.config.sub_symbol})")
-        report.append(f"⏱  時間尺度: {self.config.timeframe}")
+        timeframes = sorted({r.config.timeframe for r in results.values()})
+        report.append(f"⏱  時間尺度: {', '.join(timeframes)}")
         report.append(f"💰 初始資金: {self.config.initial_capital:,.0f}")
         report.append("")
 
