@@ -655,43 +655,78 @@ class MarketService:
                 )
                 kbars_1m_filtered.kbars.append(new_kbar)
 
-        # 重採樣快取：避免每次都對數千根 1m bar 做 pandas resample
+        # 增量重採樣：純 Python 迴圈，不用 pandas
         resample_cache_key = f"_resample_{timeframe}"
-        resample_count_key = f"_resample_count_{timeframe}"
-        current_1m_count = len(kbars_1m_filtered.kbars)
-        cached_resampled = cached_data.get(resample_cache_key)
-        cached_1m_count = cached_data.get(resample_count_key, 0)
+        resample_idx_key = f"_resample_idx_{timeframe}"
+
+        cached_resampled: KBarList | None = cached_data.get(resample_cache_key)
+        last_idx: int = cached_data.get(resample_idx_key, 0)
 
         tf_minutes = self._get_timeframe_minutes(timeframe)
+        all_1m = kbars_1m_filtered.kbars
 
-        if cached_resampled and cached_resampled.kbars:
-            new_bars = current_1m_count - cached_1m_count
+        if cached_resampled is None or last_idx > len(all_1m):
+            cached_resampled = KBarList(
+                kbars=[], symbol=symbol, timeframe=timeframe
+            )
+            cached_data[resample_cache_key] = cached_resampled
+            last_idx = 0
 
-            if new_bars <= 0:
-                # 1m 數量沒變：只更新最後一根 forming bar 的 OHLC
-                last_1m_bars = kbars_1m_filtered.kbars[-tf_minutes:]
-                last_resampled = cached_resampled.kbars[-1]
-                last_resampled.high = max(kb.high for kb in last_1m_bars)
-                last_resampled.low = min(kb.low for kb in last_1m_bars)
-                last_resampled.close = last_1m_bars[-1].close
-                return cached_resampled
+        new_1m = all_1m[last_idx:]
+        if not new_1m and cached_resampled.kbars:
+            return cached_resampled
 
-            if new_bars < tf_minutes:
-                # 還在同一根 tf bar 內：更新最後一根的 OHLC
-                last_1m_bars = kbars_1m_filtered.kbars[-tf_minutes:]
-                last_resampled = cached_resampled.kbars[-1]
-                last_resampled.high = max(kb.high for kb in last_1m_bars)
-                last_resampled.low = min(kb.low for kb in last_1m_bars)
-                last_resampled.close = last_1m_bars[-1].close
-                cached_data[resample_count_key] = current_1m_count
-                return cached_resampled
+        bars = cached_resampled.kbars
+        for kb in new_1m:
+            bucket = self._align_to_tf_bucket(kb.time, tf_minutes)
 
-        # 新的 tf bar 完成或初次呼叫：完整重採樣
-        kbars_resampled = self.resample_kbars(kbars_1m_filtered, timeframe)
-        cached_data[resample_cache_key] = kbars_resampled
-        cached_data[resample_count_key] = current_1m_count
+            if bars and bars[-1].time == bucket:
+                bar = bars[-1]
+                if kb.high > bar.high:
+                    bar.high = kb.high
+                if kb.low < bar.low:
+                    bar.low = kb.low
+                bar.close = kb.close
+            else:
+                bars.append(
+                    KBar(
+                        time=bucket,
+                        open=kb.open,
+                        high=kb.high,
+                        low=kb.low,
+                        close=kb.close,
+                    )
+                )
 
-        return kbars_resampled
+        cached_data[resample_idx_key] = len(all_1m)
+        return cached_resampled
+
+    @staticmethod
+    def _align_to_tf_bucket(t: datetime, tf_minutes: int) -> datetime:
+        """將 1m bar 時間對齊到所屬的 tf 分鐘 bucket 起始時間。
+
+        台灣期貨三個時段各有不同的 origin：
+          日盤  8:45-13:45  origin=8:45
+          夜盤 15:00-23:59  origin=15:00
+          凌晨  0:00-05:00  origin=0:00
+        """
+        total_min = t.hour * 60 + t.minute
+
+        if 525 <= total_min < 825:      # 8:45 – 13:44
+            origin = 525
+        elif total_min >= 900:           # 15:00 – 23:59
+            origin = 900
+        else:                            # 0:00 – 05:00
+            origin = 0
+
+        offset = total_min - origin
+        bucket_min = origin + (offset // tf_minutes) * tf_minutes
+        return t.replace(
+            hour=bucket_min // 60,
+            minute=bucket_min % 60,
+            second=0,
+            microsecond=0,
+        )
 
     def _get_timeframe_minutes(self, timeframe: str) -> int:
         """將 timeframe 字符串轉換為分鐘數"""

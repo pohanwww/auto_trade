@@ -154,7 +154,7 @@ class TradingEngine:
                             self.symbol,
                             self.sub_symbol,
                             self.trading_unit.pm_config.timeframe,
-                            days=15,
+                            days=5,
                         )
 
                         # 讓 PM 處理價格更新
@@ -213,7 +213,7 @@ class TradingEngine:
                         self.symbol,
                         self.sub_symbol,
                         self.trading_unit.pm_config.timeframe,
-                        days=15,
+                        days=5,
                     )
                     _t1 = _time.monotonic()
 
