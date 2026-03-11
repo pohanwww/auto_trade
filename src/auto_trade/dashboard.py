@@ -156,6 +156,24 @@ def api_logs_content(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.delete("/api/logs/{filename}")
+def api_logs_delete(filename: str, token: str | None = Query(None)):
+    """Delete a log file."""
+    if not _check_token(token):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    safe_name = Path(filename).name
+    log_path = LOGS_DIR / safe_name
+    if not log_path.exists() or not log_path.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    try:
+        log_path.unlink()
+        return {"deleted": safe_name}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Strategy Control Endpoints ──────────────────────────────
 
 
@@ -1004,6 +1022,7 @@ def _build_logs_html(token_param: str) -> str:
     <button id="btnTail" class="active" title="Show last 500 lines">Tail 500</button>
     <button id="btnFull" title="Load full file">Full</button>
     <button id="btnRefresh" title="Reload current file">Refresh</button>
+    <button id="btnDelete" title="Delete current log file" style="color:var(--red);border-color:rgba(248,81,73,0.3);">Delete</button>
     <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:0.85rem;">
       <input type="checkbox" id="autoScroll" checked> Auto-scroll
     </label>
@@ -1100,6 +1119,21 @@ document.getElementById('btnFull').addEventListener('click', () => {{
 }});
 
 document.getElementById('btnRefresh').addEventListener('click', () => loadFile());
+
+document.getElementById('btnDelete').addEventListener('click', async () => {{
+  if (!currentFile) return;
+  if (!confirm('Delete ' + currentFile + '?')) return;
+  const res = await fetch('/api/logs/' + encodeURIComponent(currentFile) + '?_t=' + Date.now() + TOKEN_PARAM, {{method: 'DELETE'}});
+  if (res.ok) {{
+    currentFile = '';
+    document.getElementById('logContent').innerHTML = '<div class="empty-state">File deleted</div>';
+    document.getElementById('fileMeta').textContent = '';
+    loadFileList();
+  }} else {{
+    const err = await res.json();
+    alert('Delete failed: ' + (err.error || 'unknown'));
+  }}
+}});
 
 loadFileList();
 </script>
