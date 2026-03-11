@@ -648,14 +648,48 @@ class MarketService:
             if last_kbar.time < current_minute:
                 new_kbar = KBar(
                     time=current_minute,
-                    open=last_kbar.close,  # 用上一根的收盤價
+                    open=last_kbar.close,
                     high=last_kbar.close,
                     low=last_kbar.close,
                     close=last_kbar.close,
                 )
                 kbars_1m_filtered.kbars.append(new_kbar)
-        # 從 1 分鐘 K 線重採樣到目標時間尺度
+
+        # 重採樣快取：避免每次都對數千根 1m bar 做 pandas resample
+        resample_cache_key = f"_resample_{timeframe}"
+        resample_count_key = f"_resample_count_{timeframe}"
+        current_1m_count = len(kbars_1m_filtered.kbars)
+        cached_resampled = cached_data.get(resample_cache_key)
+        cached_1m_count = cached_data.get(resample_count_key, 0)
+
+        tf_minutes = self._get_timeframe_minutes(timeframe)
+
+        if cached_resampled and cached_resampled.kbars:
+            new_bars = current_1m_count - cached_1m_count
+
+            if new_bars <= 0:
+                # 1m 數量沒變：只更新最後一根 forming bar 的 OHLC
+                last_1m_bars = kbars_1m_filtered.kbars[-tf_minutes:]
+                last_resampled = cached_resampled.kbars[-1]
+                last_resampled.high = max(kb.high for kb in last_1m_bars)
+                last_resampled.low = min(kb.low for kb in last_1m_bars)
+                last_resampled.close = last_1m_bars[-1].close
+                return cached_resampled
+
+            if new_bars < tf_minutes:
+                # 還在同一根 tf bar 內：更新最後一根的 OHLC
+                last_1m_bars = kbars_1m_filtered.kbars[-tf_minutes:]
+                last_resampled = cached_resampled.kbars[-1]
+                last_resampled.high = max(kb.high for kb in last_1m_bars)
+                last_resampled.low = min(kb.low for kb in last_1m_bars)
+                last_resampled.close = last_1m_bars[-1].close
+                cached_data[resample_count_key] = current_1m_count
+                return cached_resampled
+
+        # 新的 tf bar 完成或初次呼叫：完整重採樣
         kbars_resampled = self.resample_kbars(kbars_1m_filtered, timeframe)
+        cached_data[resample_cache_key] = kbars_resampled
+        cached_data[resample_count_key] = current_1m_count
 
         return kbars_resampled
 

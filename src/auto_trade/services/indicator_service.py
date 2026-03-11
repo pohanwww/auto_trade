@@ -639,7 +639,9 @@ class IndicatorService:
         convergence_ema_min = 0.0
         last_convergence_idx = -1
 
-        for i in range(n - lookback, n):
+        # 跳過最後一根（可能為未完成的 forming bar），評估到 n-2
+        eval_end = n - 1
+        for i in range(n - lookback, eval_end):
             price = float(kbar_list[i].close)
             if price <= 0:
                 converged_count = 0
@@ -657,16 +659,17 @@ class IndicatorService:
             if converged_count >= min_bars:
                 last_convergence_idx = i
 
-            if i < n - 1:
+            if i < eval_end - 1:
                 prev_spread_pct = sp
                 if converged_count >= min_bars:
                     peak_converged_count = converged_count
                     convergence_ema_max = max(ema_vals)
                     convergence_ema_min = min(ema_vals)
 
-        # 最新一根 K 棒
-        latest_price = float(kbar_list[-1].close)
-        latest_ema_vals = {p: ema_arrays[p][n - 1] for p in periods}
+        # 已確認的最新 K 棒（跳過 [-1] 未完成 bar，用 [-2]）
+        eval_idx = n - 2
+        latest_price = float(kbar_list[eval_idx].close)
+        latest_ema_vals = {p: ema_arrays[p][eval_idx] for p in periods}
         all_ema = list(latest_ema_vals.values())
         latest_spread = max(all_ema) - min(all_ema)
         latest_spread_pct = (latest_spread / latest_price) * 100.0 if latest_price > 0 else 0.0
@@ -674,7 +677,7 @@ class IndicatorService:
         is_converged = latest_spread_pct < threshold_pct
         was_converged = peak_converged_count >= min_bars
 
-        bars_since = (n - 1) - last_convergence_idx if last_convergence_idx >= 0 else 9999
+        bars_since = eval_idx - last_convergence_idx if last_convergence_idx >= 0 else 9999
         if allow_entry_during_convergence:
             in_window = was_converged and bars_since <= max_bars_after
         else:

@@ -12,6 +12,7 @@ TradingEngine 不包含業務邏輯，只負責：
 """
 
 import json
+import time as _time
 from datetime import datetime
 
 from auto_trade.executors.base_executor import BaseExecutor
@@ -201,6 +202,8 @@ class TradingEngine:
 
                 else:
                     # === 無倉位：低頻檢測信號 ===
+                    _t0 = _time.monotonic()
+
                     print(
                         f"\n[{current_time.strftime('%H:%M:%S')}] "
                         f"價格: {current_price:.1f}"
@@ -212,16 +215,27 @@ class TradingEngine:
                         self.trading_unit.pm_config.timeframe,
                         days=15,
                     )
+                    _t1 = _time.monotonic()
 
                     # 策略評估
                     signal = self.trading_unit.strategy.evaluate(
                         kbar_list, current_price, self.sub_symbol
                     )
+                    _t2 = _time.monotonic()
 
                     # PM 處理信號
                     actions = self.position_manager.on_signal(
                         signal, kbar_list, self.symbol, self.sub_symbol
                     )
+                    _t3 = _time.monotonic()
+
+                    if actions:
+                        print(
+                            f"⏱️ kbar={(_t1-_t0)*1000:.0f}ms "
+                            f"eval={(_t2-_t1)*1000:.0f}ms "
+                            f"signal={(_t3-_t2)*1000:.0f}ms "
+                            f"total={(_t3-_t0)*1000:.0f}ms"
+                        )
 
                     # 執行開倉指令
                     for action in actions:
