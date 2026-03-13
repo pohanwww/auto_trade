@@ -145,6 +145,7 @@ class LineBotService:
         entry_price: float = 0,
         strategy_name: str = "",
         remaining_quantity: int = 0,
+        equity: float | None = None,
     ) -> bool:
         """發送平倉通知訊息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -167,6 +168,9 @@ class LineBotService:
             f"原因: {exit_reason}\n"
             f"盈虧: {pnl_sign}{pnl_pts:,.0f} 點 / {pnl_sign}NT${pnl_twd:,.0f}"
         )
+
+        if equity is not None:
+            message += f"\n\n💰 帳戶權益: NT${equity:,.0f}"
 
         return self.send_message(message)
 

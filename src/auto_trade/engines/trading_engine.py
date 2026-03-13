@@ -359,6 +359,13 @@ class TradingEngine:
                             total_quantity=total_qty,
                         )
                     elif action.order_type == "Close":
+                        equity = None
+                        if self.account_service:
+                            try:
+                                margin = self.account_service.get_margin()
+                                equity = margin.equity
+                            except Exception:
+                                pass
                         self.line_bot_service.send_close_position_message(
                             symbol=action.symbol,
                             sub_symbol=action.sub_symbol,
@@ -368,6 +375,7 @@ class TradingEngine:
                             entry_price=close_entry_price,
                             strategy_name=strategy,
                             remaining_quantity=max(close_remaining_qty, 0),
+                            equity=equity,
                         )
                 except Exception as e:
                     print(f"發送通知失敗: {e}")
