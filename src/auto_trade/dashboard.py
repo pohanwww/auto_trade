@@ -23,7 +23,8 @@ app = FastAPI(title="Trading Dashboard")
 
 STATE_DIR = Path("data/state")
 LOGS_DIR = Path("logs")
-POINT_VALUE = 50  # MXF: 1 point = NT$50
+POINT_VALUE_MXF = 50   # MXF: 1 point = NT$50
+POINT_VALUE_TXF = 200  # TXF: 1 point = NT$200
 
 
 def _read_json(path: Path) -> dict:
@@ -526,7 +527,10 @@ def _build_html(token_param: str) -> str:
 
 <script>
 const REFRESH_MS = 3000;
-const POINT_VALUE = {POINT_VALUE};
+function getPointValue(subSymbol) {{
+  if (subSymbol && subSymbol.startsWith('MXF')) return {POINT_VALUE_MXF};
+  return {POINT_VALUE_TXF};
+}}
 const TOKEN_PARAM = "{token_param}";
 
 function fmt(n) {{
@@ -600,24 +604,24 @@ function buildCard(d) {{
   const qty = d.quantity || 0;
   const engineOnline = !!d.timestamp;
 
+  const PV = getPointValue(d.sub_symbol);
   let pnlPts = null, pnlPerUnit = null, pnlTotal = null, pnlClass = 'zero';
   if (hasPos && cp && ep) {{
-    // When legs exist, sum P&L per leg for accurate total
     const legs = d.legs_info && Object.keys(d.legs_info).length > 0 ? d.legs_info : null;
     if (legs) {{
       pnlTotal = 0;
       let totalPts = 0;
       Object.values(legs).forEach(leg => {{
         const legPts = isLong ? cp - leg.entry_price : leg.entry_price - cp;
-        pnlTotal += legPts * POINT_VALUE * leg.quantity;
+        pnlTotal += legPts * PV * leg.quantity;
         totalPts += legPts * leg.quantity;
       }});
       pnlPts = qty > 0 ? Math.round(totalPts / qty) : 0;
       pnlPerUnit = qty > 0 ? Math.round(pnlTotal / qty) : 0;
     }} else {{
       pnlPts = isLong ? cp - ep : ep - cp;
-      pnlPerUnit = pnlPts * POINT_VALUE;
-      pnlTotal = pnlPts * POINT_VALUE * qty;
+      pnlPerUnit = pnlPts * PV;
+      pnlTotal = pnlPts * PV * qty;
     }}
     pnlClass = pnlTotal > 0 ? 'positive' : pnlTotal < 0 ? 'negative' : 'zero';
   }}
@@ -756,7 +760,7 @@ function buildCard(d) {{
       let legPnlClass = '';
       if (cp && legEp) {{
         const pts = isLong ? cp - legEp : legEp - cp;
-        const twd = pts * POINT_VALUE * legQty;
+        const twd = pts * PV * legQty;
         legPnlClass = pts > 0 ? 'green' : pts < 0 ? 'red' : '';
         legPnl = (pts >= 0 ? '+' : '') + fmt(pts) + ' pts / ' + (twd >= 0 ? '+' : '') + 'NT$' + fmt(twd);
       }}
