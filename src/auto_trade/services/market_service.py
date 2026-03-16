@@ -656,6 +656,15 @@ class MarketService:
             last_idx = 0
 
         new_1m = all_1m[last_idx:]
+
+        # 診斷：顯示 master 1m 長度、last_idx、新增數量
+        last_1m_time = all_1m[-1].time.strftime("%H:%M") if all_1m else "N/A"
+        print(
+            f"  📊 resample diag: master_1m={len(all_1m)} last_idx={last_idx} "
+            f"new={len(new_1m)} last_1m_t={last_1m_time} "
+            f"resampled={len(cached_resampled.kbars)}"
+        )
+
         if new_1m:
             bars = cached_resampled.kbars
             for kb in new_1m:
