@@ -34,22 +34,32 @@ class IndicatorService:
     """
 
     def __init__(self) -> None:
-        self._ema_cache: dict[tuple[str, str, int], list[float]] = {}
+        self._ema_cache: dict[tuple[str, str, int], tuple[object, list[float]]] = {}
 
     def _get_ema_array(self, kbar_list: KBarList, period: int) -> list[float]:
         """取得 EMA 原始 float 陣列（含增量快取）
 
-        注意：最後一根 K 棒可能是正在形成的 bar（close 會持續變動），
-        因此每次都重新計算最後一個 EMA 值，只快取 [:-1] 的部分。
+        快取以 (symbol, timeframe, period) 為 key，同時記錄首根 bar 的時間。
+        若 days 篩選導致首根 bar 前移（滑動窗口），快取自動失效並重算。
+        最後一根 K 棒可能是 forming bar，每次都重新計算。
         """
         cache_key = (kbar_list.symbol, kbar_list.timeframe, period)
-        cached = self._ema_cache.get(cache_key)
+        entry = self._ema_cache.get(cache_key)
         n = len(kbar_list)
+        if n == 0:
+            return []
 
         k = 2.0 / (period + 1)
+        first_time = kbar_list[0].time
+
+        cached: list[float] | None = None
+        if entry is not None:
+            cached_first_time, cached_arr = entry
+            if cached_first_time == first_time:
+                cached = cached_arr
+            # else: first bar shifted (sliding window) → invalidate
 
         if cached is not None and len(cached) >= n:
-            # 同樣的 bar 數量 — 重算最後一根（forming bar 的 close 可能已變動）
             if n > 1:
                 cached[n - 1] = float(kbar_list[n - 1].close) * k + cached[n - 2] * (1 - k)
             else:
@@ -57,7 +67,6 @@ class IndicatorService:
             return cached[:n]
 
         if cached is not None and len(cached) > 0:
-            # 有新 bar 加入：先修正之前最後一根（它之前可能是 forming bar，現在已完成）
             prev_n = len(cached)
             if prev_n > 1:
                 cached[prev_n - 1] = float(kbar_list[prev_n - 1].close) * k + cached[prev_n - 2] * (1 - k)
@@ -73,7 +82,7 @@ class IndicatorService:
             price = float(kbar_list[i].close)
             arr.append(price * k + arr[-1] * (1 - k))
 
-        self._ema_cache[cache_key] = arr
+        self._ema_cache[cache_key] = (first_time, arr)
         return arr
 
     def calculate_ema(self, kbar_list: KBarList, period: int) -> EMAList:
