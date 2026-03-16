@@ -628,34 +628,17 @@ class MarketService:
             print(f"⚠️  K線緩存為空: {symbol}/{sub_symbol}")
             return KBarList(kbars=[], symbol=symbol, timeframe=timeframe)
 
-        # 如果需要限制天數，裁剪數據
-        if days < 30:
-            cutoff_time = datetime.now() - timedelta(days=days)
-            filtered_kbars = [kb for kb in kbars_1m.kbars if kb.time >= cutoff_time]
-            kbars_1m_filtered = KBarList(
-                kbars=filtered_kbars, symbol=symbol, timeframe="1m"
-            )
-        else:
-            kbars_1m_filtered = kbars_1m
-
+        # 如果需要限制天數，裁剪數據（僅用於 1m 直接返回）
         if timeframe == "1m":
-            return kbars_1m_filtered
-
-        # 檢查是否需要補充當前分鐘的 K 線（成交量少時可能沒有最新的 K 線）
-        if len(kbars_1m_filtered.kbars) > 0 and self.is_trading_time():
-            last_kbar = kbars_1m_filtered.kbars[-1]
-            current_minute = datetime.now().replace(second=0, microsecond=0)
-            if last_kbar.time < current_minute:
-                new_kbar = KBar(
-                    time=current_minute,
-                    open=last_kbar.close,
-                    high=last_kbar.close,
-                    low=last_kbar.close,
-                    close=last_kbar.close,
+            if days < 30:
+                cutoff_time = datetime.now() - timedelta(days=days)
+                filtered_kbars = [kb for kb in kbars_1m.kbars if kb.time >= cutoff_time]
+                return KBarList(
+                    kbars=filtered_kbars, symbol=symbol, timeframe="1m"
                 )
-                kbars_1m_filtered.kbars.append(new_kbar)
+            return kbars_1m
 
-        # 增量重採樣：純 Python 迴圈，不用 pandas
+        # 增量重採樣：基於 master kbars_1m（穩定、只增長），不用 filtered copy
         resample_cache_key = f"_resample_{timeframe}"
         resample_idx_key = f"_resample_idx_{timeframe}"
 
@@ -663,7 +646,7 @@ class MarketService:
         last_idx: int = cached_data.get(resample_idx_key, 0)
 
         tf_minutes = self._get_timeframe_minutes(timeframe)
-        all_1m = kbars_1m_filtered.kbars
+        all_1m = kbars_1m.kbars
 
         if cached_resampled is None or last_idx > len(all_1m):
             cached_resampled = KBarList(
@@ -673,33 +656,59 @@ class MarketService:
             last_idx = 0
 
         new_1m = all_1m[last_idx:]
-        if not new_1m and cached_resampled.kbars:
-            return cached_resampled
+        if new_1m:
+            bars = cached_resampled.kbars
+            for kb in new_1m:
+                bucket = self._align_to_tf_bucket(kb.time, tf_minutes)
 
-        bars = cached_resampled.kbars
-        for kb in new_1m:
-            bucket = self._align_to_tf_bucket(kb.time, tf_minutes)
-
-            if bars and bars[-1].time == bucket:
-                bar = bars[-1]
-                if kb.high > bar.high:
-                    bar.high = kb.high
-                if kb.low < bar.low:
-                    bar.low = kb.low
-                bar.close = kb.close
-            else:
-                bars.append(
-                    KBar(
-                        time=bucket,
-                        open=kb.open,
-                        high=kb.high,
-                        low=kb.low,
-                        close=kb.close,
+                if bars and bars[-1].time == bucket:
+                    bar = bars[-1]
+                    if kb.high > bar.high:
+                        bar.high = kb.high
+                    if kb.low < bar.low:
+                        bar.low = kb.low
+                    bar.close = kb.close
+                else:
+                    bars.append(
+                        KBar(
+                            time=bucket,
+                            open=kb.open,
+                            high=kb.high,
+                            low=kb.low,
+                            close=kb.close,
+                        )
                     )
-                )
+            cached_data[resample_idx_key] = len(all_1m)
 
-        cached_data[resample_idx_key] = len(all_1m)
-        return cached_resampled
+        resampled_bars = cached_resampled.kbars
+
+        # 補充當前時段的合成 bar（成交量少時最新 1m 可能滯後）
+        synthetic = None
+        if resampled_bars and self.is_trading_time() and all_1m:
+            last_1m = all_1m[-1]
+            current_minute = datetime.now().replace(second=0, microsecond=0)
+            if last_1m.time < current_minute:
+                bucket = self._align_to_tf_bucket(current_minute, tf_minutes)
+                if resampled_bars[-1].time != bucket:
+                    synthetic = KBar(
+                        time=bucket,
+                        open=last_1m.close,
+                        high=last_1m.close,
+                        low=last_1m.close,
+                        close=last_1m.close,
+                    )
+
+        # 篩選到請求的天數
+        if days < 30:
+            cutoff_time = datetime.now() - timedelta(days=days)
+            result_bars = [b for b in resampled_bars if b.time >= cutoff_time]
+        else:
+            result_bars = list(resampled_bars)
+
+        if synthetic:
+            result_bars.append(synthetic)
+
+        return KBarList(kbars=result_bars, symbol=symbol, timeframe=timeframe)
 
     @staticmethod
     def _align_to_tf_bucket(t: datetime, tf_minutes: int) -> datetime:
