@@ -16,6 +16,7 @@ import time as _time
 from datetime import datetime
 
 from auto_trade.executors.base_executor import BaseExecutor
+from auto_trade.models.account import Action
 from auto_trade.models.position import OrderAction
 from auto_trade.models.position_record import ExitReason, PositionRecord
 from auto_trade.models.trading_unit import TradingUnit
@@ -122,6 +123,9 @@ class TradingEngine:
 
         # 訂閱商品
         self.market_service.subscribe_symbol(self.symbol, self.sub_symbol, init_days=14)
+
+        # kbar 快取就緒後，用歷史 K 棒校正 highest/lowest price 及移停狀態
+        self._reconcile_position_from_history()
 
         # 發送啟動通知
         self._send_startup_notification()
@@ -458,6 +462,59 @@ class TradingEngine:
 
         print(f"📋 發現未平倉記錄: {record.sub_symbol} @ {record.entry_price}")
         self.position_manager.restore_position(record)
+
+    def _reconcile_position_from_history(self) -> None:
+        """用歷史 K 棒校正 highest/lowest price，補回停機期間的極值。
+
+        在 subscribe_symbol 之後呼叫（kbar 快取已初始化）。
+        掃描入場時間之後的所有 K 棒，找出真正的最高/最低價，
+        並重新觸發移停啟動邏輯，確保重啟後移停狀態正確。
+        """
+        pos = self.position_manager.position
+        if pos is None:
+            return
+
+        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+            self.symbol,
+            self.sub_symbol,
+            self.trading_unit.pm_config.timeframe,
+            days=5,
+        )
+        if not kbar_list or len(kbar_list) == 0:
+            return
+
+        entry_time = pos.entry_time
+        is_long = pos.direction == Action.Buy
+        old_highest = pos.highest_price
+        old_lowest = pos.lowest_price
+
+        hist_high = old_highest
+        hist_low = old_lowest
+
+        for kb in kbar_list.kbars:
+            if kb.time < entry_time:
+                continue
+            if kb.high > hist_high:
+                hist_high = int(kb.high)
+            if kb.low < hist_low:
+                hist_low = int(kb.low)
+
+        if hist_high == old_highest and hist_low == old_lowest:
+            print("📋 歷史校正: highest/lowest 與記錄一致，無需更新")
+            return
+
+        pos.highest_price = hist_high
+        pos.lowest_price = hist_low
+
+        extreme = hist_high if is_long else hist_low
+        old_extreme = old_highest if is_long else old_lowest
+        print(
+            f"📋 歷史校正: {'最高' if is_long else '最低'}價 "
+            f"{old_extreme} → {extreme}"
+        )
+
+        # 用校正後的極值重新觸發移停邏輯
+        self.position_manager._update_trailing_stops(extreme)
 
     def _record_open(self, action: OrderAction, fill_price: int) -> None:
         """開倉時保存持倉記錄到 position.json + Google Sheets（每個 leg 一行）"""
