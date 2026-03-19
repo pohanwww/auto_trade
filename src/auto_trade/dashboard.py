@@ -849,6 +849,7 @@ function buildCard(d) {{
       ${{details}}
       ${{legsSection}}
       ${{stopBar}}
+      ${{stateSection}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
       ${{buildCtrlRow(d)}}
     </div>`;
