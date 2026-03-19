@@ -715,7 +715,6 @@ function buildCard(d) {{
   const sl = d.stop_loss_price;
   const tsp = d.trailing_stop_price;
   const tp = d.take_profit_price;
-  const effectiveStop = (tsp && sl) ? (isLong ? Math.max(tsp, sl) : Math.min(tsp, sl)) : (tsp || sl);
 
   // P&L hero section
   const pnlHero = `
@@ -744,7 +743,6 @@ function buildCard(d) {{
       <div class="detail-item"><span class="label">Held</span><span class="value">${{duration(d.entry_time)}}</span></div>
       <div class="detail-item"><span class="label">Hard Stop</span><span class="value red">${{fmt(sl)}}</span></div>
       <div class="detail-item"><span class="label">Trailing Stop</span><span class="value orange">${{tsp ? fmt(tsp) + (ep ? ' (' + (isLong ? (tsp >= ep ? '+' : '') + fmt(tsp - ep) : (ep >= tsp ? '+' : '') + fmt(ep - tsp)) + ' pts)' : '') : (d.trailing_stop_active ? 'Active (syncing...)' : 'Inactive')}}</span></div>
-      <div class="detail-item"><span class="label">Effective Stop</span><span class="value red">${{fmt(effectiveStop)}}</span></div>
       <div class="detail-item"><span class="label">Highest</span><span class="value green">${{fmt(d.highest_price)}}</span></div>
       <div class="detail-item"><span class="label">Per Lot P&L</span><span class="value ${{pnlClass === 'positive' ? 'green' : pnlClass === 'negative' ? 'red' : ''}}">${{pnlPerUnit != null ? (pnlPerUnit >= 0 ? '+' : '') + 'NT$' + fmt(pnlPerUnit) : '—'}}</span></div>
     </div>`;
