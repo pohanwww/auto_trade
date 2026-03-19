@@ -72,8 +72,11 @@ def _collect_strategies() -> list[dict]:
             info["highest_price"] = rec.get("highest_price")
             info["trailing_stop_active"] = rec.get("trailing_stop_active", False)
             info["trailing_stop_price"] = rec.get("trailing_stop_price")
+            info["take_profit_price"] = rec.get("take_profit_price")
+            info["start_trailing_stop_price"] = rec.get("start_trailing_stop_price")
             info["entry_time"] = rec.get("entry_time")
             info["legs_info"] = rec.get("legs_info")
+            info["position_metadata"] = rec.get("position_metadata")
 
         results.append(info)
     return results
@@ -835,6 +838,43 @@ function buildCard(d) {{
       </div>`;
   }}
 
+  // Key levels section (ORB key_levels for TS/TP)
+  let keyLevelsSection = '';
+  const pm = d.position_metadata;
+  if (pm && pm.key_levels && pm.key_levels.length > 0) {{
+    const nextIdx = pm.next_key_level_idx || 0;
+    const buf = pm.key_level_buffer || 0;
+    const levels = pm.key_levels;
+    const rows = levels.map((lv, i) => {{
+      const broken = i < nextIdx;
+      const isNext = i === nextIdx;
+      const stopAt = isLong ? lv - buf : lv + buf;
+      const icon = broken ? '✅' : isNext ? '👉' : '⬜';
+      const color = broken ? 'var(--green)' : isNext ? 'var(--yellow)' : 'var(--text-muted)';
+      const stopInfo = broken ? ` → stop ${{fmt(stopAt)}}` : '';
+      return `<div style="display:flex;justify-content:space-between;padding:3px 0;color:${{color}};font-size:0.82rem;">` +
+        `<span>${{icon}} Level ${{i+1}}: ${{fmt(lv)}}</span>` +
+        `<span style="color:var(--text-muted)">${{stopInfo}}</span></div>`;
+    }}).join('');
+    const tpPts = pm.override_take_profit_points;
+    const tsPts = pm.override_trailing_stop_points;
+    const tsStartPts = pm.override_start_trailing_stop_points;
+    let exitInfo = '';
+    if (tpPts || tsPts || tsStartPts) {{
+      const parts = [];
+      if (tpPts) parts.push(`TP=${{tpPts}}pts`);
+      if (tsStartPts) parts.push(`TS start=${{tsStartPts}}pts`);
+      if (tsPts) parts.push(`TS dist=${{tsPts}}pts`);
+      exitInfo = `<div style="margin-top:6px;font-size:0.75rem;color:var(--text-muted);">${{parts.join(' | ')}}</div>`;
+    }}
+    keyLevelsSection = `
+      <div style="margin-top:12px;background:rgba(48,54,61,0.3);border-radius:8px;padding:12px;">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;font-weight:600;">Key Levels (${{nextIdx}}/${{levels.length}} broken)</div>
+        ${{rows}}
+        ${{exitInfo}}
+      </div>`;
+  }}
+
   const engineStatus = engineOnline
     ? `<span style="font-size:0.75rem;color:var(--text-muted)">Updated ${{timeSince(d.timestamp)}}</span>`
     : '<span style="font-size:0.75rem;color:var(--yellow)">Engine offline — showing last saved state</span>';
@@ -849,6 +889,7 @@ function buildCard(d) {{
       ${{details}}
       ${{legsSection}}
       ${{stopBar}}
+      ${{keyLevelsSection}}
       ${{stateSection}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
       ${{buildCtrlRow(d)}}

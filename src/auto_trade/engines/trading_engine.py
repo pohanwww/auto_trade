@@ -444,6 +444,22 @@ class TradingEngine:
                 )
                 rec["quantity"] = sum(leg.quantity for leg in pos.open_legs)
 
+                # ORB metadata: key_levels, TP, etc.
+                if pos.metadata:
+                    meta_keys = [
+                        "key_levels", "next_key_level_idx", "key_level_buffer",
+                        "or_high", "or_low", "or_mid", "or_range",
+                        "override_take_profit_points",
+                        "override_start_trailing_stop_points",
+                        "override_trailing_stop_points",
+                    ]
+                    pos_meta = {}
+                    for k in meta_keys:
+                        if k in pos.metadata:
+                            pos_meta[k] = pos.metadata[k]
+                    if pos_meta:
+                        rec["position_metadata"] = pos_meta
+
             self.record_service.record_file.write_text(
                 json.dumps(records, indent=2, ensure_ascii=False)
             )
