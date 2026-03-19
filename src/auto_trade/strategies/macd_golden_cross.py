@@ -137,17 +137,28 @@ class MACDGoldenCrossStrategy(BaseStrategy):
             kbar_list, self.fast_period, self.slow_period, self.signal_period
         )
 
-        # 取得當前 MACD 值
+        # 取得最近 3 筆 MACD 值用於日誌和金叉判斷
         latest_macd = macd_list.get_latest(1)
         current_macd = latest_macd[-1] if latest_macd else None
 
-        # 日誌輸出
-        if current_macd:
-            print(f"latest_macd: {current_macd.macd_line:.1f}")
-            print(f"latest_signal: {current_macd.signal_line:.1f}")
+        last3 = macd_list.get_latest(3) if len(macd_list.macd_data) >= 3 else []
+        if len(last3) >= 3:
+            m3, m2, m1 = last3[-3], last3[-2], last3[-1]
+            s3 = m3.macd_line - m3.signal_line
+            s2 = m2.macd_line - m2.signal_line
+            s1 = m1.macd_line - m1.signal_line
+            print(
+                f"MACD [-3]: {m3.macd_line:.1f}/{m3.signal_line:.1f} (spread {s3:+.1f})  "
+                f"[-2]: {m2.macd_line:.1f}/{m2.signal_line:.1f} (spread {s2:+.1f})  "
+                f"[-1]: {m1.macd_line:.1f}/{m1.signal_line:.1f} (spread {s1:+.1f})"
+            )
+        elif current_macd:
+            print(f"MACD [-1]: {current_macd.macd_line:.1f}/{current_macd.signal_line:.1f}")
 
         # 檢查金叉
         is_golden_cross = self.indicator_service.check_golden_cross(macd_list)
+        if is_golden_cross:
+            print("✅ 確認金叉: [-3] spread<=0 且 [-2] spread>0")
 
         # Dedup: skip if we already signaled on this same bar
         latest_bar_time = kbar_list.get_latest(1)[-1].time if kbar_list.kbars else None

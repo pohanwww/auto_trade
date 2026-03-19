@@ -138,9 +138,9 @@ class IndicatorService:
             macd_value = ema_fast[i].ema_value - ema_slow[i].ema_value
             macd_line_values.append(macd_value)
 
-        # 計算信號線 (MACD 線的 EMA)
+        # 計算信號線 (MACD 線的 EMA, adjust=False 匹配 PineScript ta.ema)
         macd_series = pd.Series(macd_line_values)
-        signal_line_values = macd_series.ewm(span=signal_period).mean()
+        signal_line_values = macd_series.ewm(span=signal_period, adjust=False).mean()
 
         # 計算柱狀圖
         histogram_values = macd_series - signal_line_values
