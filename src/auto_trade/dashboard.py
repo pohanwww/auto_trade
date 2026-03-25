@@ -101,11 +101,15 @@ def _engine_process_pattern(config_file: str) -> str:
 
 def _is_engine_running(config_file: str) -> bool:
     pattern = _engine_process_pattern(config_file)
-    result = subprocess.run(
-        ["pgrep", "-f", pattern],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 @app.get("/api/status")
@@ -888,16 +892,24 @@ function buildCard(d) {{
       ${{legsSection}}
       ${{stopBar}}
       ${{keyLevelsSection}}
-      ${{stateSection}}
       <div style="margin-top:10px;text-align:right;">${{engineStatus}}</div>
       ${{buildCtrlRow(d)}}
     </div>`;
 }}
 
+let refreshing = false;
 async function refresh() {{
+  if (refreshing) return;
+  refreshing = true;
   try {{
-    const res = await fetch('/api/status?_t=' + Date.now() + TOKEN_PARAM);
-    if (!res.ok) return;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch('/api/status?_t=' + Date.now() + TOKEN_PARAM, {{signal: controller.signal}});
+    clearTimeout(timeoutId);
+    if (!res.ok) {{
+      document.getElementById('lastUpdate').textContent = 'API error ' + res.status + ' — retrying...';
+      return;
+    }}
     const data = await res.json();
     const app = document.getElementById('app');
 
@@ -911,6 +923,10 @@ async function refresh() {{
       new Date().toLocaleTimeString();
   }} catch(e) {{
     console.error('Refresh failed:', e);
+    document.getElementById('lastUpdate').textContent =
+      'Update failed — retrying... (' + e.message + ')';
+  }} finally {{
+    refreshing = false;
   }}
 }}
 
