@@ -112,6 +112,7 @@ def make_unit(
         key_level_trail_mode=trail_mode,
         use_breakout=use_breakout,
         use_bounce=use_bounce,
+        timeframe=timeframe,
     )
 
     leg_split = params.get("leg_split", "all_ts")

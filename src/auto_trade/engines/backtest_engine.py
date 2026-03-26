@@ -396,47 +396,12 @@ class BacktestEngine:
                                 dir_str = "做多" if _entry_direction == Action.Buy else "做空"
                                 print(f"⚡ {dir_str}即時開倉: {fill.fill_price}")
 
-                        # ── Intra-bar exit check (adverse direction first) ──
+                        # Skip same-bar exit checks for instant entry.
+                        # The bar's high/low partially occurred before entry,
+                        # so using them for SL/TS would introduce look-ahead.
+                        # Exit checks begin from the next bar onward.
                         if pm.has_position:
-                            is_long = pm.position.direction == Action.Buy
-                            pm.position.update_price_tracking(current_high)
-                            pm.position.update_price_tracking(current_low)
-
-                            if is_long:
-                                exit_actions = pm.on_price_update(current_low, current_kbars)
-                                if not exit_actions:
-                                    exit_actions = pm.on_price_update(current_high, current_kbars)
-                            else:
-                                exit_actions = pm.on_price_update(current_high, current_kbars)
-                                if not exit_actions:
-                                    exit_actions = pm.on_price_update(current_low, current_kbars)
-
-                            if not exit_actions:
-                                pm.on_price_update(current_price, current_kbars)
-
-                            if exit_actions:
-                                eq_delta, closed = self._execute_exit_actions(
-                                    exit_actions,
-                                    pm=pm,
-                                    executor=executor,
-                                    result=result,
-                                    current_time=current_time,
-                                    kbar_open=current_open,
-                                    kbar_high=current_high,
-                                    kbar_low=current_low,
-                                    kbar_close=current_price,
-                                    is_long=is_long,
-                                    pending_entry_price=pending_entry_price,
-                                    pending_entry_time=pending_entry_time,
-                                    pending_direction=pending_direction,
-                                    point_value=point_value,
-                                )
-                                current_equity += eq_delta
-                                if closed:
-                                    pending_entry_price = None
-                                    pending_entry_time = None
-                                    pending_direction = None
-                                    unit.strategy.on_position_closed()
+                            pm.on_price_update(current_price, current_kbars)
 
                     else:
                         # ── Deferred entry: 延遲到下一根 K 棒開盤 ──

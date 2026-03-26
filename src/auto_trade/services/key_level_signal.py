@@ -13,9 +13,10 @@ Signal types
 Instant entry
 -------------
 If the bar's high/low penetrates a level by more than
-``atr * instant_threshold`` *during* the bar, an ``instant`` flag is
-set so the strategy can enter at that intra-bar price rather than
-waiting for the bar to close.
+``atr * instant_threshold`` *during* the bar AND the bar started from
+the other side (low/high was below/above the level), the signal fires
+immediately without requiring close confirmation.  This mimics a
+real-world buy/sell stop order at the threshold price.
 """
 
 from __future__ import annotations
@@ -86,30 +87,52 @@ def detect_signals(
         buf_bounce = atr * bounce_buffer
         buf_instant = atr * instant_threshold
 
-        # --- Breakout long ---
-        if close > level + buf_breakout:
+        # --- Instant breakout long (no close confirmation needed) ---
+        # Simulates a buy-stop order at (level + buf_instant).
+        # Triggers if bar crossed from below and high exceeded the threshold.
+        if high > level + buf_instant and low <= level + buf_breakout:
             if prev_close is None or prev_close <= level + buf_breakout:
-                instant = high > level + buf_instant and low <= level + buf_breakout
-                entry = int(level + buf_instant) if instant else close
                 signals.append(KeyLevelSignal(
                     signal_type="breakout_long",
                     key_level=kl,
-                    entry_price=entry,
-                    instant=instant,
+                    entry_price=int(level + buf_instant),
+                    instant=True,
                     score=kl.score,
                 ))
                 continue
 
-        # --- Breakout short ---
-        if close < level - buf_breakout:
+        # --- Instant breakout short (no close confirmation needed) ---
+        if low < level - buf_instant and high >= level - buf_breakout:
             if prev_close is None or prev_close >= level - buf_breakout:
-                instant = low < level - buf_instant and high >= level - buf_breakout
-                entry = int(level - buf_instant) if instant else close
                 signals.append(KeyLevelSignal(
                     signal_type="breakout_short",
                     key_level=kl,
-                    entry_price=entry,
-                    instant=instant,
+                    entry_price=int(level - buf_instant),
+                    instant=True,
+                    score=kl.score,
+                ))
+                continue
+
+        # --- Close-confirmed breakout long (deferred entry) ---
+        if close > level + buf_breakout:
+            if prev_close is None or prev_close <= level + buf_breakout:
+                signals.append(KeyLevelSignal(
+                    signal_type="breakout_long",
+                    key_level=kl,
+                    entry_price=close,
+                    instant=False,
+                    score=kl.score,
+                ))
+                continue
+
+        # --- Close-confirmed breakout short (deferred entry) ---
+        if close < level - buf_breakout:
+            if prev_close is None or prev_close >= level - buf_breakout:
+                signals.append(KeyLevelSignal(
+                    signal_type="breakout_short",
+                    key_level=kl,
+                    entry_price=close,
+                    instant=False,
                     score=kl.score,
                 ))
                 continue

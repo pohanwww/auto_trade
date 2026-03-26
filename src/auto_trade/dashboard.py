@@ -68,8 +68,15 @@ def _get_kl_market_service():
 
 
 def _split_sessions(kbar_list, target_date):
+    """Split kbars into grouped sessions (matching strategy logic).
+
+    Returns (day_sessions, night_sessions, today_day) where
+    day/night_sessions are dict[date, list[KBar]] for aggregation.
+    """
     today = target_date.date()
-    prev_day, prev_night, today_day = [], [], []
+    day_sessions: dict = {}
+    night_sessions: dict = {}
+    today_day = []
 
     for kbar in kbar_list.kbars:
         d = kbar.time.date()
@@ -77,33 +84,16 @@ def _split_sessions(kbar_list, target_date):
         if d == today and DAY_START <= t < DAY_END:
             today_day.append(kbar)
         elif DAY_START <= t < DAY_END and d < today:
-            prev_day.append(kbar)
+            day_sessions.setdefault(d, []).append(kbar)
         elif t >= NIGHT_START and d < today:
-            prev_night.append(kbar)
+            night_sessions.setdefault(d, []).append(kbar)
         elif t < NIGHT_BOUNDARY:
             ns_date = d - timedelta(days=1)
             if ns_date < today:
-                prev_night.append(kbar)
+                night_sessions.setdefault(ns_date, []).append(kbar)
 
-    if prev_day:
-        latest = max(k.time.date() for k in prev_day)
-        prev_day = [k for k in prev_day if k.time.date() == latest]
-    if prev_night:
-        dates = set()
-        for k in prev_night:
-            t = k.time.time()
-            dates.add(k.time.date() if t >= NIGHT_START else k.time.date() - timedelta(days=1))
-        if dates:
-            latest_n = max(dates)
-            prev_night = [k for k in prev_night if (
-                k.time.date() if k.time.time() >= NIGHT_START
-                else k.time.date() - timedelta(days=1)
-            ) == latest_n]
-
-    prev_day.sort(key=lambda k: k.time)
-    prev_night.sort(key=lambda k: k.time)
     today_day.sort(key=lambda k: k.time)
-    return prev_day, prev_night, today_day
+    return day_sessions, night_sessions, today_day
 
 
 def _compute_ohlc(kbars):
@@ -117,9 +107,20 @@ def _compute_ohlc(kbars):
     }
 
 
+OR_BARS = 3
+
+
 def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
                     sub_symbol: str = "MXFR1") -> dict:
-    """Fetch data, compute levels, generate PNG. Returns status dict."""
+    """Fetch data, compute levels, generate PNG.
+
+    Key level calculation matches key_level_strategy.py exactly:
+    - OHLC/pivot from latest prev session only
+    - Swing/volume kbars aggregated from N recent sessions (N based on tf)
+    - or_range from today's first OR_BARS bars (not prev_day range)
+    - max_levels=20
+    - today's kbars shown on chart but NOT used in calculation
+    """
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
     import pandas as pd
@@ -132,7 +133,11 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     ms = _get_kl_market_service()
     target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
     end_date = target_date + timedelta(days=1)
-    start_date = target_date - timedelta(days=5)
+
+    tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+    tf_min = tf_minutes.get(timeframe, 5)
+    lookback_days = max(5, 5 * tf_min // 5)
+    start_date = target_date - timedelta(days=lookback_days)
 
     kbar_list = ms.get_futures_kbars_by_date_range(
         symbol=symbol, sub_symbol=sub_symbol,
@@ -142,29 +147,79 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     if len(kbar_list) == 0:
         return {"ok": False, "error": "No data fetched"}
 
-    prev_day, prev_night, today_kbars = _split_sessions(kbar_list, target_date)
-    pd_ohlc = _compute_ohlc(prev_day)
-    pn_ohlc = _compute_ohlc(prev_night)
+    day_sessions, night_sessions, today_kbars = _split_sessions(kbar_list, target_date)
+
+    # --- OHLC from latest session only (for pivot points) ---
+    day_ohlc: dict[str, int] = {}
+    latest_day_kbars: list = []
+    if day_sessions:
+        latest = max(day_sessions.keys())
+        latest_day_kbars = sorted(day_sessions[latest], key=lambda k: k.time)
+        day_ohlc = {
+            "high": int(max(k.high for k in latest_day_kbars)),
+            "low": int(min(k.low for k in latest_day_kbars)),
+            "close": int(latest_day_kbars[-1].close),
+        }
+
+    night_ohlc: dict[str, int] = {}
+    latest_night_kbars: list = []
+    if night_sessions:
+        latest_n = max(night_sessions.keys())
+        latest_night_kbars = sorted(night_sessions[latest_n], key=lambda k: k.time)
+        night_ohlc = {
+            "high": int(max(k.high for k in latest_night_kbars)),
+            "low": int(min(k.low for k in latest_night_kbars)),
+            "close": int(latest_night_kbars[-1].close),
+        }
+
+    # --- Aggregate N most recent sessions for swing/volume ---
+    session_lookback = max(1, tf_min // 5)
+
+    if session_lookback <= 1:
+        agg_day_kbars = latest_day_kbars
+        agg_night_kbars = latest_night_kbars
+    else:
+        recent_day_dates = sorted(day_sessions.keys(), reverse=True)[:session_lookback]
+        agg_day_kbars = []
+        for dd in sorted(recent_day_dates):
+            agg_day_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
+
+        recent_night_dates = sorted(night_sessions.keys(), reverse=True)[:session_lookback]
+        agg_night_kbars = []
+        for nd in sorted(recent_night_dates):
+            agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
+
+    # --- today_open and OR range (from first OR_BARS bars) ---
     today_open = int(today_kbars[0].open) if today_kbars else None
+    or_range = 1
+    if len(today_kbars) >= OR_BARS:
+        or_kbars = today_kbars[:OR_BARS]
+        or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
+    elif day_ohlc:
+        or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
 
     session = SessionData(
-        prev_day_high=pd_ohlc["high"], prev_day_low=pd_ohlc["low"],
-        prev_day_close=pd_ohlc["close"],
-        prev_night_high=pn_ohlc["high"] if pn_ohlc["high"] else None,
-        prev_night_low=pn_ohlc["low"] if pn_ohlc["low"] else None,
-        prev_night_close=pn_ohlc["close"] if pn_ohlc["close"] else None,
+        prev_day_high=day_ohlc.get("high", 0),
+        prev_day_low=day_ohlc.get("low", 0),
+        prev_day_close=day_ohlc.get("close", 0),
+        prev_night_high=night_ohlc.get("high"),
+        prev_night_low=night_ohlc.get("low"),
+        prev_night_close=night_ohlc.get("close"),
         today_open=today_open,
-        or_range=max(pd_ohlc["high"] - pd_ohlc["low"], 50),
-        prev_day_kbars=prev_day, prev_night_kbars=prev_night,
+        or_range=or_range,
+        prev_day_kbars=agg_day_kbars,
+        prev_night_kbars=agg_night_kbars,
     )
 
     levels = find_confluence_levels(
         session, swing_period=10, cluster_tolerance=50,
-        volume_bucket_size=10, zone_tolerance=50,
-        round_scan_range=500, touch_weight=1.0,
+        zone_tolerance=50, max_levels=20,
     )
 
-    all_kbars = prev_day + prev_night + today_kbars
+    # For chart: show latest prev day + prev night + today
+    chart_prev_day = latest_day_kbars
+    chart_prev_night = latest_night_kbars
+    all_kbars = chart_prev_day + chart_prev_night + today_kbars
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
@@ -193,8 +248,8 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         )
         ax_c.add_patch(rect)
 
-    for label, kbars, bg in [("Prev Day", prev_day, "#E0E0E0"),
-                              ("Prev Night", prev_night, "#E8E0F0"),
+    for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
+                              ("Prev Night", chart_prev_night, "#E8E0F0"),
                               ("Today", today_kbars, "#E0F0E0")]:
         if not kbars:
             continue
