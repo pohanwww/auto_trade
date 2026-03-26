@@ -70,19 +70,23 @@ def _get_kl_market_service():
 def _split_sessions(kbar_list, target_date):
     """Split kbars into grouped sessions (matching strategy logic).
 
-    Returns (day_sessions, night_sessions, today_day) where
-    day/night_sessions are dict[date, list[KBar]] for aggregation.
+    Returns (day_sessions, night_sessions, today_day, today_night) where
+    day/night_sessions are dict[date, list[KBar]] for aggregation,
+    today_day/today_night are for chart display only (not used in KL calc).
     """
     today = target_date.date()
     day_sessions: dict = {}
     night_sessions: dict = {}
     today_day = []
+    today_night = []
 
     for kbar in kbar_list.kbars:
         d = kbar.time.date()
         t = kbar.time.time()
         if d == today and DAY_START <= t < DAY_END:
             today_day.append(kbar)
+        elif d == today and t >= NIGHT_START:
+            today_night.append(kbar)
         elif DAY_START <= t < DAY_END and d < today:
             day_sessions.setdefault(d, []).append(kbar)
         elif t >= NIGHT_START and d < today:
@@ -91,9 +95,12 @@ def _split_sessions(kbar_list, target_date):
             ns_date = d - timedelta(days=1)
             if ns_date < today:
                 night_sessions.setdefault(ns_date, []).append(kbar)
+            elif ns_date == today:
+                today_night.append(kbar)
 
     today_day.sort(key=lambda k: k.time)
-    return day_sessions, night_sessions, today_day
+    today_night.sort(key=lambda k: k.time)
+    return day_sessions, night_sessions, today_day, today_night
 
 
 def _compute_ohlc(kbars):
@@ -132,7 +139,7 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
 
     ms = _get_kl_market_service()
     target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
-    end_date = target_date + timedelta(days=1)
+    end_date = target_date + timedelta(days=2)
 
     tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
     tf_min = tf_minutes.get(timeframe, 5)
@@ -147,7 +154,7 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     if len(kbar_list) == 0:
         return {"ok": False, "error": "No data fetched"}
 
-    day_sessions, night_sessions, today_kbars = _split_sessions(kbar_list, target_date)
+    day_sessions, night_sessions, today_kbars, today_night_kbars = _split_sessions(kbar_list, target_date)
 
     # --- OHLC from latest session only (for pivot points) ---
     day_ohlc: dict[str, int] = {}
@@ -216,10 +223,10 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         zone_tolerance=50, max_levels=20,
     )
 
-    # For chart: show latest prev day + prev night + today
+    # For chart: show latest prev day + prev night + today day + today night
     chart_prev_day = latest_day_kbars
     chart_prev_night = latest_night_kbars
-    all_kbars = chart_prev_day + chart_prev_night + today_kbars
+    all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
@@ -250,7 +257,8 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
 
     for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
                               ("Prev Night", chart_prev_night, "#E8E0F0"),
-                              ("Today", today_kbars, "#E0F0E0")]:
+                              ("Today", today_kbars, "#E0F0E0"),
+                              ("Tonight", today_night_kbars, "#F0E8E0")]:
         if not kbars:
             continue
         t0 = mdates.date2num(kbars[0].time)
