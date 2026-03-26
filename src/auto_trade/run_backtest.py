@@ -106,15 +106,10 @@ def build_trading_units_from_config(
             "use_prev_pressure_filter",
             "min_pressure_space_pct",
             "use_prev_direction_filter",
-            # ORB: 階梯式壓力線移停
-            "use_key_level_trailing",
+            # ORB: 壓力線移停 & 停利
             "key_level_buffer",
             "key_level_min_profit_pct",
             "key_level_min_distance_pct",
-            # ORB: 壓力線停利
-            "use_key_level_tp",
-            "key_level_tp_min_pct",
-            "use_key_level_tp_max",
             # ORB: 動能衰竭停利
             "use_momentum_exit",
             "momentum_min_profit_pct",
@@ -162,6 +157,22 @@ def build_trading_units_from_config(
             "allow_entry_during_convergence",
             "breakout_threshold_pct",
             "cooldown_bars",
+            # Key Level 策略
+            "use_or",
+            "swing_period",
+            "cluster_tolerance",
+            "zone_tolerance",
+            "signal_level_count",
+            "breakout_buffer",
+            "bounce_buffer",
+            "instant_threshold",
+            "atr_period",
+            "max_trades_per_day",
+            "sl_atr_multiplier",
+            "tp_atr_multiplier",
+            "use_breakout",
+            "use_bounce",
+            "key_level_trail_mode",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 
@@ -178,6 +189,7 @@ def build_trading_units_from_config(
             "scalp": "Scalp",
             "bollinger": "BB",
             "ma_convergence": "MA糾纏",
+            "key_level": "KL",
         }
         type_tag = type_tags.get(strategy_type, strategy_type)
         fs_tag = " FS" if pm_config.enable_macd_fast_stop else ""
@@ -206,22 +218,17 @@ def build_trading_units_from_config(
             filter_tags.append(f"Pressure>={pct}x")
         if strategy_kwargs.get("use_prev_direction_filter"):
             filter_tags.append("DirBias")
-        if strategy_kwargs.get("use_key_level_trailing"):
-            kl_parts = [f"buf={strategy_kwargs.get('key_level_buffer', 10)}"]
-            if strategy_kwargs.get("key_level_min_profit_pct", 0) > 0:
-                kl_parts.append(
-                    f"minP={strategy_kwargs['key_level_min_profit_pct']}x"
-                )
-            if strategy_kwargs.get("key_level_min_distance_pct", 0) > 0:
-                kl_parts.append(
-                    f"minD={strategy_kwargs['key_level_min_distance_pct']}x"
-                )
-            filter_tags.append(f"KeyLvlTS({','.join(kl_parts)})")
-        if strategy_kwargs.get("use_key_level_tp"):
-            min_pct = strategy_kwargs.get("key_level_tp_min_pct", 0.5)
-            filter_tags.append(f"KeyLvlTP(min={min_pct}x)")
-        if strategy_kwargs.get("use_key_level_tp_max"):
-            filter_tags.append("KeyLvlTPMax")
+        kl_parts = [f"buf={strategy_kwargs.get('key_level_buffer', 10)}"]
+        if strategy_kwargs.get("key_level_min_profit_pct", 0) > 0:
+            kl_parts.append(
+                f"minP={strategy_kwargs['key_level_min_profit_pct']}x"
+            )
+        if strategy_kwargs.get("key_level_min_distance_pct", 0) > 0:
+            kl_parts.append(
+                f"minD={strategy_kwargs['key_level_min_distance_pct']}x"
+            )
+        if strategy_type == "orb":
+            filter_tags.append(f"KeyLvl({','.join(kl_parts)})")
         if strategy_kwargs.get("use_momentum_exit"):
             filter_tags.append("MomExit")
         if strategy_kwargs.get("use_ema_direction"):

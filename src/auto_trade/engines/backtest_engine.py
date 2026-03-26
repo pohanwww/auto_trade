@@ -304,104 +304,29 @@ class BacktestEngine:
                     pm.on_price_update(current_price, current_kbars)
 
                 # 執行平倉
-                for action in actions:
-                    exit_reason_str = action.metadata.get("exit_reason", "SL")
-                    exit_reason = ExitReason(exit_reason_str)
-                    trigger_price = action.metadata.get("trigger_price")
-
-                    sim_price = self._calculate_fill_price(
-                        exit_reason=exit_reason,
-                        trigger_price=trigger_price,
+                if actions:
+                    eq_delta, closed = self._execute_exit_actions(
+                        actions,
+                        pm=pm,
+                        executor=executor,
+                        result=result,
+                        current_time=current_time,
                         kbar_open=current_open,
                         kbar_high=current_high,
                         kbar_low=current_low,
                         kbar_close=current_price,
                         is_long=is_long,
+                        pending_entry_price=pending_entry_price,
+                        pending_entry_time=pending_entry_time,
+                        pending_direction=pending_direction,
+                        point_value=point_value,
                     )
-
-                    executor.set_market_state(sim_price, current_time)
-                    fill = executor.execute(action)
-
-                    if fill.success and fill.fill_price is not None:
-                        # 收集要平倉的 leg 資訊（entry_price 需在 on_fill 前取得）
-                        closing_legs: list[tuple[str, int, int]] = []  # (leg_id, entry_price, qty)
-                        if action.leg_id:
-                            leg = next(
-                                (lg for lg in pm.position.legs if lg.leg_id == action.leg_id),
-                                None,
-                            )
-                            leg_entry = (
-                                leg.entry_price if leg and leg.entry_price
-                                else pending_entry_price
-                            )
-                            closing_legs.append((action.leg_id, leg_entry, action.quantity))
-                        elif "leg_ids" in action.metadata:
-                            for lid in action.metadata["leg_ids"]:
-                                leg = next(
-                                    (lg for lg in pm.position.legs if lg.leg_id == lid),
-                                    None,
-                                )
-                                leg_entry = (
-                                    leg.entry_price if leg and leg.entry_price
-                                    else pending_entry_price
-                                )
-                                leg_qty = leg.quantity if leg else action.quantity
-                                closing_legs.append((lid, leg_entry, leg_qty))
-
-                        # 執行 on_fill
-                        if action.leg_id:
-                            pm.on_fill(
-                                action.leg_id,
-                                fill.fill_price,
-                                current_time,
-                                exit_reason,
-                            )
-                        elif "leg_ids" in action.metadata:
-                            for lid in action.metadata["leg_ids"]:
-                                pm.on_fill(
-                                    lid, fill.fill_price, current_time, exit_reason
-                                )
-
-                        # 逐 leg 記錄 P&L
-                        if pending_direction is not None:
-                            for _lid, leg_ep, leg_qty in closing_legs:
-                                ep = leg_ep if leg_ep is not None else pending_entry_price
-                                if ep is None:
-                                    continue
-                                if pending_direction == Action.Buy:
-                                    pnl_points = float(fill.fill_price - ep)
-                                else:
-                                    pnl_points = float(ep - fill.fill_price)
-                                pnl_twd = pnl_points * leg_qty * point_value
-
-                                trade = BacktestTrade(
-                                    trade_id=str(uuid.uuid4()),
-                                    symbol=self.config.symbol,
-                                    action=pending_direction or Action.Buy,
-                                    entry_time=pending_entry_time or current_time,
-                                    entry_price=ep,
-                                    exit_time=current_time,
-                                    exit_price=fill.fill_price,
-                                    quantity=leg_qty,
-                                    exit_reason=exit_reason,
-                                    pnl_points=pnl_points,
-                                    pnl_twd=pnl_twd,
-                                )
-                                result.trades.append(trade)
-                                current_equity += pnl_twd
-                                dir_str = "多" if pending_direction == Action.Buy else "空"
-                                print(
-                                    f"📉 平{dir_str}倉: {fill.fill_price} | "
-                                    f"進場:{ep} | "
-                                    f"{exit_reason.value} | "
-                                    f"PnL: {pnl_twd:+.0f}"
-                                )
-
-                        if not pm.has_position:
-                            pending_entry_price = None
-                            pending_entry_time = None
-                            pending_direction = None
-                            unit.strategy.on_position_closed()
+                    current_equity += eq_delta
+                    if closed:
+                        pending_entry_price = None
+                        pending_entry_time = None
+                        pending_direction = None
+                        unit.strategy.on_position_closed()
 
             # ── Step 2.5: 持倉中 + 加碼啟用 → 評估加碼信號 ──
             if (
@@ -435,17 +360,93 @@ class BacktestEngine:
                     SignalType.ENTRY_LONG,
                     SignalType.ENTRY_SHORT,
                 ):
-                    _deferred_signal = signal
-                    _deferred_direction = (
+                    _entry_direction = (
                         Action.Buy
                         if signal.signal_type == SignalType.ENTRY_LONG
                         else Action.Sell
                     )
-                    dir_str = "做多" if _deferred_direction == Action.Buy else "做空"
-                    print(
-                        f"🔔 {dir_str}信號 @ {current_price} "
-                        f"(延遲至下一根 K 棒開盤進場)"
-                    )
+
+                    if signal.metadata.get("instant_entry"):
+                        # ── Instant entry: 當根 K 棒立即成交 ──
+                        instant_price = max(
+                            current_low,
+                            min(current_high, int(signal.price)),
+                        )
+                        signal.price = float(instant_price)
+
+                        entry_actions = pm.on_signal(
+                            signal, current_kbars,
+                            self.config.symbol, self.config.sub_symbol,
+                        )
+
+                        for action in entry_actions:
+                            executor.set_market_state(instant_price, current_time)
+                            fill = executor.execute(action)
+
+                            if fill.success and fill.fill_price is not None:
+                                if pm.position:
+                                    pm.position.entry_price = fill.fill_price
+                                    pm.position.entry_time = current_time
+                                    pm.position.highest_price = fill.fill_price
+                                    pm.position.lowest_price = fill.fill_price
+
+                                pending_entry_price = fill.fill_price
+                                pending_entry_time = current_time
+                                pending_direction = _entry_direction
+                                dir_str = "做多" if _entry_direction == Action.Buy else "做空"
+                                print(f"⚡ {dir_str}即時開倉: {fill.fill_price}")
+
+                        # ── Intra-bar exit check (adverse direction first) ──
+                        if pm.has_position:
+                            is_long = pm.position.direction == Action.Buy
+                            pm.position.update_price_tracking(current_high)
+                            pm.position.update_price_tracking(current_low)
+
+                            if is_long:
+                                exit_actions = pm.on_price_update(current_low, current_kbars)
+                                if not exit_actions:
+                                    exit_actions = pm.on_price_update(current_high, current_kbars)
+                            else:
+                                exit_actions = pm.on_price_update(current_high, current_kbars)
+                                if not exit_actions:
+                                    exit_actions = pm.on_price_update(current_low, current_kbars)
+
+                            if not exit_actions:
+                                pm.on_price_update(current_price, current_kbars)
+
+                            if exit_actions:
+                                eq_delta, closed = self._execute_exit_actions(
+                                    exit_actions,
+                                    pm=pm,
+                                    executor=executor,
+                                    result=result,
+                                    current_time=current_time,
+                                    kbar_open=current_open,
+                                    kbar_high=current_high,
+                                    kbar_low=current_low,
+                                    kbar_close=current_price,
+                                    is_long=is_long,
+                                    pending_entry_price=pending_entry_price,
+                                    pending_entry_time=pending_entry_time,
+                                    pending_direction=pending_direction,
+                                    point_value=point_value,
+                                )
+                                current_equity += eq_delta
+                                if closed:
+                                    pending_entry_price = None
+                                    pending_entry_time = None
+                                    pending_direction = None
+                                    unit.strategy.on_position_closed()
+
+                    else:
+                        # ── Deferred entry: 延遲到下一根 K 棒開盤 ──
+                        _deferred_signal = signal
+                        _deferred_direction = _entry_direction
+                        dir_str = "做多" if _deferred_direction == Action.Buy else "做空"
+                        print(
+                            f"🔔 {dir_str}信號 @ {current_price} "
+                            f"(延遲至下一根 K 棒開盤進場)"
+                        )
 
             # ── Step 4: 更新權益曲線（含未實現損益）──
             if pm.has_position and pending_entry_price is not None:
@@ -476,6 +477,126 @@ class BacktestEngine:
         )
 
         return result
+
+    def _execute_exit_actions(
+        self,
+        exit_actions: list,
+        *,
+        pm,
+        executor: BacktestExecutor,
+        result: BacktestResult,
+        current_time,
+        kbar_open: int,
+        kbar_high: int,
+        kbar_low: int,
+        kbar_close: int,
+        is_long: bool,
+        pending_entry_price: int | None,
+        pending_entry_time,
+        pending_direction,
+        point_value: float,
+    ) -> tuple[float, bool]:
+        """Execute exit order actions and record trades.
+
+        Returns (equity_delta, position_fully_closed).
+        """
+        equity_delta = 0.0
+        position_closed = False
+
+        for action in exit_actions:
+            exit_reason_str = action.metadata.get("exit_reason", "SL")
+            exit_reason = ExitReason(exit_reason_str)
+            trigger_price = action.metadata.get("trigger_price")
+
+            sim_price = self._calculate_fill_price(
+                exit_reason=exit_reason,
+                trigger_price=trigger_price,
+                kbar_open=kbar_open,
+                kbar_high=kbar_high,
+                kbar_low=kbar_low,
+                kbar_close=kbar_close,
+                is_long=is_long,
+            )
+
+            executor.set_market_state(sim_price, current_time)
+            fill = executor.execute(action)
+
+            if fill.success and fill.fill_price is not None:
+                closing_legs: list[tuple[str, int, int]] = []
+                if action.leg_id:
+                    leg = next(
+                        (lg for lg in pm.position.legs if lg.leg_id == action.leg_id),
+                        None,
+                    )
+                    leg_entry = (
+                        leg.entry_price if leg and leg.entry_price
+                        else pending_entry_price
+                    )
+                    closing_legs.append((action.leg_id, leg_entry, action.quantity))
+                elif "leg_ids" in action.metadata:
+                    for lid in action.metadata["leg_ids"]:
+                        leg = next(
+                            (lg for lg in pm.position.legs if lg.leg_id == lid),
+                            None,
+                        )
+                        leg_entry = (
+                            leg.entry_price if leg and leg.entry_price
+                            else pending_entry_price
+                        )
+                        leg_qty = leg.quantity if leg else action.quantity
+                        closing_legs.append((lid, leg_entry, leg_qty))
+
+                if action.leg_id:
+                    pm.on_fill(
+                        action.leg_id,
+                        fill.fill_price,
+                        current_time,
+                        exit_reason,
+                    )
+                elif "leg_ids" in action.metadata:
+                    for lid in action.metadata["leg_ids"]:
+                        pm.on_fill(
+                            lid, fill.fill_price, current_time, exit_reason
+                        )
+
+                if pending_direction is not None:
+                    for _lid, leg_ep, leg_qty in closing_legs:
+                        ep = leg_ep if leg_ep is not None else pending_entry_price
+                        if ep is None:
+                            continue
+                        if pending_direction == Action.Buy:
+                            pnl_points = float(fill.fill_price - ep)
+                        else:
+                            pnl_points = float(ep - fill.fill_price)
+                        pnl_twd = pnl_points * leg_qty * point_value
+
+                        trade = BacktestTrade(
+                            trade_id=str(uuid.uuid4()),
+                            symbol=self.config.symbol,
+                            action=pending_direction or Action.Buy,
+                            entry_time=pending_entry_time or current_time,
+                            entry_price=ep,
+                            exit_time=current_time,
+                            exit_price=fill.fill_price,
+                            quantity=leg_qty,
+                            exit_reason=exit_reason,
+                            pnl_points=pnl_points,
+                            pnl_twd=pnl_twd,
+                        )
+                        result.trades.append(trade)
+                        equity_delta += pnl_twd
+                        dir_str = "多" if pending_direction == Action.Buy else "空"
+                        print(
+                            f"📉 平{dir_str}倉: {fill.fill_price} | "
+                            f"進場:{ep} | "
+                            f"{exit_reason.value} | "
+                            f"PnL: {pnl_twd:+.0f}"
+                        )
+
+                if not pm.has_position:
+                    position_closed = True
+
+        return equity_delta, position_closed
 
     @staticmethod
     def _calculate_fill_price(

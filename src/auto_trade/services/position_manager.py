@@ -184,7 +184,9 @@ class PositionManagerConfig:
             f"TS={_fmt(self.trailing_stop_points, self.trailing_stop_points_rate)}"
         )
         if self.has_tightened_trailing_stop:
-            tighten_str = _fmt(self.tighten_after_points, self.tighten_after_points_rate)
+            tighten_str = _fmt(
+                self.tighten_after_points, self.tighten_after_points_rate
+            )
             tightened_str = _fmt(
                 self.tightened_trailing_stop_points,
                 self.tightened_trailing_stop_points_rate,
@@ -295,7 +297,8 @@ class PositionManager:
             # 檢查是否已進入收緊模式
             if tighten_after_price is not None and tightened_ts_points is not None:
                 past_tighten = (
-                    highest >= tighten_after_price if is_long
+                    highest >= tighten_after_price
+                    if is_long
                     else highest <= tighten_after_price
                 )
                 if past_tighten:
@@ -329,57 +332,60 @@ class PositionManager:
                 if leg_type == LegType.TAKE_PROFIT:
                     exit_rule.take_profit_price = take_profit_price
 
-                legs.append(PositionLeg(
-                    leg_id=leg_id,
-                    leg_type=leg_type,
-                    quantity=int(info["quantity"]),
-                    exit_rule=exit_rule,
-                    entry_price=leg_ep,
-                ))
+                legs.append(
+                    PositionLeg(
+                        leg_id=leg_id,
+                        leg_type=leg_type,
+                        quantity=int(info["quantity"]),
+                        exit_rule=exit_rule,
+                        entry_price=leg_ep,
+                    )
+                )
 
                 if "-A" in leg_id:
                     addon_count += 1
 
-            print(
-                f"🔄 恢復 {len(legs)} 個 legs "
-                f"(含 {addon_count} 個加碼)"
-            )
+            print(f"🔄 恢復 {len(legs)} 個 legs (含 {addon_count} 個加碼)")
         else:
             # 無 legs_info → 舊版相容，用 config 建立
             if self.config.tp_leg_quantity > 0:
-                legs.append(PositionLeg(
-                    leg_id=f"{position_id}-TP",
-                    leg_type=LegType.TAKE_PROFIT,
-                    quantity=self.config.tp_leg_quantity,
-                    exit_rule=ExitRule(
-                        stop_loss_price=stop_loss_price,
-                        take_profit_price=take_profit_price,
-                        start_trailing_stop_price=start_ts_price,
-                        trailing_stop_active=record.trailing_stop_active,
-                        trailing_stop_price=trailing_stop_price,
-                        tighten_after_price=tighten_after_price,
-                        tightened_trailing_stop_points=tightened_ts_points,
-                        is_tightened=is_tightened,
-                    ),
-                    entry_price=entry_price,
-                ))
+                legs.append(
+                    PositionLeg(
+                        leg_id=f"{position_id}-TP",
+                        leg_type=LegType.TAKE_PROFIT,
+                        quantity=self.config.tp_leg_quantity,
+                        exit_rule=ExitRule(
+                            stop_loss_price=stop_loss_price,
+                            take_profit_price=take_profit_price,
+                            start_trailing_stop_price=start_ts_price,
+                            trailing_stop_active=record.trailing_stop_active,
+                            trailing_stop_price=trailing_stop_price,
+                            tighten_after_price=tighten_after_price,
+                            tightened_trailing_stop_points=tightened_ts_points,
+                            is_tightened=is_tightened,
+                        ),
+                        entry_price=entry_price,
+                    )
+                )
 
             if self.config.ts_leg_quantity > 0:
-                legs.append(PositionLeg(
-                    leg_id=f"{position_id}-TS",
-                    leg_type=LegType.TRAILING_STOP,
-                    quantity=self.config.ts_leg_quantity,
-                    exit_rule=ExitRule(
-                        stop_loss_price=stop_loss_price,
-                        start_trailing_stop_price=start_ts_price,
-                        trailing_stop_active=record.trailing_stop_active,
-                        trailing_stop_price=trailing_stop_price,
-                        tighten_after_price=tighten_after_price,
-                        tightened_trailing_stop_points=tightened_ts_points,
-                        is_tightened=is_tightened,
-                    ),
-                    entry_price=entry_price,
-                ))
+                legs.append(
+                    PositionLeg(
+                        leg_id=f"{position_id}-TS",
+                        leg_type=LegType.TRAILING_STOP,
+                        quantity=self.config.ts_leg_quantity,
+                        exit_rule=ExitRule(
+                            stop_loss_price=stop_loss_price,
+                            start_trailing_stop_price=start_ts_price,
+                            trailing_stop_active=record.trailing_stop_active,
+                            trailing_stop_price=trailing_stop_price,
+                            tighten_after_price=tighten_after_price,
+                            tightened_trailing_stop_points=tightened_ts_points,
+                            is_tightened=is_tightened,
+                        ),
+                        entry_price=entry_price,
+                    )
+                )
 
         self.position = ManagedPosition(
             position_id=position_id,
@@ -438,8 +444,11 @@ class PositionManager:
         if self.has_position and self.config.enable_addon:
             pos = self.position
             is_same_direction = (
-                (signal.signal_type == SignalType.ENTRY_LONG and pos.direction == Action.Buy)
-                or (signal.signal_type == SignalType.ENTRY_SHORT and pos.direction == Action.Sell)
+                signal.signal_type == SignalType.ENTRY_LONG
+                and pos.direction == Action.Buy
+            ) or (
+                signal.signal_type == SignalType.ENTRY_SHORT
+                and pos.direction == Action.Sell
             )
             if is_same_direction:
                 return self._add_to_position(signal, symbol, sub_symbol)
@@ -483,7 +492,6 @@ class PositionManager:
                 )
                 return actions
 
-
         # 檢查動能衰竭停利（整個 Position 級別）
         if (
             kbar_list is not None
@@ -491,9 +499,7 @@ class PositionManager:
             and self._check_momentum_exhaustion(current_price, kbar_list)
         ):
             actions.extend(
-                self._close_all_legs(
-                    current_price, ExitReason.MOMENTUM_EXIT
-                )
+                self._close_all_legs(current_price, ExitReason.MOMENTUM_EXIT)
             )
             return actions
 
@@ -552,8 +558,15 @@ class PositionManager:
 
         exit_h, exit_m = map(int, self.config.force_exit_time.split(":"))
         cur_h, cur_m = current_time.hour, current_time.minute
+        cur_minutes = cur_h * 60 + cur_m
+        exit_minutes = exit_h * 60 + exit_m
 
-        if cur_h > exit_h or (cur_h == exit_h and cur_m >= exit_m):
+        # Early-morning force exit (e.g. 04:50 for night session):
+        # only trigger when current time is also in early morning, not during day
+        if exit_minutes < 8 * 60 and cur_minutes >= 8 * 60:
+            return []
+
+        if cur_minutes >= exit_minutes:
             print(
                 f"⏰ 時間強制平倉: {current_time.strftime('%H:%M')} >= "
                 f"{self.config.force_exit_time}，平倉價 {current_price}"
@@ -563,12 +576,9 @@ class PositionManager:
         return []
 
     def update_entry_on_fill(self, fill_price: int) -> None:
-        """成交後更新進場價格及所有依賴 entry_price 的出場參數
+        """成交後更新進場價格（僅用於損益計算）
 
-        信號價格與實際成交價格可能有差異（滑價），
-        此方法將 position 和所有 leg 的 entry_price 統一為實際成交價，
-        並重新計算 start_trailing_stop_price、tighten_after_price、take_profit_price。
-        stop_loss_price 基於結構性低點，不受 entry_price 影響，不需重算。
+        出場條件（TP / SL / 移停啟動）在建倉時已確定，不因滑價重算。
         """
         pos = self.position
         if not pos:
@@ -580,54 +590,13 @@ class PositionManager:
 
         pos.entry_price = fill_price
         pos.update_price_tracking(fill_price)
-        is_long = pos.direction == Action.Buy
-
-        # 重算啟動移停價格
-        start_ts_pts = self.config.start_trailing_stop_points
-        new_start_ts = (
-            fill_price + start_ts_pts if is_long else fill_price - start_ts_pts
-        )
-
-        # 重算收緊移停門檻
-        new_tighten_after: int | None = None
-        new_tightened_pts: int | None = None
-        if self.config.has_tightened_trailing_stop:
-            tighten_after_pts = calculate_points(
-                self.config.tighten_after_points,
-                self.config.tighten_after_points_rate,
-                fill_price,
-            )
-            new_tighten_after = (
-                fill_price + tighten_after_pts
-                if is_long
-                else fill_price - tighten_after_pts
-            )
-            new_tightened_pts = calculate_points(
-                self.config.tightened_trailing_stop_points,
-                self.config.tightened_trailing_stop_points_rate,
-                fill_price,
-            )
-
-        # 重算停利價格
-        tp_pts = calculate_points(
-            self.config.take_profit_points,
-            self.config.take_profit_points_rate,
-            fill_price,
-        )
-        new_tp = fill_price + tp_pts if is_long else fill_price - tp_pts
 
         for leg in pos.open_legs:
             leg.entry_price = fill_price
-            leg.exit_rule.start_trailing_stop_price = new_start_ts
-            leg.exit_rule.tighten_after_price = new_tighten_after
-            leg.exit_rule.tightened_trailing_stop_points = new_tightened_pts
-            if leg.leg_type == LegType.TAKE_PROFIT:
-                leg.exit_rule.take_profit_price = new_tp
 
         print(
             f"📝 成交價更新: {old_price} → {fill_price} "
-            f"(滑價 {fill_price - old_price:+d}pts), "
-            f"移停啟動 {new_start_ts}"
+            f"(滑價 {fill_price - old_price:+d}pts)"
         )
 
     def reset(self) -> None:
@@ -672,24 +641,36 @@ class PositionManager:
             )
 
         # === 計算停利價格（支援 metadata 覆寫）===
-        if "override_take_profit_points" in meta:
+        if "override_take_profit_price" in meta:
+            take_profit_price = int(meta["override_take_profit_price"])
+        elif "override_take_profit_points" in meta:
             tp_pts = int(meta["override_take_profit_points"])
+            take_profit_price = (
+                entry_price + tp_pts if is_long else entry_price - tp_pts
+            )
         else:
             tp_pts = calculate_points(
                 self.config.take_profit_points,
                 self.config.take_profit_points_rate,
                 entry_price,
             )
-        take_profit_price = entry_price + tp_pts if is_long else entry_price - tp_pts
+            take_profit_price = (
+                entry_price + tp_pts if is_long else entry_price - tp_pts
+            )
 
         # === 計算啟動移動停損價格（支援 metadata 覆寫）===
-        if "override_start_trailing_stop_points" in meta:
+        if "override_start_trailing_stop_price" in meta:
+            start_trailing_stop_price = int(meta["override_start_trailing_stop_price"])
+        elif "override_start_trailing_stop_points" in meta:
             start_ts_pts = int(meta["override_start_trailing_stop_points"])
+            start_trailing_stop_price = (
+                entry_price + start_ts_pts if is_long else entry_price - start_ts_pts
+            )
         else:
             start_ts_pts = self.config.start_trailing_stop_points
-        start_trailing_stop_price = (
-            entry_price + start_ts_pts if is_long else entry_price - start_ts_pts
-        )
+            start_trailing_stop_price = (
+                entry_price + start_ts_pts if is_long else entry_price - start_ts_pts
+            )
 
         # 建立 Position
         position_id = str(uuid.uuid4())[:8]
@@ -748,7 +729,7 @@ class PositionManager:
             )
             legs.append(ts_leg)
 
-        # 將 metadata override 保存在 position 上（供 trailing stop 等使用）
+        # 將 metadata override 保存在 position 上（供 trailing stop / fill 更新使用）
         position_metadata: dict = {}
         if "override_trailing_stop_points" in meta:
             position_metadata["override_trailing_stop_points"] = int(
@@ -758,14 +739,11 @@ class PositionManager:
         # 階梯式壓力線移停：保存關鍵價位到 position metadata
         if "key_levels" in meta:
             position_metadata["key_levels"] = meta["key_levels"]
-            position_metadata["key_level_buffer"] = meta.get(
-                "key_level_buffer", 10
-            )
+            position_metadata["key_level_buffer"] = meta.get("key_level_buffer", 10)
+            position_metadata["key_level_trail_mode"] = meta.get("key_level_trail_mode", "current")
             position_metadata["next_key_level_idx"] = 0
             if "key_level_min_profit" in meta:
-                position_metadata["key_level_min_profit"] = meta[
-                    "key_level_min_profit"
-                ]
+                position_metadata["key_level_min_profit"] = meta["key_level_min_profit"]
             extras = []
             if meta.get("key_level_min_profit"):
                 extras.append(f"min_profit={meta['key_level_min_profit']}pts")
@@ -781,9 +759,7 @@ class PositionManager:
             position_metadata["momentum_min_profit"] = meta.get(
                 "momentum_min_profit", 0
             )
-            position_metadata["momentum_lookback"] = meta.get(
-                "momentum_lookback", 5
-            )
+            position_metadata["momentum_lookback"] = meta.get("momentum_lookback", 5)
             position_metadata["momentum_weak_threshold"] = meta.get(
                 "momentum_weak_threshold", 0.45
             )
@@ -850,8 +826,7 @@ class PositionManager:
 
         # 條件檢查：價格必須有利 + 未超過加碼上限
         price_favorable = (
-            addon_price > pos.entry_price if is_long
-            else addon_price < pos.entry_price
+            addon_price > pos.entry_price if is_long else addon_price < pos.entry_price
         )
         if not price_favorable:
             return []
@@ -1105,8 +1080,12 @@ class PositionManager:
         if key_levels is not None:
             idx = self.position.metadata.get("next_key_level_idx", 0)
             buffer = self.position.metadata.get("key_level_buffer", 10)
+            # "current" = stop at broken level - buffer (original)
+            # "previous" = stop at previous key level (more room)
+            trail_mode = self.position.metadata.get(
+                "key_level_trail_mode", "current"
+            )
 
-            # 檢查是否突破了新的壓力/支撐線
             while idx < len(key_levels):
                 next_level = key_levels[idx]
                 crossed = (
@@ -1115,21 +1094,27 @@ class PositionManager:
                     else current_price < next_level
                 )
                 if crossed:
-                    stop_price = (
-                        next_level - buffer
-                        if is_long
-                        else next_level + buffer
-                    )
+                    if trail_mode == "previous" and idx > 0:
+                        stop_price = key_levels[idx - 1]
+                    else:
+                        stop_price = (
+                            next_level - buffer
+                            if is_long
+                            else next_level + buffer
+                        )
                     for leg in self.position.open_legs:
                         leg.exit_rule.trailing_stop_active = True
-                        if is_long and (
-                            leg.exit_rule.trailing_stop_price is None
-                            or stop_price > leg.exit_rule.trailing_stop_price
-                        ):
-                            leg.exit_rule.trailing_stop_price = stop_price
-                        elif not is_long and (
-                            leg.exit_rule.trailing_stop_price is None
-                            or stop_price < leg.exit_rule.trailing_stop_price
+                        if (
+                            is_long
+                            and (
+                                leg.exit_rule.trailing_stop_price is None
+                                or stop_price > leg.exit_rule.trailing_stop_price
+                            )
+                            or not is_long
+                            and (
+                                leg.exit_rule.trailing_stop_price is None
+                                or stop_price < leg.exit_rule.trailing_stop_price
+                            )
                         ):
                             leg.exit_rule.trailing_stop_price = stop_price
                     idx += 1
@@ -1162,18 +1147,17 @@ class PositionManager:
                         if is_long
                         else current_price + dynamic_ts
                     )
-                    if is_long and (
-                        er.trailing_stop_price is None
-                        or new_stop > er.trailing_stop_price
-                    ):
-                        er.trailing_stop_price = new_stop
-                        print(
-                            f"📊 {leg.leg_id} 壓力線後移停更新: "
-                            f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
+                    if (
+                        is_long
+                        and (
+                            er.trailing_stop_price is None
+                            or new_stop > er.trailing_stop_price
                         )
-                    elif not is_long and (
-                        er.trailing_stop_price is None
-                        or new_stop < er.trailing_stop_price
+                        or not is_long
+                        and (
+                            er.trailing_stop_price is None
+                            or new_stop < er.trailing_stop_price
+                        )
                     ):
                         er.trailing_stop_price = new_stop
                         print(
@@ -1449,9 +1433,12 @@ class PositionManager:
         consecutive_weak = 0
         for bar in reversed(recent_bars):
             strength = self.indicator_service.candle_strength(bar)
-            if is_long and strength < weak_threshold:
-                consecutive_weak += 1
-            elif not is_long and strength > (1.0 - weak_threshold):
+            if (
+                is_long
+                and strength < weak_threshold
+                or not is_long
+                and strength > (1.0 - weak_threshold)
+            ):
                 consecutive_weak += 1
             else:
                 break
@@ -1477,7 +1464,7 @@ class PositionManager:
         # 條件 B: 多數 K 棒在縮小 + 至少有部分逆勢
         if shrinking >= lookback - 2 and consecutive_weak >= 2:
             print(
-                f"🔻 動能衰竭 (條件B): {shrinking}/{lookback-1} 根縮量 + "
+                f"🔻 動能衰竭 (條件B): {shrinking}/{lookback - 1} 根縮量 + "
                 f"{consecutive_weak} 根逆勢, 未實現獲利 {unrealized}pts"
             )
             return True

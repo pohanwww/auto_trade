@@ -114,16 +114,10 @@ class ORBStrategy(BaseStrategy):
         use_prev_pressure_filter: bool = False,
         min_pressure_space_pct: float = 1.0,
         use_prev_direction_filter: bool = False,
-        # --- 階梯式壓力線移停 ---
-        use_key_level_trailing: bool = False,
+        # --- 壓力線移停 & 停利（ORB 永遠啟用）---
         key_level_buffer: int = 10,
         key_level_min_profit_pct: float = 0.0,
         key_level_min_distance_pct: float = 0.0,
-        # --- 壓力線停利 ---
-        use_key_level_tp: bool = False,
-        key_level_tp_min_pct: float = 0.5,
-        # --- 最高壓力線停利（搭配 key_level_trailing 使用）---
-        use_key_level_tp_max: bool = False,
         # --- 動能衰竭停利 ---
         use_momentum_exit: bool = False,
         momentum_min_profit_pct: float = 1.0,
@@ -175,16 +169,10 @@ class ORBStrategy(BaseStrategy):
         self.min_pressure_space_pct = min_pressure_space_pct
         self.use_prev_direction_filter = use_prev_direction_filter
 
-        # 階梯式壓力線移停
-        self.use_key_level_trailing = use_key_level_trailing
+        # 壓力線移停 & 停利（ORB 永遠啟用）
         self.key_level_buffer = key_level_buffer
         self.key_level_min_profit_pct = key_level_min_profit_pct
         self.key_level_min_distance_pct = key_level_min_distance_pct
-
-        # 壓力線停利
-        self.use_key_level_tp = use_key_level_tp
-        self.key_level_tp_min_pct = key_level_tp_min_pct
-        self.use_key_level_tp_max = use_key_level_tp_max
 
         # 動能衰竭停利
         self.use_momentum_exit = use_momentum_exit
@@ -384,7 +372,7 @@ class ORBStrategy(BaseStrategy):
                 post_or_bars.append(kbar)
 
         # Skip the OR bars themselves — state machine starts after OR
-        replay_bars = post_or_bars[self.or_bars:]
+        replay_bars = post_or_bars[self.or_bars :]
         if not replay_bars:
             return
 
@@ -409,8 +397,7 @@ class ORBStrategy(BaseStrategy):
                 # State machine (both directions)
                 allow_long = self._daily_direction in ("long", "both") or self.long_only
                 allow_short = (
-                    self._daily_direction in ("short", "both")
-                    and not self.long_only
+                    self._daily_direction in ("short", "both") and not self.long_only
                 )
                 if allow_long:
                     self._update_long_state(temp_kbar_list, close)
@@ -500,13 +487,11 @@ class ORBStrategy(BaseStrategy):
             return True, "VWAP data insufficient"
         if is_long and close <= vwap:
             return False, (
-                f"VWAP filter: close({close:.0f}) <= VWAP({vwap:.0f}), "
-                f"long rejected"
+                f"VWAP filter: close({close:.0f}) <= VWAP({vwap:.0f}), long rejected"
             )
         if not is_long and close >= vwap:
             return False, (
-                f"VWAP filter: close({close:.0f}) >= VWAP({vwap:.0f}), "
-                f"short rejected"
+                f"VWAP filter: close({close:.0f}) >= VWAP({vwap:.0f}), short rejected"
             )
         return True, f"VWAP={vwap:.0f} OK"
 
@@ -532,9 +517,7 @@ class ORBStrategy(BaseStrategy):
             lows.append(self._prev_night.low)
         return min(lows) if lows else None
 
-    def _check_pressure_space_filter(
-        self, is_long: bool
-    ) -> tuple[bool, str]:
+    def _check_pressure_space_filter(self, is_long: bool) -> tuple[bool, str]:
         """壓力空間過濾：突破方向上是否有足夠空間
 
         做多：OR_High 到前日 High 的距離 >= min_pressure_space_pct × OR_Range
@@ -585,9 +568,7 @@ class ORBStrategy(BaseStrategy):
                 )
             return True, f"Support space OK: {space} >= {min_space:.0f}"
 
-    def _check_direction_bias_filter(
-        self, is_long: bool
-    ) -> tuple[bool, str]:
+    def _check_direction_bias_filter(self, is_long: bool) -> tuple[bool, str]:
         """方向偏差過濾：今日開盤 vs 前日收盤
 
         做多：今日 OR 區間中點 > 前日收盤 → 跳空偏多，做多更可靠
@@ -611,8 +592,7 @@ class ORBStrategy(BaseStrategy):
                     f"prev_close({prev_close}), bearish gap"
                 )
             return True, (
-                f"Direction bias OK: OR_Mid({self._or_mid}) > "
-                f"prev_close({prev_close})"
+                f"Direction bias OK: OR_Mid({self._or_mid}) > prev_close({prev_close})"
             )
         else:
             if self._or_mid >= prev_close:
@@ -621,8 +601,7 @@ class ORBStrategy(BaseStrategy):
                     f"prev_close({prev_close}), bullish gap"
                 )
             return True, (
-                f"Direction bias OK: OR_Mid({self._or_mid}) < "
-                f"prev_close({prev_close})"
+                f"Direction bias OK: OR_Mid({self._or_mid}) < prev_close({prev_close})"
             )
 
     # ──────────────────────────────────────────────
@@ -685,9 +664,7 @@ class ORBStrategy(BaseStrategy):
     # 突破分類 & 狀態機
     # ──────────────────────────────────────────────
 
-    def _classify_breakout(
-        self, kbar_list: KBarList, is_long: bool
-    ) -> bool:
+    def _classify_breakout(self, kbar_list: KBarList, is_long: bool) -> bool:
         """判斷突破是否為強突破
 
         強突破條件（兩者皆須滿足）：
@@ -700,9 +677,7 @@ class ORBStrategy(BaseStrategy):
         latest_kbar = kbar_list.get_latest(1)[-1]
 
         # RVOL 檢查
-        rvol = self.indicator_service.calculate_rvol(
-            kbar_list, self.rvol_lookback
-        )
+        rvol = self.indicator_service.calculate_rvol(kbar_list, self.rvol_lookback)
         rvol_ok = rvol is not None and rvol >= self.strong_rvol
 
         # K 棒力道檢查
@@ -748,9 +723,7 @@ class ORBStrategy(BaseStrategy):
                     rvol = self.indicator_service.calculate_rvol(
                         kbar_list, self.rvol_lookback
                     )
-                    strength = self.indicator_service.candle_strength(
-                        latest_kbar
-                    )
+                    strength = self.indicator_service.candle_strength(latest_kbar)
                     return StrategySignal(
                         signal_type=SignalType.ENTRY_LONG,
                         symbol=kbar_list.symbol,
@@ -763,7 +736,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
-                            is_long=True, entry_type="strong"
+                            is_long=True,
+                            entry_type="strong",
+                            entry_price=close,
                         ),
                     )
                 elif self._swept_low:
@@ -775,9 +750,7 @@ class ORBStrategy(BaseStrategy):
                     if reject:
                         return None
                     self._long_trades_today += 1
-                    strength = self.indicator_service.candle_strength(
-                        latest_kbar
-                    )
+                    strength = self.indicator_service.candle_strength(latest_kbar)
                     return StrategySignal(
                         signal_type=SignalType.ENTRY_LONG,
                         symbol=kbar_list.symbol,
@@ -791,7 +764,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
-                            is_long=True, entry_type="sweep"
+                            is_long=True,
+                            entry_type="sweep",
+                            entry_price=close,
                         ),
                     )
                 else:
@@ -819,10 +794,7 @@ class ORBStrategy(BaseStrategy):
             # 失敗：跌破 OR_Mid → 突破無效
             if close < or_mid:
                 self._long_state = BreakoutState.IDLE
-                print(
-                    f"  ❌ Long breakout failed: "
-                    f"close({close}) < OR_Mid({or_mid})"
-                )
+                print(f"  ❌ Long breakout failed: close({close}) < OR_Mid({or_mid})")
                 return None
 
             # 回踩到位：price 進入 retest zone [OR_High - tol, OR_High + tol]
@@ -841,18 +813,14 @@ class ORBStrategy(BaseStrategy):
             if self._long_bars_since_breakout > self.pullback_timeout_bars:
                 self._long_state = BreakoutState.IDLE
                 print(
-                    f"  ❌ Long retest timeout after "
-                    f"{self.pullback_timeout_bars} bars"
+                    f"  ❌ Long retest timeout after {self.pullback_timeout_bars} bars"
                 )
                 return None
 
             # 失敗：跌破 OR_Mid
             if close < or_mid:
                 self._long_state = BreakoutState.IDLE
-                print(
-                    f"  ❌ Long retest failed: "
-                    f"close({close}) < OR_Mid({or_mid})"
-                )
+                print(f"  ❌ Long retest failed: close({close}) < OR_Mid({or_mid})")
                 return None
 
             # 確認反彈：close 回到 OR_High 之上 + K 棒力道確認
@@ -886,7 +854,9 @@ class ORBStrategy(BaseStrategy):
                     ),
                     timestamp=bar_time,
                     metadata=self._build_entry_metadata(
-                        is_long=True, entry_type="retest"
+                        is_long=True,
+                        entry_type="retest",
+                        entry_price=close,
                     ),
                 )
 
@@ -923,18 +893,14 @@ class ORBStrategy(BaseStrategy):
                     if self._restoring:
                         self._short_trades_today += 1
                         return None
-                    reject = self._run_filters(
-                        kbar_list, close, is_long=False
-                    )
+                    reject = self._run_filters(kbar_list, close, is_long=False)
                     if reject:
                         return None
                     self._short_trades_today += 1
                     rvol = self.indicator_service.calculate_rvol(
                         kbar_list, self.rvol_lookback
                     )
-                    strength = self.indicator_service.candle_strength(
-                        latest_kbar
-                    )
+                    strength = self.indicator_service.candle_strength(latest_kbar)
                     return StrategySignal(
                         signal_type=SignalType.ENTRY_SHORT,
                         symbol=kbar_list.symbol,
@@ -947,7 +913,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
-                            is_long=False, entry_type="strong"
+                            is_long=False,
+                            entry_type="strong",
+                            entry_price=close,
                         ),
                     )
                 elif self._swept_high:
@@ -955,15 +923,11 @@ class ORBStrategy(BaseStrategy):
                         self._short_trades_today += 1
                         return None
                     # 掃頂後跌破 → 通過 filters 後立即進場
-                    reject = self._run_filters(
-                        kbar_list, close, is_long=False
-                    )
+                    reject = self._run_filters(kbar_list, close, is_long=False)
                     if reject:
                         return None
                     self._short_trades_today += 1
-                    strength = self.indicator_service.candle_strength(
-                        latest_kbar
-                    )
+                    strength = self.indicator_service.candle_strength(latest_kbar)
                     return StrategySignal(
                         signal_type=SignalType.ENTRY_SHORT,
                         symbol=kbar_list.symbol,
@@ -977,7 +941,9 @@ class ORBStrategy(BaseStrategy):
                         ),
                         timestamp=bar_time,
                         metadata=self._build_entry_metadata(
-                            is_long=False, entry_type="sweep"
+                            is_long=False,
+                            entry_type="sweep",
+                            entry_price=close,
                         ),
                     )
                 else:
@@ -1002,10 +968,7 @@ class ORBStrategy(BaseStrategy):
 
             if close > or_mid:
                 self._short_state = BreakoutState.IDLE
-                print(
-                    f"  ❌ Short breakout failed: "
-                    f"close({close}) > OR_Mid({or_mid})"
-                )
+                print(f"  ❌ Short breakout failed: close({close}) > OR_Mid({or_mid})")
                 return None
 
             # 回踩到位：price 進入 retest zone [OR_Low - tol, OR_Low + tol]
@@ -1023,17 +986,13 @@ class ORBStrategy(BaseStrategy):
             if self._short_bars_since_breakout > self.pullback_timeout_bars:
                 self._short_state = BreakoutState.IDLE
                 print(
-                    f"  ❌ Short retest timeout after "
-                    f"{self.pullback_timeout_bars} bars"
+                    f"  ❌ Short retest timeout after {self.pullback_timeout_bars} bars"
                 )
                 return None
 
             if close > or_mid:
                 self._short_state = BreakoutState.IDLE
-                print(
-                    f"  ❌ Short retest failed: "
-                    f"close({close}) > OR_Mid({or_mid})"
-                )
+                print(f"  ❌ Short retest failed: close({close}) > OR_Mid({or_mid})")
                 return None
 
             # 確認反彈：close 回到 OR_Low 之下 + K 棒力道確認
@@ -1067,7 +1026,9 @@ class ORBStrategy(BaseStrategy):
                     ),
                     timestamp=bar_time,
                     metadata=self._build_entry_metadata(
-                        is_long=False, entry_type="retest"
+                        is_long=False,
+                        entry_type="retest",
+                        entry_price=close,
                     ),
                 )
 
@@ -1149,10 +1110,7 @@ class ORBStrategy(BaseStrategy):
         bar_time = latest_kbar.time
 
         # 1. 新的一天 → 重置狀態
-        if (
-            self._current_date is None
-            or bar_time.date() != self._current_date.date()
-        ):
+        if self._current_date is None or bar_time.date() != self._current_date.date():
             self._reset_daily_state()
             self._current_date = bar_time
 
@@ -1163,14 +1121,13 @@ class ORBStrategy(BaseStrategy):
         # 3. 尚未計算 OR → 嘗試計算
         if not self._or_calculated:
             self._try_calculate_or(kbar_list)
-            return self._hold(
-                symbol, current_price, "Calculating opening range"
-            )
+            return self._hold(symbol, current_price, "Calculating opening range")
 
         # 4. OR Range 太小
         if self._or_range is not None and self._or_range < 10:
             return self._hold(
-                symbol, current_price,
+                symbol,
+                current_price,
                 f"OR Range too small ({self._or_range}pts)",
             )
 
@@ -1204,8 +1161,7 @@ class ORBStrategy(BaseStrategy):
         if in_window:
             allow_long = self._daily_direction in ("long", "both") or self.long_only
             allow_short = (
-                self._daily_direction in ("short", "both")
-                and not self.long_only
+                self._daily_direction in ("short", "both") and not self.long_only
             )
 
             if allow_long:
@@ -1227,13 +1183,11 @@ class ORBStrategy(BaseStrategy):
             status_parts.append(f"SweptHigh({self._swept_high_level})")
         if self._long_state != BreakoutState.IDLE:
             status_parts.append(
-                f"L:{self._long_state.value}"
-                f"({self._long_bars_since_breakout}bars)"
+                f"L:{self._long_state.value}({self._long_bars_since_breakout}bars)"
             )
         if self._short_state != BreakoutState.IDLE:
             status_parts.append(
-                f"S:{self._short_state.value}"
-                f"({self._short_bars_since_breakout}bars)"
+                f"S:{self._short_state.value}({self._short_bars_since_breakout}bars)"
             )
         if not in_window:
             status_parts.append("(outside trading window)")
@@ -1245,31 +1199,28 @@ class ORBStrategy(BaseStrategy):
     # ──────────────────────────────────────────────
 
     def _build_entry_metadata(
-        self, is_long: bool, entry_type: str = "strong"
+        self,
+        is_long: bool,
+        entry_type: str = "strong",
+        entry_price: int = 0,
     ) -> dict:
         """建立進場信號的 metadata（傳遞給 PositionManager）
 
         Args:
             is_long: 是否做多
             entry_type: "strong" 或 "retest"
+            entry_price: 進場價格（用於計算 TP 距離）
         """
         or_range = self._or_range or 0
+        is_long_dir = is_long
 
+        # 基礎 TP = tp_multiplier × OR_Range（作為無壓力線時的 fallback）
         tp_points = int(self.tp_multiplier * or_range)
 
-        # 壓力線停利：用最近的壓力線距離作為 TP 目標
-        if self.use_key_level_tp and or_range > 0:
-            min_tp = int(self.key_level_tp_min_pct * or_range)
-            kl_tp = self._compute_key_level_tp(is_long, min_tp)
-            if kl_tp is not None:
-                tp_points = kl_tp
-
         # 固定停利：fixed_tp_points > 0 時啟用
-        # 與壓力線/倍率 TP 取 max（確保不低於固定下限）
         if self.fixed_tp_points > 0:
             tp_points = max(self.fixed_tp_points, tp_points)
 
-        ts_start_points = int(self.ts_start_multiplier * or_range)
         ts_distance = int(self.ts_distance_ratio * or_range)
 
         meta: dict = {
@@ -1278,14 +1229,9 @@ class ORBStrategy(BaseStrategy):
             "or_low": self._or_low,
             "or_mid": self._or_mid,
             "or_range": or_range,
-            "override_start_trailing_stop_points": ts_start_points,
             "override_trailing_stop_points": ts_distance,
             "override_stop_loss_price": self._or_mid,
         }
-
-        # tp_points > 0 才覆寫，否則 fallback 到 PM 的 take_profit_points
-        if tp_points > 0:
-            meta["override_take_profit_points"] = tp_points
 
         if self._daily_adx is not None:
             meta["adx"] = round(self._daily_adx, 1)
@@ -1305,126 +1251,70 @@ class ORBStrategy(BaseStrategy):
                 "close": self._prev_night.close,
             }
 
-        # 階梯式壓力線移停：收集關鍵價位
-        if self.use_key_level_trailing:
-            or_range = self._or_range or 0
-            min_dist = int(self.key_level_min_distance_pct * or_range)
+        # 壓力線移停 & 停利：收集關鍵價位
+        min_dist = int(self.key_level_min_distance_pct * or_range)
 
-            if is_long:
-                key_levels: list[int] = []
-                if self._prev_day:
-                    key_levels.append(self._prev_day.high)
-                    key_levels.append(self._prev_day.close)
-                if self._prev_night:
-                    key_levels.append(self._prev_night.high)
-                # 只保留高於 OR_High + 最小距離 的價位，升序排列
-                or_high = self._or_high or 0
-                threshold = or_high + min_dist
-                key_levels = sorted(
-                    {lv for lv in key_levels if lv > threshold}
+        if is_long:
+            key_levels: list[int] = []
+            if self._prev_day:
+                key_levels.append(self._prev_day.high)
+                key_levels.append(self._prev_day.close)
+            if self._prev_night:
+                key_levels.append(self._prev_night.high)
+            or_high = self._or_high or 0
+            threshold = or_high + min_dist
+            key_levels = sorted({lv for lv in key_levels if lv > threshold})
+        else:
+            key_levels = []
+            if self._prev_day:
+                key_levels.append(self._prev_day.low)
+                key_levels.append(self._prev_day.close)
+            if self._prev_night:
+                key_levels.append(self._prev_night.low)
+            or_low = self._or_low or 999999
+            threshold = or_low - min_dist
+            key_levels = sorted(
+                {lv for lv in key_levels if lv < threshold}, reverse=True
+            )
+
+        if key_levels:
+            meta["key_levels"] = key_levels
+            meta["key_level_buffer"] = self.key_level_buffer
+            if self.key_level_min_profit_pct > 0:
+                meta["key_level_min_profit"] = int(
+                    self.key_level_min_profit_pct * or_range
                 )
+
+            # TP = 最遠壓力線的絕對價格
+            if is_long_dir:
+                tp_price = key_levels[-1]
+                fallback_tp = entry_price + tp_points
+                meta["override_take_profit_price"] = max(tp_price, fallback_tp)
             else:
-                key_levels = []
-                if self._prev_day:
-                    key_levels.append(self._prev_day.low)
-                    key_levels.append(self._prev_day.close)
-                if self._prev_night:
-                    key_levels.append(self._prev_night.low)
-                # 只保留低於 OR_Low - 最小距離 的價位，降序排列
-                or_low = self._or_low or 999999
-                threshold = or_low - min_dist
-                key_levels = sorted(
-                    {lv for lv in key_levels if lv < threshold}, reverse=True
-                )
-            if key_levels:
-                meta["key_levels"] = key_levels
-                meta["key_level_buffer"] = self.key_level_buffer
-                # 最低獲利門檻（由 PM 在運行時檢查）
-                if self.key_level_min_profit_pct > 0:
-                    meta["key_level_min_profit"] = int(
-                        self.key_level_min_profit_pct * or_range
-                    )
-
-                # 最高壓力線停利：TP 設在最遠的關鍵價位
-                if self.use_key_level_tp_max:
-                    if is_long:
-                        # key_levels 升序，最後一個是最高
-                        max_level = key_levels[-1]
-                        entry_ref = self._or_high or 0
-                        kl_tp_max = max_level - entry_ref
-                    else:
-                        # key_levels 降序，最後一個是最低
-                        min_level = key_levels[-1]
-                        entry_ref = self._or_low or 0
-                        kl_tp_max = entry_ref - min_level
-                    if kl_tp_max > 0:
-                        current_tp = meta.get("override_take_profit_points", 0)
-                        meta["override_take_profit_points"] = max(
-                            current_tp, kl_tp_max
-                        )
+                tp_price = key_levels[-1]
+                fallback_tp = entry_price - tp_points
+                meta["override_take_profit_price"] = min(tp_price, fallback_tp)
+        else:
+            # 無壓力線時用 fallback TP
+            meta["override_take_profit_price"] = (
+                entry_price + tp_points if is_long_dir else entry_price - tp_points
+            )
 
         # 動能衰竭停利參數
         if self.use_momentum_exit:
             meta["use_momentum_exit"] = True
-            meta["momentum_min_profit"] = int(
-                self.momentum_min_profit_pct * or_range
-            )
+            meta["momentum_min_profit"] = int(self.momentum_min_profit_pct * or_range)
             meta["momentum_lookback"] = self.momentum_lookback
             meta["momentum_weak_threshold"] = self.momentum_weak_threshold
             meta["momentum_min_weak_bars"] = self.momentum_min_weak_bars
 
         return meta
 
-    def _compute_key_level_tp(
-        self, is_long: bool, min_tp: int
-    ) -> int | None:
-        """計算壓力線停利距離
-
-        找到最近的壓力/支撐線，計算距離作為 TP 目標。
-        如果距離太近（< min_tp），跳到下一個。如果都不夠遠，回傳 None。
-        """
-        candidates: list[int] = []
-        if self._prev_day:
-            candidates.extend([
-                self._prev_day.high,
-                self._prev_day.close,
-                self._prev_day.low,
-            ])
-        if self._prev_night:
-            candidates.extend([
-                self._prev_night.high,
-                self._prev_night.close,
-                self._prev_night.low,
-            ])
-
-        if is_long:
-            or_high = self._or_high or 0
-            # 找所有高於 OR_High 的價位（升序），取最近且 >= min_tp 的
-            levels = sorted({lv for lv in candidates if lv > or_high})
-            for lv in levels:
-                dist = lv - or_high
-                if dist >= min_tp:
-                    return dist
-        else:
-            or_low = self._or_low or 999999
-            # 找所有低於 OR_Low 的價位（降序），取最近且 >= min_tp 的
-            levels = sorted(
-                {lv for lv in candidates if lv < or_low}, reverse=True
-            )
-            for lv in levels:
-                dist = or_low - lv
-                if dist >= min_tp:
-                    return dist
-
-        return None
-
     # ──────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────
 
-    def _hold(
-        self, symbol: str, price: float, reason: str
-    ) -> StrategySignal:
+    def _hold(self, symbol: str, price: float, reason: str) -> StrategySignal:
         """產生 HOLD 信號"""
         return StrategySignal(
             signal_type=SignalType.HOLD,
@@ -1440,10 +1330,7 @@ class ORBStrategy(BaseStrategy):
             f"ts_start={self.ts_start_multiplier}x "
             f"ts_dist={self.ts_distance_ratio}x)"
         )
-        parts.append(
-            f"strong(RVOL>={self.strong_rvol} "
-            f"CS>={self.strong_candle})"
-        )
+        parts.append(f"strong(RVOL>={self.strong_rvol} CS>={self.strong_candle})")
         parts.append(
             f"retest(tol={self.retest_tolerance_pct:.0%} "
             f"timeout={self.pullback_timeout_bars}bars "
@@ -1459,15 +1346,12 @@ class ORBStrategy(BaseStrategy):
             parts.append(f"Pressure>={self.min_pressure_space_pct}x")
         if self.use_prev_direction_filter:
             parts.append("DirBias")
-        if self.use_key_level_trailing:
-            kl_info = f"buf={self.key_level_buffer}"
-            if self.key_level_min_profit_pct > 0:
-                kl_info += f" minP={self.key_level_min_profit_pct}x"
-            if self.key_level_min_distance_pct > 0:
-                kl_info += f" minD={self.key_level_min_distance_pct}x"
-            parts.append(f"KeyLvlTS({kl_info})")
-        if self.use_key_level_tp:
-            parts.append(f"KeyLvlTP(min={self.key_level_tp_min_pct}x)")
+        kl_info = f"buf={self.key_level_buffer}"
+        if self.key_level_min_profit_pct > 0:
+            kl_info += f" minP={self.key_level_min_profit_pct}x"
+        if self.key_level_min_distance_pct > 0:
+            kl_info += f" minD={self.key_level_min_distance_pct}x"
+        parts.append(f"KeyLvl({kl_info})")
         if self.use_momentum_exit:
             parts.append(
                 f"MomExit(P>={self.momentum_min_profit_pct}x "

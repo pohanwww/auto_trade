@@ -2,6 +2,7 @@
 
 from .base_strategy import BaseStrategy
 from .bollinger_strategy import BollingerStrategy
+from .key_level_strategy import KeyLevelStrategy
 from .ma_convergence_strategy import MAConvergenceStrategy
 from .macd_bidirectional import MACDBidirectionalStrategy
 from .macd_golden_cross import MACDGoldenCrossStrategy
@@ -11,6 +12,7 @@ from .scalp_strategy import ScalpStrategy
 __all__ = [
     "BaseStrategy",
     "BollingerStrategy",
+    "KeyLevelStrategy",
     "MAConvergenceStrategy",
     "MACDBidirectionalStrategy",
     "MACDGoldenCrossStrategy",
@@ -25,6 +27,7 @@ STRATEGY_TYPE_MAP: dict[str, type[BaseStrategy]] = {
     "macd_golden_cross": MACDGoldenCrossStrategy,
     "macd_bidirectional": MACDBidirectionalStrategy,
     "orb": ORBStrategy,
+    "key_level": KeyLevelStrategy,
     "scalp": ScalpStrategy,
     "bollinger": BollingerStrategy,
     "ma_convergence": MAConvergenceStrategy,
