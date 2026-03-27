@@ -7,8 +7,8 @@ Signal types
 ------------
 - **breakout_long**  : close > level + atr * breakout_buffer
 - **breakout_short** : close < level - atr * breakout_buffer
-- **bounce_long**    : wick dips into zone but close stays above level
-- **bounce_short**   : wick spikes into zone but close stays below level
+- **bounce_long**    : prev was above level, wick dips into zone, close stays above
+- **bounce_short**   : prev was below level, wick spikes into zone, close stays below
 
 Instant entry
 -------------
@@ -136,23 +136,28 @@ def detect_signals(
                 continue
 
         # --- Bounce long (support bounce) ---
+        # Requires prev_close was above level (price testing support from above,
+        # NOT a weak breakout from below that didn't clear the buffer).
         if low <= level + buf_bounce and close > level:
-            signals.append(KeyLevelSignal(
-                signal_type="bounce_long",
-                key_level=kl,
-                entry_price=close,
-                score=kl.score,
-            ))
-            continue
+            if prev_close is not None and prev_close > level:
+                signals.append(KeyLevelSignal(
+                    signal_type="bounce_long",
+                    key_level=kl,
+                    entry_price=close,
+                    score=kl.score,
+                ))
+                continue
 
         # --- Bounce short (resistance rejection) ---
+        # Requires prev_close was below level (price testing resistance from below).
         if high >= level - buf_bounce and close < level:
-            signals.append(KeyLevelSignal(
-                signal_type="bounce_short",
-                key_level=kl,
-                entry_price=close,
-                score=kl.score,
-            ))
+            if prev_close is not None and prev_close < level:
+                signals.append(KeyLevelSignal(
+                    signal_type="bounce_short",
+                    key_level=kl,
+                    entry_price=close,
+                    score=kl.score,
+                ))
 
     signals.sort(key=lambda s: s.score, reverse=True)
     return signals

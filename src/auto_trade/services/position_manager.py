@@ -1094,8 +1094,11 @@ class PositionManager:
                     else current_price < next_level
                 )
                 if crossed:
-                    if trail_mode == "previous" and idx > 0:
-                        stop_price = key_levels[idx - 1]
+                    if trail_mode == "previous":
+                        if idx == 0:
+                            stop_price = self.position.entry_price
+                        else:
+                            stop_price = key_levels[idx - 1]
                     else:
                         stop_price = (
                             next_level - buffer

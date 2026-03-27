@@ -202,6 +202,7 @@ class KeyLevelStrategy(BaseStrategy):
             self._calculate_key_levels(kbar_list)
             if not self._signal_levels:
                 return self._hold(symbol, current_price, "no key levels found")
+            self._init_history_state(kbar_list)
 
         # ATR
         atr = self.indicator_service.calculate_atr(kbar_list, self.atr_period)
@@ -472,6 +473,31 @@ class KeyLevelStrategy(BaseStrategy):
             )
         if self._trailing_levels:
             _log("  Trailing ladder: %s", self._trailing_levels)
+
+    def _init_history_state(self, kbar_list: KBarList) -> None:
+        """Recover prev_close from today's kbar history.
+
+        Called once after key levels are calculated, so that a mid-day restart
+        has correct prev_close state for breakout detection (prev_close=None
+        would bypass the "was price on the other side?" check).
+        """
+        if self._current_trading_day is None:
+            return
+
+        today = self._current_trading_day
+        today_kbars = sorted(
+            [
+                k for k in kbar_list.kbars
+                if self._get_trading_day(k.time) == today
+                and k.time.time() >= self.or_start_time
+            ],
+            key=lambda k: k.time,
+        )
+
+        if self._prev_close is None and len(today_kbars) >= 2:
+            self._prev_close = int(today_kbars[-2].close)
+            _log("  Recovered prev_close from history: %d (from %d today bars)",
+                 self._prev_close, len(today_kbars))
 
     # ──────────────────────────────────────────────
     # OR calculation
