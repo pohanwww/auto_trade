@@ -239,92 +239,96 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     dates = mdates.date2num(df.index.to_pydatetime())
     width = 0.002
 
-    fig, (ax_c, ax_v) = plt.subplots(
-        2, 1, figsize=(24, 14), height_ratios=[4, 1],
-        gridspec_kw={"hspace": 0.05},
-    )
-
-    for dt, row in zip(dates, df.itertuples()):
-        o, h, lo, c = row.Open, row.High, row.Low, row.Close
-        color = "#26A69A" if c >= o else "#EF5350"
-        ax_c.plot([dt, dt], [lo, h], color=color, linewidth=0.8)
-        body_lo, body_hi = min(o, c), max(o, c)
-        rect = FancyBboxPatch(
-            (dt - width / 2, body_lo), width, max(body_hi - body_lo, 0.3),
-            boxstyle="round,pad=0.0005", facecolor=color, edgecolor=color, linewidth=0.5,
+    fig = None
+    try:
+        fig, (ax_c, ax_v) = plt.subplots(
+            2, 1, figsize=(24, 14), height_ratios=[4, 1],
+            gridspec_kw={"hspace": 0.05},
         )
-        ax_c.add_patch(rect)
 
-    for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
-                              ("Prev Night", chart_prev_night, "#E8E0F0"),
-                              ("Today", today_kbars, "#E0F0E0"),
-                              ("Tonight", today_night_kbars, "#F0E8E0")]:
-        if not kbars:
-            continue
-        t0 = mdates.date2num(kbars[0].time)
-        t1 = mdates.date2num(kbars[-1].time)
-        ax_c.axvspan(t0, t1, alpha=0.12, color=bg, zorder=0)
-        ax_c.text((t0 + t1) / 2, ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
-                  label, ha="center", va="top", fontsize=9, color="#666", fontweight="bold")
+        for dt, row in zip(dates, df.itertuples()):
+            o, h, lo, c = row.Open, row.High, row.Low, row.Close
+            color = "#26A69A" if c >= o else "#EF5350"
+            ax_c.plot([dt, dt], [lo, h], color=color, linewidth=0.8)
+            body_lo, body_hi = min(o, c), max(o, c)
+            rect = FancyBboxPatch(
+                (dt - width / 2, body_lo), width, max(body_hi - body_lo, 0.3),
+                boxstyle="round,pad=0.0005", facecolor=color, edgecolor=color, linewidth=0.5,
+            )
+            ax_c.add_patch(rect)
 
-    xmin, xmax = dates[0], dates[-1]
-    for kl in levels:
-        score = kl.score
-        clr = "#FF4444" if score >= 15 else "#FF8800" if score >= 10 else "#4488FF" if score >= 5 else "#AAAAAA"
-        alpha = min(0.3 + score / 15, 0.9)
-        ls_start = mdates.date2num(kl.first_seen) if kl.first_seen else xmin
-        ls_start = max(ls_start, xmin)
-        ax_c.hlines(kl.price, ls_start, xmax, colors=clr, linewidth=1.0,
-                     alpha=alpha, linestyles="-" if score >= 5 else "--")
-        src_short = ", ".join(kl.sources[:4])
-        if len(kl.sources) > 4:
-            src_short += "..."
-        ax_c.text(xmax + 0.003, kl.price,
-                  f" {kl.price}  [s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
-                  fontsize=6.5, color=clr, va="center",
-                  fontweight="bold" if score >= 5 else "normal")
+        for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
+                                  ("Prev Night", chart_prev_night, "#E8E0F0"),
+                                  ("Today", today_kbars, "#E0F0E0"),
+                                  ("Tonight", today_night_kbars, "#F0E8E0")]:
+            if not kbars:
+                continue
+            t0 = mdates.date2num(kbars[0].time)
+            t1 = mdates.date2num(kbars[-1].time)
+            ax_c.axvspan(t0, t1, alpha=0.12, color=bg, zorder=0)
+            ax_c.text((t0 + t1) / 2, ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
+                      label, ha="center", va="top", fontsize=9, color="#666", fontweight="bold")
 
-    ax_c.set_ylabel("Price", fontsize=11)
-    ax_c.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-    ax_c.tick_params(labelbottom=False)
-    ax_c.set_title(
-        f"Key Level — {symbol} {timeframe} — {target_date_str}",
-        fontsize=14, fontweight="bold",
-    )
+        xmin, xmax = dates[0], dates[-1]
+        for kl in levels:
+            score = kl.score
+            clr = "#FF4444" if score >= 15 else "#FF8800" if score >= 10 else "#4488FF" if score >= 5 else "#AAAAAA"
+            alpha = min(0.3 + score / 15, 0.9)
+            ls_start = mdates.date2num(kl.first_seen) if kl.first_seen else xmin
+            ls_start = max(ls_start, xmin)
+            ax_c.hlines(kl.price, ls_start, xmax, colors=clr, linewidth=1.0,
+                         alpha=alpha, linestyles="-" if score >= 5 else "--")
+            src_short = ", ".join(kl.sources[:4])
+            if len(kl.sources) > 4:
+                src_short += "..."
+            ax_c.text(xmax + 0.003, kl.price,
+                      f" {kl.price}  [s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
+                      fontsize=6.5, color=clr, va="center",
+                      fontweight="bold" if score >= 5 else "normal")
 
-    all_prices = [k.high for k in all_kbars] + [k.low for k in all_kbars]
-    level_prices = [kl.price for kl in levels]
-    combined = all_prices + level_prices
-    ax_c.set_ylim(min(combined) - 30, max(combined) + 30)
-    ax_c.set_xlim(xmin - 0.01, xmax + 0.08)
+        ax_c.set_ylabel("Price", fontsize=11)
+        ax_c.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+        ax_c.tick_params(labelbottom=False)
+        ax_c.set_title(
+            f"Key Level — {symbol} {timeframe} — {target_date_str}",
+            fontsize=14, fontweight="bold",
+        )
 
-    legend_els = [
-        Line2D([0], [0], color="#FF4444", lw=2, label="score >= 15"),
-        Line2D([0], [0], color="#FF8800", lw=1.5, label="score >= 10"),
-        Line2D([0], [0], color="#4488FF", lw=1, label="score >= 5"),
-        Line2D([0], [0], color="#AAAAAA", lw=1, linestyle="--", label="score < 5"),
-    ]
-    ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
+        all_prices = [k.high for k in all_kbars] + [k.low for k in all_kbars]
+        level_prices = [kl.price for kl in levels]
+        combined = all_prices + level_prices
+        ax_c.set_ylim(min(combined) - 30, max(combined) + 30)
+        ax_c.set_xlim(xmin - 0.01, xmax + 0.08)
 
-    vol_colors = ["#26A69A" if r.Close >= r.Open else "#EF5350" for r in df.itertuples()]
-    ax_v.bar(dates, df["Volume"], width=width, color=vol_colors, alpha=0.7)
-    ax_v.set_ylabel("Volume", fontsize=11)
-    ax_v.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-    ax_v.set_xlim(xmin - 0.01, xmax + 0.08)
-    plt.xticks(rotation=30)
+        legend_els = [
+            Line2D([0], [0], color="#FF4444", lw=2, label="score >= 15"),
+            Line2D([0], [0], color="#FF8800", lw=1.5, label="score >= 10"),
+            Line2D([0], [0], color="#4488FF", lw=1, label="score >= 5"),
+            Line2D([0], [0], color="#AAAAAA", lw=1, linestyle="--", label="score < 5"),
+        ]
+        ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
 
-    plt.tight_layout()
-    fname = f"kl_{symbol}_{timeframe}_{target_date_str}.png"
-    out_path = PNG_DIR / fname
-    plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
-    plt.close()
+        vol_colors = ["#26A69A" if r.Close >= r.Open else "#EF5350" for r in df.itertuples()]
+        ax_v.bar(dates, df["Volume"], width=width, color=vol_colors, alpha=0.7)
+        ax_v.set_ylabel("Volume", fontsize=11)
+        ax_v.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+        ax_v.set_xlim(xmin - 0.01, xmax + 0.08)
+        plt.xticks(rotation=30)
 
-    levels_data = [{"price": kl.price, "score": kl.score,
-                    "touches": kl.touch_count, "sources": kl.sources}
-                   for kl in levels]
+        plt.tight_layout()
+        fname = f"kl_{symbol}_{timeframe}_{target_date_str}.png"
+        out_path = PNG_DIR / fname
+        plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
 
-    return {"ok": True, "filename": fname, "levels": levels_data,
-            "bars": len(all_kbars)}
+        levels_data = [{"price": kl.price, "score": kl.score,
+                        "touches": kl.touch_count, "sources": kl.sources}
+                       for kl in levels]
+
+        return {"ok": True, "filename": fname, "levels": levels_data,
+                "bars": len(all_kbars)}
+    finally:
+        if fig is not None:
+            plt.close(fig)
 
 
 def _read_json(path: Path) -> dict:
@@ -565,6 +569,9 @@ def api_clear_position(strategy: str, token: str | None = Query(None)):
 # ── Key Level API Endpoints ──────────────────────────────
 
 
+_kl_gen_lock = threading.Lock()
+
+
 @app.get("/api/kl/generate")
 def api_kl_generate(
     date: str = Query(..., description="YYYY-MM-DD"),
@@ -575,11 +582,17 @@ def api_kl_generate(
 ):
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _kl_gen_lock.acquire(blocking=False):
+        return JSONResponse({"ok": False, "error": "Another chart is being generated, please wait"})
     try:
         result = _generate_chart(date, timeframe, symbol, sub_symbol)
         return JSONResponse(result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JSONResponse({"ok": False, "error": str(e)})
+    finally:
+        _kl_gen_lock.release()
 
 
 @app.get("/api/kl/list")
