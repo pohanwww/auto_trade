@@ -218,10 +218,12 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         prev_night_kbars=agg_night_kbars,
     )
 
+    signal_level_count = 7
     levels = find_confluence_levels(
         session, swing_period=10, cluster_tolerance=50,
         zone_tolerance=50, max_levels=20,
     )
+    signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
     # For chart: show latest prev day + prev night + today day + today night
     chart_prev_day = latest_day_kbars
@@ -271,20 +273,22 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
 
         xmin, xmax = dates[0], dates[-1]
         for kl in levels:
-            score = kl.score
-            clr = "#FF4444" if score >= 15 else "#FF8800" if score >= 10 else "#4488FF" if score >= 5 else "#AAAAAA"
-            alpha = min(0.3 + score / 15, 0.9)
+            is_signal = kl.price in signal_levels
+            clr = "#FF8800" if is_signal else "#AAAAAA"
+            lw = 1.0
+            alpha = 0.85 if is_signal else 0.6
             ls_start = mdates.date2num(kl.first_seen) if kl.first_seen else xmin
             ls_start = max(ls_start, xmin)
-            ax_c.hlines(kl.price, ls_start, xmax, colors=clr, linewidth=1.0,
-                         alpha=alpha, linestyles="-" if score >= 5 else "--")
+            ax_c.hlines(kl.price, ls_start, xmax, colors=clr, linewidth=lw,
+                         alpha=alpha, linestyles="-" if is_signal else "--")
             src_short = ", ".join(kl.sources[:4])
             if len(kl.sources) > 4:
                 src_short += "..."
+            role = "SIG" if is_signal else "TRAIL"
             ax_c.text(xmax + 0.003, kl.price,
-                      f" {kl.price}  [s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
+                      f" {kl.price}  [{role} s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
                       fontsize=6.5, color=clr, va="center",
-                      fontweight="bold" if score >= 5 else "normal")
+                      fontweight="bold" if is_signal else "normal")
 
         ax_c.set_ylabel("Price", fontsize=11)
         ax_c.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
@@ -301,10 +305,8 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_c.set_xlim(xmin - 0.01, xmax + 0.08)
 
         legend_els = [
-            Line2D([0], [0], color="#FF4444", lw=2, label="score >= 15"),
-            Line2D([0], [0], color="#FF8800", lw=1.5, label="score >= 10"),
-            Line2D([0], [0], color="#4488FF", lw=1, label="score >= 5"),
-            Line2D([0], [0], color="#AAAAAA", lw=1, linestyle="--", label="score < 5"),
+            Line2D([0], [0], color="#FF8800", lw=1, label=f"Signal Level (top {signal_level_count})"),
+            Line2D([0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"),
         ]
         ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
 
