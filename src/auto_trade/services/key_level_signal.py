@@ -88,8 +88,6 @@ def detect_signals(
         buf_instant = atr * instant_threshold
 
         # --- Instant breakout long (no close confirmation needed) ---
-        # Simulates a buy-stop order at (level + buf_instant).
-        # Triggers if bar crossed from below and high exceeded the threshold.
         if high > level + buf_instant and low <= level + buf_breakout:
             if prev_close is None or prev_close <= level + buf_breakout:
                 signals.append(KeyLevelSignal(

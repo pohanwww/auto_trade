@@ -42,6 +42,12 @@ from auto_trade.services.key_level_signal import detect_signals
 from auto_trade.strategies.base_strategy import BaseStrategy
 
 
+def _log(msg: str, *args) -> None:
+    """Print with [KL] prefix for easy grep."""
+    text = msg % args if args else msg
+    print(f"[KL] {text}")
+
+
 class KeyLevelStrategy(BaseStrategy):
 
     _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
@@ -122,6 +128,24 @@ class KeyLevelStrategy(BaseStrategy):
         self.use_breakout = use_breakout
         self.use_bounce = use_bounce
 
+        _log(
+            "=== KeyLevelStrategy initialized ===\n"
+            "  mode=%s | timeframe=%s | session_lookback=%d\n"
+            "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
+            "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
+            "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
+            "  Direction: long_only=%s, short_only=%s | max_trades=%d\n"
+            "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%d, trail_mode=%s\n"
+            "  Entry types: breakout=%s, bounce=%s",
+            "OR" if use_or else "Pure", timeframe, self._session_lookback,
+            use_or, or_bars, or_start_time, entry_end_time, session_end_time,
+            swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
+            breakout_buffer, bounce_buffer, instant_threshold, atr_period,
+            long_only, short_only, max_trades_per_day,
+            sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
+            use_breakout, use_bounce,
+        )
+
         # Daily state
         self._current_date: datetime | None = None
         self._current_trading_day = None  # date object for "business day"
@@ -161,6 +185,7 @@ class KeyLevelStrategy(BaseStrategy):
             self._reset_daily_state()
             self._current_date = bar_time
             self._current_trading_day = trading_day
+            _log("═══ New trading day: %s ═══", trading_day)
 
         # Only trade during active session
         if not self._is_active_session(bar_time):
@@ -210,28 +235,52 @@ class KeyLevelStrategy(BaseStrategy):
         if not signals:
             return self._hold(symbol, current_price, "no signal")
 
+        _log(
+            "[%s] %d signal(s) detected | bar: O=%d H=%d L=%d C=%d | ATR=%.1f | prev_close=%s",
+            bar_time.strftime("%H:%M"), len(signals),
+            int(kbar.open), int(kbar.high), int(kbar.low), int(kbar.close),
+            atr, self._prev_close,
+        )
+        for i, s in enumerate(signals):
+            _log(
+                "  signal[%d]: %s @ level=%d (score=%.1f) | entry=%d | instant=%s",
+                i, s.signal_type, s.key_level.price, s.score, s.entry_price, s.instant,
+            )
+
         # Filter by direction
         for sig in signals:
             is_long = sig.signal_type in ("breakout_long", "bounce_long")
             is_short = sig.signal_type in ("breakout_short", "bounce_short")
 
             if is_long and self.short_only:
+                _log("  SKIP %s: short_only mode", sig.signal_type)
                 continue
             if is_short and self.long_only:
+                _log("  SKIP %s: long_only mode", sig.signal_type)
                 continue
 
             # Filter by entry type
             if "breakout" in sig.signal_type and not self.use_breakout:
+                _log("  SKIP %s: breakout disabled", sig.signal_type)
                 continue
             if "bounce" in sig.signal_type and not self.use_bounce:
+                _log("  SKIP %s: bounce disabled", sig.signal_type)
                 continue
 
             # OR filter: only long above OR_High, only short below OR_Low
             if self.use_or and self._or_calculated:
                 close = int(kbar.close)
                 if is_long and close < (self._or_high or 0):
+                    _log(
+                        "  SKIP %s: close=%d < OR_High=%d",
+                        sig.signal_type, close, self._or_high,
+                    )
                     continue
                 if is_short and close > (self._or_low or 999999):
+                    _log(
+                        "  SKIP %s: close=%d > OR_Low=%d",
+                        sig.signal_type, close, self._or_low,
+                    )
                     continue
 
             # Valid signal found
@@ -248,6 +297,17 @@ class KeyLevelStrategy(BaseStrategy):
                 f"(score={sig.key_level.score:.1f})"
             )
 
+            dir_str = "LONG" if is_long else "SHORT"
+            _log(
+                ">>> ENTRY %s | %s | level=%d (score=%.1f) | entry=%d | instant=%s | "
+                "SL=%s | trail_levels=%s | trade#%d/%d",
+                dir_str, sig.signal_type, sig.key_level.price, sig.score,
+                entry_price, sig.instant,
+                meta.get("override_stop_loss_price"),
+                meta.get("key_levels"),
+                self._trades_today, self.max_trades_per_day,
+            )
+
             return StrategySignal(
                 signal_type=signal_type,
                 symbol=symbol,
@@ -257,6 +317,7 @@ class KeyLevelStrategy(BaseStrategy):
                 metadata=meta,
             )
 
+        _log("  All signals filtered out")
         return self._hold(symbol, current_price, "signals filtered out")
 
     def get_pending_state(self) -> dict | None:
@@ -373,6 +434,18 @@ class KeyLevelStrategy(BaseStrategy):
             prev_night_kbars=agg_night_kbars,
         )
 
+        _log(
+            "=== Key Level Calculation [%s] ===\n"
+            "  Session data: prev_day H/L/C=%s/%s/%s | prev_night H/L/C=%s/%s/%s\n"
+            "  today_open=%s | or_range=%s | lookback=%d sessions\n"
+            "  Kbar counts: day=%d, night=%d",
+            self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
+            day_ohlc.get("high"), day_ohlc.get("low"), day_ohlc.get("close"),
+            night_ohlc.get("high"), night_ohlc.get("low"), night_ohlc.get("close"),
+            today_open, self._or_range, lookback,
+            len(agg_day_kbars), len(agg_night_kbars),
+        )
+
         self._key_levels = find_confluence_levels(
             session,
             swing_period=self.swing_period,
@@ -388,11 +461,17 @@ class KeyLevelStrategy(BaseStrategy):
         )
         self._levels_calculated = True
 
-        level_info = ", ".join(
-            f"{kl.price}(s={kl.score:.1f})" for kl in self._signal_levels
-        )
-        print(f"  KL [{self._current_date.strftime('%Y-%m-%d')}]: "
-              f"signal={level_info} | trailing={len(self._trailing_levels)}")
+        _log("  Total levels found: %d (signal=%d, trailing=%d)",
+                 len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
+        for i, kl in enumerate(self._key_levels):
+            role = "SIGNAL" if i < n else "TRAIL"
+            _log(
+                "  [%s] #%d: price=%d | score=%.1f | touches=%d | sources=%s",
+                role, i + 1, kl.price, kl.score, kl.touch_count,
+                ", ".join(kl.sources),
+            )
+        if self._trailing_levels:
+            _log("  Trailing ladder: %s", self._trailing_levels)
 
     # ──────────────────────────────────────────────
     # OR calculation
@@ -420,10 +499,13 @@ class KeyLevelStrategy(BaseStrategy):
         self._or_range = self._or_high - self._or_low
         self._or_calculated = True
 
-        print(
-            f"  OR [{self._current_date.strftime('%Y-%m-%d')}]: "
-            f"H={self._or_high} L={self._or_low} "
-            f"Mid={self._or_mid} Range={self._or_range}"
+        _log(
+            "=== Opening Range [%s] ===\n"
+            "  OR bars: %d | H=%d L=%d Mid=%d Range=%d\n"
+            "  Filter: Long only above %d | Short only below %d",
+            self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
+            self.or_bars, self._or_high, self._or_low, self._or_mid, self._or_range,
+            self._or_high, self._or_low,
         )
         return True
 
@@ -501,6 +583,18 @@ class KeyLevelStrategy(BaseStrategy):
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = self.key_level_buffer
                 meta["key_level_trail_mode"] = self.key_level_trail_mode
+
+        dir_str = "LONG" if is_long else "SHORT"
+        _log(
+            "  Entry metadata [%s]: entry=%d | SL=%s (method=%s) | TP=%s\n"
+            "    signal_level=%d | trailing_levels=%s | trail_mode=%s",
+            dir_str, entry_price,
+            meta.get("override_stop_loss_price"), "bounce_extreme" if "bounce" in sig.signal_type else "next_kl",
+            meta.get("override_take_profit_price", "none(TS only)"),
+            sig.key_level.price,
+            meta.get("key_levels", []),
+            self.key_level_trail_mode,
+        )
 
         return meta
 
