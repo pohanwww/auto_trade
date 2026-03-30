@@ -2,10 +2,9 @@
 # 期貨交易程式停止腳本
 #
 # 用法：
-#   ./stop_trading.sh                               # 停止所有策略
-#   ./stop_trading.sh strategy_macd.yaml             # 只停止 MACD
-#   ./stop_trading.sh strategy_ma.yaml               # 只停止 MA
-#   ./stop_trading.sh strategy_orb.yaml              # 只停止 ORB
+#   ./stop_trading.sh                                       # 停止所有策略
+#   ./stop_trading.sh strategy_key_level.yaml               # 只停止日盤 Key Level
+#   ./stop_trading.sh strategy_key_level_night.yaml         # 只停止夜盤 Key Level
 
 PROJECT_DIR="/home/pohanwwwgame/auto_trade"
 cd "$PROJECT_DIR"
@@ -41,6 +40,8 @@ if [ $# -eq 0 ]; then
     stop_strategy "uv run main.*--config strategy_macd" "strategy_macd"
     stop_strategy "uv run main.*--config strategy_ma" "strategy_ma"
     stop_strategy "uv run main.*--config strategy_orb" "strategy_orb"
+    stop_strategy "uv run main.*--config strategy_key_level.yaml" "strategy_key_level"
+    stop_strategy "uv run main.*--config strategy_key_level_night.yaml" "strategy_key_level_night"
     # 也停止未指定 config 的舊版程式
     stop_strategy "uv run main" "trading"
 else

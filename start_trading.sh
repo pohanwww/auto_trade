@@ -2,10 +2,9 @@
 # 期貨交易程式啟動腳本
 #
 # 用法：
-#   ./start_trading.sh strategy_macd.yaml          # 啟動 MACD 波段
-#   ./start_trading.sh strategy_ma.yaml             # 啟動 MA 糾纏突破
-#   ./start_trading.sh strategy_orb.yaml            # 啟動 ORB 日內
-#   ./start_trading.sh strategy_macd.yaml strategy_ma.yaml strategy_orb.yaml  # 同時啟動三個
+#   ./start_trading.sh strategy_key_level.yaml              # 啟動日盤 Key Level
+#   ./start_trading.sh strategy_key_level_night.yaml        # 啟動夜盤 Key Level
+#   ./start_trading.sh strategy_key_level.yaml strategy_key_level_night.yaml  # 同時啟動日盤+夜盤
 
 PROJECT_DIR="/home/pohanwwwgame/auto_trade"
 UV_BIN="/home/pohanwwwgame/.local/bin/uv"
@@ -15,7 +14,7 @@ mkdir -p logs
 
 if [ $# -eq 0 ]; then
     echo "用法: $0 <config1.yaml> [config2.yaml ...]"
-    echo "範例: $0 strategy_macd.yaml strategy_orb.yaml"
+    echo "範例: $0 strategy_key_level.yaml strategy_key_level_night.yaml"
     exit 1
 fi
 

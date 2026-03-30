@@ -16,6 +16,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 from dotenv import load_dotenv
@@ -28,7 +29,7 @@ app = FastAPI(title="Trading Dashboard")
 
 STATE_DIR = Path("data/state")
 LOGS_DIR = Path("logs")
-POINT_VALUE_MXF = 50   # MXF: 1 point = NT$50
+POINT_VALUE_MXF = 50  # MXF: 1 point = NT$50
 POINT_VALUE_TXF = 200  # TXF: 1 point = NT$200
 
 # ── Key Level Viewer ─────────────────────────────────────
@@ -59,8 +60,10 @@ def _get_kl_market_service():
 
         config = Config()
         _kl_api_client = create_api_client(
-            config.api_key, config.secret_key,
-            config.ca_cert_path, config.ca_password,
+            config.api_key,
+            config.secret_key,
+            config.ca_cert_path,
+            config.ca_password,
             simulation=True,
         )
         _kl_market_service = MarketService(_kl_api_client)
@@ -117,9 +120,13 @@ def _compute_ohlc(kbars):
 OR_BARS = 3
 
 
-def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
-                    sub_symbol: str = "MXFR1",
-                    session: str = "day") -> dict:
+def _generate_chart(
+    target_date_str: str,
+    timeframe: str,
+    symbol: str = "MXF",
+    sub_symbol: str = "MXFR1",
+    session: str = "day",
+) -> dict:
     """Fetch data, compute levels, generate PNG.
 
     Key level calculation matches key_level_strategy.py exactly:
@@ -130,12 +137,13 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     - today's kbars shown on chart but NOT used in calculation
     """
     import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
     import pandas as pd
-    from matplotlib.patches import FancyBboxPatch
     from matplotlib.lines import Line2D
+    from matplotlib.patches import FancyBboxPatch
+
     from auto_trade.services.key_level_detector import (
-        SessionData, find_confluence_levels,
+        SessionData,
+        find_confluence_levels,
     )
 
     ms = _get_kl_market_service()
@@ -148,14 +156,18 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     start_date = target_date - timedelta(days=lookback_days)
 
     kbar_list = ms.get_futures_kbars_by_date_range(
-        symbol=symbol, sub_symbol=sub_symbol,
-        start_date=start_date, end_date=end_date,
+        symbol=symbol,
+        sub_symbol=sub_symbol,
+        start_date=start_date,
+        end_date=end_date,
         timeframe=timeframe,
     )
     if len(kbar_list) == 0:
         return {"ok": False, "error": "No data fetched"}
 
-    day_sessions, night_sessions, today_kbars, today_night_kbars = _split_sessions(kbar_list, target_date)
+    day_sessions, night_sessions, today_kbars, today_night_kbars = _split_sessions(
+        kbar_list, target_date
+    )
 
     # --- OHLC from latest session only (for pivot points) ---
     day_ohlc: dict[str, int] = {}
@@ -203,7 +215,9 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         for dd in sorted(recent_day_dates):
             agg_day_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
 
-        recent_night_dates = sorted(night_sessions.keys(), reverse=True)[:session_lookback]
+        recent_night_dates = sorted(night_sessions.keys(), reverse=True)[
+            :session_lookback
+        ]
         agg_night_kbars = []
         for nd in sorted(recent_night_dates):
             agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
@@ -214,7 +228,10 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         or_range = 1
         if len(today_night_kbars) >= OR_BARS:
             or_kbars = today_night_kbars[:OR_BARS]
-            or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
+            or_range = max(
+                int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)),
+                1,
+            )
         elif night_ohlc:
             or_range = max(night_ohlc.get("high", 0) - night_ohlc.get("low", 0), 50)
     else:
@@ -222,7 +239,10 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         or_range = 1
         if len(today_kbars) >= OR_BARS:
             or_kbars = today_kbars[:OR_BARS]
-            or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
+            or_range = max(
+                int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)),
+                1,
+            )
         elif day_ohlc:
             or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
 
@@ -241,8 +261,11 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
 
     signal_level_count = 7
     levels = find_confluence_levels(
-        session_data, swing_period=10, cluster_tolerance=50,
-        zone_tolerance=50, max_levels=20,
+        session_data,
+        swing_period=10,
+        cluster_tolerance=50,
+        zone_tolerance=50,
+        max_levels=20,
     )
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
@@ -262,8 +285,17 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
-    rows = [{"Date": k.time, "Open": k.open, "High": k.high,
-             "Low": k.low, "Close": k.close, "Volume": k.volume} for k in all_kbars]
+    rows = [
+        {
+            "Date": k.time,
+            "Open": k.open,
+            "High": k.high,
+            "Low": k.low,
+            "Close": k.close,
+            "Volume": k.volume,
+        }
+        for k in all_kbars
+    ]
     df = pd.DataFrame(rows)
     df["Date"] = pd.to_datetime(df["Date"])
     df.set_index("Date", inplace=True)
@@ -277,7 +309,10 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     fig = None
     try:
         fig, (ax_c, ax_v) = plt.subplots(
-            2, 1, figsize=(24, 14), height_ratios=[4, 1],
+            2,
+            1,
+            figsize=(24, 14),
+            height_ratios=[4, 1],
             gridspec_kw={"hspace": 0.05},
         )
 
@@ -287,8 +322,13 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
             ax_c.plot([i, i], [lo, h], color=color, linewidth=0.8)
             body_lo, body_hi = min(o, c), max(o, c)
             rect = FancyBboxPatch(
-                (i - width / 2, body_lo), width, max(body_hi - body_lo, 0.3),
-                boxstyle="round,pad=0.02", facecolor=color, edgecolor=color, linewidth=0.5,
+                (i - width / 2, body_lo),
+                width,
+                max(body_hi - body_lo, 0.3),
+                boxstyle="round,pad=0.02",
+                facecolor=color,
+                edgecolor=color,
+                linewidth=0.5,
             )
             ax_c.add_patch(rect)
 
@@ -327,8 +367,16 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
             if i0 is None:
                 continue
             ax_c.axvspan(i0 - 0.5, i1 + 0.5, alpha=0.12, color=bg, zorder=0)
-            ax_c.text((i0 + i1) / 2, ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
-                      label, ha="center", va="top", fontsize=9, color="#666", fontweight="bold")
+            ax_c.text(
+                (i0 + i1) / 2,
+                ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
+                label,
+                ha="center",
+                va="top",
+                fontsize=9,
+                color="#666",
+                fontweight="bold",
+            )
 
         xmin_idx, xmax_idx = 0, n_bars - 1
         for kl in levels:
@@ -342,16 +390,28 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
                     if bt >= kl.first_seen:
                         ls_start = idx_t
                         break
-            ax_c.hlines(kl.price, ls_start, xmax_idx, colors=clr, linewidth=lw,
-                         alpha=alpha, linestyles="-" if is_signal else "--")
+            ax_c.hlines(
+                kl.price,
+                ls_start,
+                xmax_idx,
+                colors=clr,
+                linewidth=lw,
+                alpha=alpha,
+                linestyles="-" if is_signal else "--",
+            )
             src_short = ", ".join(kl.sources[:4])
             if len(kl.sources) > 4:
                 src_short += "..."
             role = "SIG" if is_signal else "TRAIL"
-            ax_c.text(xmax_idx + 0.5, kl.price,
-                      f" {kl.price}  [{role} s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
-                      fontsize=6.5, color=clr, va="center",
-                      fontweight="bold" if is_signal else "normal")
+            ax_c.text(
+                xmax_idx + 0.5,
+                kl.price,
+                f" {kl.price}  [{role} s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
+                fontsize=6.5,
+                color=clr,
+                va="center",
+                fontweight="bold" if is_signal else "normal",
+            )
 
         ax_c.set_ylabel("Price", fontsize=11)
         tick_step = max(1, n_bars // 20)
@@ -360,10 +420,13 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_c.set_xticks(tick_positions)
         ax_c.set_xticklabels([])
         ax_c.tick_params(labelbottom=False)
-        session_label = {"day": "Day", "night": "Night", "both": "Day+Night"}.get(session, "Day")
+        session_label = {"day": "Day", "night": "Night", "both": "Day+Night"}.get(
+            session, "Day"
+        )
         ax_c.set_title(
             f"Key Level — {symbol} {timeframe} — {target_date_str} ({session_label})",
-            fontsize=14, fontweight="bold",
+            fontsize=14,
+            fontweight="bold",
         )
 
         all_prices = [k.high for k in all_kbars] + [k.low for k in all_kbars]
@@ -373,12 +436,22 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_c.set_xlim(-1, n_bars + n_bars * 0.08)
 
         legend_els = [
-            Line2D([0], [0], color="#FF8800", lw=1, label=f"Signal Level (top {signal_level_count})"),
-            Line2D([0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"),
+            Line2D(
+                [0],
+                [0],
+                color="#FF8800",
+                lw=1,
+                label=f"Signal Level (top {signal_level_count})",
+            ),
+            Line2D(
+                [0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"
+            ),
         ]
         ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
 
-        vol_colors = ["#26A69A" if r.Close >= r.Open else "#EF5350" for r in df.itertuples()]
+        vol_colors = [
+            "#26A69A" if r.Close >= r.Open else "#EF5350" for r in df.itertuples()
+        ]
         ax_v.bar(xs, df["Volume"], width=width, color=vol_colors, alpha=0.7)
         ax_v.set_ylabel("Volume", fontsize=11)
         ax_v.set_xticks(tick_positions)
@@ -391,12 +464,22 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         out_path = PNG_DIR / fname
         plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
 
-        levels_data = [{"price": kl.price, "score": kl.score,
-                        "touches": kl.touch_count, "sources": kl.sources}
-                       for kl in levels]
+        levels_data = [
+            {
+                "price": kl.price,
+                "score": kl.score,
+                "touches": kl.touch_count,
+                "sources": kl.sources,
+            }
+            for kl in levels
+        ]
 
-        return {"ok": True, "filename": fname, "levels": levels_data,
-                "bars": len(all_kbars)}
+        return {
+            "ok": True,
+            "filename": fname,
+            "levels": levels_data,
+            "bars": len(all_kbars),
+        }
     finally:
         if fig is not None:
             plt.close(fig)
@@ -534,7 +617,11 @@ def api_logs_content(
 
     try:
         lines = log_path.read_text(errors="replace").splitlines()
-        return {"filename": safe_name, "total_lines": len(lines), "lines": lines[-tail:]}
+        return {
+            "filename": safe_name,
+            "total_lines": len(lines),
+            "lines": lines[-tail:],
+        }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -604,9 +691,7 @@ def api_strategy_start(strategy: str, token: str | None = Query(None)):
 
     script = Path(PROJECT_DIR) / "start_trading.sh"
     if not script.exists():
-        return JSONResponse(
-            {"error": "start_trading.sh not found"}, status_code=500
-        )
+        return JSONResponse({"error": "start_trading.sh not found"}, status_code=500)
 
     subprocess.Popen(
         [str(script), config_file],
@@ -655,12 +740,15 @@ def api_kl_generate(
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not _kl_gen_lock.acquire(blocking=False):
-        return JSONResponse({"ok": False, "error": "Another chart is being generated, please wait"})
+        return JSONResponse(
+            {"ok": False, "error": "Another chart is being generated, please wait"}
+        )
     try:
         result = _generate_chart(date, timeframe, symbol, sub_symbol, session=session)
         return JSONResponse(result)
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         return JSONResponse({"ok": False, "error": str(e)})
     finally:
@@ -672,11 +760,18 @@ def api_kl_list(token: str | None = Query(None)):
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     files = sorted(PNG_DIR.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return JSONResponse([
-        {"name": f.name, "size_kb": round(f.stat().st_size / 1024, 1),
-         "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")}
-        for f in files
-    ])
+    return JSONResponse(
+        [
+            {
+                "name": f.name,
+                "size_kb": round(f.stat().st_size / 1024, 1),
+                "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            }
+            for f in files
+        ]
+    )
 
 
 @app.get("/api/kl/delete")
@@ -972,9 +1067,9 @@ def _build_html(token_param: str) -> str:
 </head>
 <body>
   <nav>
-    <a href="/?{token_param.lstrip('&')}" class="active">Positions</a>
-    <a href="/logs?{token_param.lstrip('&')}">Logs</a>
-    <a href="/key-levels?{token_param.lstrip('&')}">Key Levels</a>
+    <a href="/?{token_param.lstrip("&")}" class="active">Positions</a>
+    <a href="/logs?{token_param.lstrip("&")}">Logs</a>
+    <a href="/key-levels?{token_param.lstrip("&")}">Key Levels</a>
   </nav>
   <div class="header">
     <h1>Trading Dashboard</h1>
@@ -1527,9 +1622,9 @@ def _build_logs_html(token_param: str) -> str:
 </head>
 <body>
   <nav>
-    <a href="/?{token_param.lstrip('&')}">Positions</a>
-    <a href="/logs?{token_param.lstrip('&')}" class="active">Logs</a>
-    <a href="/key-levels?{token_param.lstrip('&')}">Key Levels</a>
+    <a href="/?{token_param.lstrip("&")}">Positions</a>
+    <a href="/logs?{token_param.lstrip("&")}" class="active">Logs</a>
+    <a href="/key-levels?{token_param.lstrip("&")}">Key Levels</a>
   </nav>
   <div class="toolbar">
     <select id="fileSelect"><option value="">Select a log file...</option></select>
@@ -1826,9 +1921,9 @@ def _build_key_levels_html(token_param: str) -> str:
 <body>
 
 <nav>
-  <a href="/?{token_param.lstrip('&')}">Positions</a>
-  <a href="/logs?{token_param.lstrip('&')}">Logs</a>
-  <a href="/key-levels?{token_param.lstrip('&')}" class="active">Key Levels</a>
+  <a href="/?{token_param.lstrip("&")}">Positions</a>
+  <a href="/logs?{token_param.lstrip("&")}">Logs</a>
+  <a href="/key-levels?{token_param.lstrip("&")}" class="active">Key Levels</a>
 </nav>
 
 <div class="toolbar">
@@ -1846,7 +1941,6 @@ def _build_key_levels_html(token_param: str) -> str:
   <select id="inp-session">
     <option value="day">日盤</option>
     <option value="night">夜盤</option>
-    <option value="both">日+夜</option>
   </select>
   <label>Symbol</label>
   <select id="inp-sym">

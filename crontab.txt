@@ -1,22 +1,15 @@
-# 期貨交易程式 Cron Job 設定
-# 市場時間: 8:45~13:45 (日盤), 15:00~隔天5:00 (夜盤)
-#
-# MACD 波段策略：日盤 + 夜盤都跑
-# MA 糾纏突破策略：日盤 + 夜盤都跑（30m timeframe）
-# ORB 日內策略：僅日盤（13:30 強制平倉）
-
 # ── 日盤 ──────────────────────────────────────────────
 
-# 8:45 啟動三個策略
-45 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml strategy_ma.yaml strategy_orb.yaml
+# 8:45 啟動策略
+45 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level.yaml
 
-# 13:45 停止所有（ORB 已在 13:30 平倉，MACD/MA 會在夜盤重啟）
-45 13 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh
+# 13:45 停止日盤
+45 13 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_key_level.yaml
 
 # ── 夜盤 ──────────────────────────────────────────────
 
-# 15:00 啟動 MACD 波段 + MA 糾纏突破（ORB 日內策略不需要夜盤）
-0 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml strategy_ma.yaml
+# 15:00 啟動      
+0 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level_night.yaml
 
-# 05:00 停止 MACD + MA
-0 5 * * 2-6 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_macd.yaml strategy_ma.yaml
+# 05:00 停止夜盤
+0 5 * * 2-6 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_key_level_night.yaml
