@@ -37,6 +37,7 @@ class PositionRecord:
     highest_price: int | None = None  # 進場後最高價（用於重啟恢復移停）
     sheets_row_map: dict | None = None  # leg_id → Google Sheets 行號
     legs_info: dict | None = None  # leg_id → {entry_price, quantity}
+    position_metadata: dict | None = None  # key_levels, trail_mode 等策略 metadata
 
     def to_dict(self) -> dict:
         """轉換為字典"""
@@ -55,6 +56,7 @@ class PositionRecord:
             "highest_price": self.highest_price,
             "sheets_row_map": self.sheets_row_map,
             "legs_info": self.legs_info,
+            "position_metadata": self.position_metadata,
         }
 
     @classmethod
@@ -87,4 +89,5 @@ class PositionRecord:
             ),
             sheets_row_map=data.get("sheets_row_map"),
             legs_info=data.get("legs_info"),
+            position_metadata=data.get("position_metadata"),
         )

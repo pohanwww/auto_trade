@@ -387,6 +387,8 @@ class PositionManager:
                     )
                 )
 
+        restored_metadata = record.position_metadata or {}
+
         self.position = ManagedPosition(
             position_id=position_id,
             symbol=record.symbol,
@@ -399,6 +401,7 @@ class PositionManager:
             highest_price=highest,
             lowest_price=entry_price,
             addon_count=addon_count,
+            metadata=restored_metadata,
         )
 
         ts_info = ""
@@ -406,10 +409,17 @@ class PositionManager:
             ts_info = f", 移停={trailing_stop_price}"
             if is_tightened:
                 ts_info += "(收緊)"
+        kl_info = ""
+        if restored_metadata.get("key_levels"):
+            kl_info = (
+                f", KL={len(restored_metadata['key_levels'])}levels"
+                f" idx={restored_metadata.get('next_key_level_idx', 0)}"
+                f" mode={restored_metadata.get('key_level_trail_mode', 'current')}"
+            )
         print(
             f"🔄 恢復倉位: {'做多' if is_long else '做空'} "
             f"入場={entry_price}, 停損={stop_loss_price}, "
-            f"最高={highest}{ts_info}"
+            f"最高={highest}{ts_info}{kl_info}"
         )
 
     def on_signal(
