@@ -251,7 +251,7 @@ class BacktestResult:
         """計算年化夏普比率（使用每日報酬）
 
         公式: Sharpe = (mean_daily_return / std_daily_return) × √252
-        - 將 equity_curve 彙總為每日權益
+        - 將 equity_curve 彙總為每個交易日的權益（過濾週末）
         - 計算每日報酬率
         - 年化因子 √252（一年約 252 個交易日）
         - 無風險利率假設為 0
@@ -259,20 +259,20 @@ class BacktestResult:
         if len(self.equity_curve) < 2:
             return
 
-        # 將 equity_curve 彙總為每日收盤權益
         from collections import OrderedDict
 
         daily_equity: OrderedDict[str, float] = OrderedDict()
         for timestamp, equity in self.equity_curve:
+            if timestamp.weekday() >= 5:
+                continue
             day_key = timestamp.strftime("%Y-%m-%d")
-            daily_equity[day_key] = equity  # 同一天取最後一筆
+            daily_equity[day_key] = equity
 
         daily_values = list(daily_equity.values())
 
         if len(daily_values) < 2:
             return
 
-        # 計算每日報酬率
         daily_returns = []
         for i in range(1, len(daily_values)):
             prev = daily_values[i - 1]

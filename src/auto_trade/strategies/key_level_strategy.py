@@ -89,7 +89,10 @@ class KeyLevelStrategy(BaseStrategy):
     ):
         super().__init__(indicator_service, name="KeyLevel Strategy")
 
+        self.is_live = False
+
         # Timeframe → how many previous sessions to aggregate for key levels
+        self.timeframe = timeframe
         tf_min = self._TF_MINUTES.get(timeframe, 5)
         self._session_lookback = max(1, tf_min // 5)
 
@@ -162,6 +165,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._prev_close: int | None = None
         self._levels_calculated = False
         self._cooldown_until: datetime | None = None
+        self._last_bar_time: datetime | None = None
 
     # ──────────────────────────────────────────────
     # Public interface
@@ -179,6 +183,7 @@ class KeyLevelStrategy(BaseStrategy):
         kbar = kbar_list.kbars[-1]
         prev_kbar = kbar_list.kbars[-2]
         bar_time = kbar.time
+        self._last_bar_time = bar_time
 
         # Day change detection (trading-day aware for night sessions)
         trading_day = self._get_trading_day(bar_time)
@@ -237,7 +242,7 @@ class KeyLevelStrategy(BaseStrategy):
             breakout_buffer=self.breakout_buffer,
             bounce_buffer=self.bounce_buffer,
             instant_threshold=self.instant_threshold,
-            current_price=current_price,
+            current_price=current_price if self.is_live else None,
         )
 
         self._prev_close = int(kbar.close)
@@ -332,17 +337,41 @@ class KeyLevelStrategy(BaseStrategy):
 
     def get_pending_state(self) -> dict | None:
         if not self._levels_calculated:
-            return None
-        state: dict = {
-            "signal_levels": [
-                {"price": kl.price, "score": kl.score}
-                for kl in self._signal_levels
-            ],
-        }
-        if self.use_or and self._or_calculated:
-            state["or_high"] = self._or_high
-            state["or_low"] = self._or_low
-        return state
+            state: dict = {}
+        else:
+            state = {
+                "signal_levels": [
+                    {"price": kl.price, "score": kl.score}
+                    for kl in self._signal_levels
+                ],
+            }
+            if self.use_or and self._or_calculated:
+                state["or_high"] = self._or_high
+                state["or_low"] = self._or_low
+
+        state["trades_today"] = self._trades_today
+        if self._cooldown_until is not None:
+            state["cooldown_until"] = self._cooldown_until.isoformat()
+
+        return state if state else None
+
+    def restore_state(self, state: dict) -> None:
+        """Restore runtime state from persisted strategy_state."""
+        if not state:
+            return
+
+        trades = state.get("trades_today")
+        if trades is not None:
+            self._trades_today = int(trades)
+            _log("Restored trades_today=%d", self._trades_today)
+
+        cd = state.get("cooldown_until")
+        if cd is not None:
+            try:
+                self._cooldown_until = datetime.fromisoformat(cd)
+                _log("Restored cooldown_until=%s", cd)
+            except (ValueError, TypeError):
+                pass
 
     def get_instant_trigger_prices(self) -> list[tuple[float, str]]:
         """Return (price, direction) tuples for instant breakout monitoring.
@@ -363,10 +392,10 @@ class KeyLevelStrategy(BaseStrategy):
 
     def on_position_closed(self) -> None:
         tf_min = self._TF_MINUTES.get(self.timeframe, 5)
-        now = datetime.now()
-        mins_past = now.minute % tf_min
-        next_bar = now.replace(second=0, microsecond=0) + timedelta(
-            minutes=tf_min - mins_past
+        ref = self._last_bar_time or datetime.now()
+        mins_past = ref.minute % tf_min
+        next_bar = ref.replace(second=0, microsecond=0) + timedelta(
+            minutes=tf_min - mins_past,
         )
         self._cooldown_until = next_bar
         _log("Cooldown until %s (skip 1 bar)", next_bar.strftime("%H:%M:%S"))
@@ -642,6 +671,7 @@ class KeyLevelStrategy(BaseStrategy):
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = self.key_level_buffer
                 meta["key_level_trail_mode"] = self.key_level_trail_mode
+                meta["key_level_atr"] = round(atr, 1)
 
         dir_str = "LONG" if is_long else "SHORT"
         _log(

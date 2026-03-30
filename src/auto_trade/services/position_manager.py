@@ -1054,6 +1054,36 @@ class PositionManager:
             self.position.entry_price,
         )
 
+    def _find_previous_stop(
+        self,
+        key_levels: list[int],
+        idx: int,
+        broken_level: int,
+        is_long: bool,
+        min_dist: int,
+    ) -> int | None:
+        """Find a valid previous key level for trailing stop.
+
+        Searches backwards from idx for a level at least min_dist away
+        from the broken level. Returns None if no valid level found
+        (trailing stop should not activate — keep original SL).
+        """
+        entry = self.position.entry_price
+        candidates = list(range(idx - 1, -1, -1))
+
+        for ci in candidates:
+            level = key_levels[ci]
+            dist = abs(broken_level - level)
+            if dist >= min_dist:
+                return level
+
+        # No previous level far enough — check entry price
+        entry_dist = abs(broken_level - entry)
+        if entry_dist >= min_dist:
+            return entry
+
+        return None
+
     def _update_trailing_stops(self, current_price: int) -> None:
         """更新所有 Legs 的移動停損（方向感知）
 
@@ -1090,11 +1120,11 @@ class PositionManager:
         if key_levels is not None:
             idx = self.position.metadata.get("next_key_level_idx", 0)
             buffer = self.position.metadata.get("key_level_buffer", 10)
-            # "current" = stop at broken level - buffer (original)
-            # "previous" = stop at previous key level (more room)
             trail_mode = self.position.metadata.get(
                 "key_level_trail_mode", "current"
             )
+            kl_atr = self.position.metadata.get("key_level_atr", 0)
+            min_trail_dist = int(kl_atr * 1.272) if kl_atr > 0 else 0
 
             while idx < len(key_levels):
                 next_level = key_levels[idx]
@@ -1105,37 +1135,46 @@ class PositionManager:
                 )
                 if crossed:
                     if trail_mode == "previous":
-                        if idx == 0:
-                            stop_price = self.position.entry_price
-                        else:
-                            stop_price = key_levels[idx - 1]
+                        stop_price = self._find_previous_stop(
+                            key_levels, idx, next_level, is_long, min_trail_dist,
+                        )
                     else:
                         stop_price = (
                             next_level - buffer
                             if is_long
                             else next_level + buffer
                         )
-                    for leg in self.position.open_legs:
-                        leg.exit_rule.trailing_stop_active = True
-                        if (
-                            is_long
-                            and (
-                                leg.exit_rule.trailing_stop_price is None
-                                or stop_price > leg.exit_rule.trailing_stop_price
-                            )
-                            or not is_long
-                            and (
-                                leg.exit_rule.trailing_stop_price is None
-                                or stop_price < leg.exit_rule.trailing_stop_price
-                            )
-                        ):
-                            leg.exit_rule.trailing_stop_price = stop_price
+
+                    if stop_price is not None:
+                        for leg in self.position.open_legs:
+                            leg.exit_rule.trailing_stop_active = True
+                            if (
+                                is_long
+                                and (
+                                    leg.exit_rule.trailing_stop_price is None
+                                    or stop_price > leg.exit_rule.trailing_stop_price
+                                )
+                                or not is_long
+                                and (
+                                    leg.exit_rule.trailing_stop_price is None
+                                    or stop_price < leg.exit_rule.trailing_stop_price
+                                )
+                            ):
+                                leg.exit_rule.trailing_stop_price = stop_price
+
                     idx += 1
-                    print(
-                        f"📊 Key level broken: {next_level}, "
-                        f"stop → {stop_price} "
-                        f"({idx}/{len(key_levels)} levels)"
-                    )
+                    if stop_price is not None:
+                        print(
+                            f"📊 Key level broken: {next_level}, "
+                            f"stop → {stop_price} "
+                            f"({idx}/{len(key_levels)} levels)"
+                        )
+                    else:
+                        print(
+                            f"📊 Key level broken: {next_level}, "
+                            f"no valid stop (min_dist={min_trail_dist}), "
+                            f"keep SL ({idx}/{len(key_levels)} levels)"
+                        )
                 else:
                     break
 

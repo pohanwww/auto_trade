@@ -117,8 +117,8 @@ def detect_signals(
                     ))
                     continue
         else:
-            # Fallback: no real-time price, use bar OHLC
-            if high > level + buf_instant and low <= level + buf_breakout and close >= level:
+            # Fallback (backtest): bar OHLC simulates intra-bar crossing
+            if high > level + buf_instant and low <= level + buf_breakout:
                 if prev_close is None or prev_close <= level + buf_breakout:
                     signals.append(KeyLevelSignal(
                         signal_type="breakout_long",
@@ -129,7 +129,7 @@ def detect_signals(
                     ))
                     continue
 
-            if low < level - buf_instant and high >= level - buf_breakout and close <= level:
+            if low < level - buf_instant and high >= level - buf_breakout:
                 if prev_close is None or prev_close >= level - buf_breakout:
                     signals.append(KeyLevelSignal(
                         signal_type="breakout_short",

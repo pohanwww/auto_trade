@@ -118,6 +118,9 @@ class TradingEngine:
 
         print(f"🚀 啟動 TradingEngine: {self.trading_unit.name}")
 
+        if hasattr(self.trading_unit.strategy, "is_live"):
+            self.trading_unit.strategy.is_live = True
+
         # 檢查是否有未平倉的持倉記錄 → 恢復到 PositionManager
         self._try_restore_position()
 
@@ -539,12 +542,29 @@ class TradingEngine:
             return
 
         record = self.record_service.get_position(self.sub_symbol)
+
+        # Always try to restore strategy state (trades_today, cooldown)
+        # even if there's no open position
+        self._try_restore_strategy_state()
+
         if record is None:
             print("📋 無未平倉記錄，正常啟動")
             return
 
         print(f"📋 發現未平倉記錄: {record.sub_symbol} @ {record.entry_price}")
         self.position_manager.restore_position(record)
+
+    def _try_restore_strategy_state(self) -> None:
+        """從 position.json 的 _live.strategy_state 恢復策略運行狀態"""
+        try:
+            records = self.record_service._load_records(self.record_service.record_file)
+            live_data = records.get("_live", {})
+            strategy_state = live_data.get("strategy_state")
+            if strategy_state and hasattr(self.trading_unit.strategy, "restore_state"):
+                self.trading_unit.strategy.restore_state(strategy_state)
+                print(f"📋 策略狀態已恢復: trades_today={strategy_state.get('trades_today', 0)}")
+        except Exception as e:
+            print(f"⚠️ 恢復策略狀態失敗: {e}")
 
     def _reconcile_position_from_history(self) -> None:
         """用歷史 K 棒校正 highest/lowest price，補回停機期間的極值。
