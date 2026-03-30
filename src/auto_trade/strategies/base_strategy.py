@@ -56,6 +56,15 @@ class BaseStrategy(ABC):
         """
         return None
 
+    def get_instant_trigger_prices(self) -> list[tuple[float, str]]:  # noqa: B027
+        """回傳 instant breakout 的觸發價位列表。
+
+        Returns list of (price, direction) tuples where direction is
+        "above" or "below". TradingEngine polls ticks between bar
+        evaluations and triggers immediate re-evaluation when crossed.
+        """
+        return []
+
     def on_position_closed(self) -> None:  # noqa: B027
         """平倉後回呼（可選覆寫）
 

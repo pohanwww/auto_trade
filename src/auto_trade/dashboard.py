@@ -238,8 +238,11 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
     df["Date"] = pd.to_datetime(df["Date"])
     df.set_index("Date", inplace=True)
 
-    dates = mdates.date2num(df.index.to_pydatetime())
-    width = 0.002
+    n_bars = len(df)
+    xs = list(range(n_bars))
+    bar_times = list(df.index)
+    time_to_idx = {t: i for i, t in enumerate(bar_times)}
+    width = 0.6
 
     fig = None
     try:
@@ -248,50 +251,68 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
             gridspec_kw={"hspace": 0.05},
         )
 
-        for dt, row in zip(dates, df.itertuples()):
+        for i, row in enumerate(df.itertuples()):
             o, h, lo, c = row.Open, row.High, row.Low, row.Close
             color = "#26A69A" if c >= o else "#EF5350"
-            ax_c.plot([dt, dt], [lo, h], color=color, linewidth=0.8)
+            ax_c.plot([i, i], [lo, h], color=color, linewidth=0.8)
             body_lo, body_hi = min(o, c), max(o, c)
             rect = FancyBboxPatch(
-                (dt - width / 2, body_lo), width, max(body_hi - body_lo, 0.3),
-                boxstyle="round,pad=0.0005", facecolor=color, edgecolor=color, linewidth=0.5,
+                (i - width / 2, body_lo), width, max(body_hi - body_lo, 0.3),
+                boxstyle="round,pad=0.02", facecolor=color, edgecolor=color, linewidth=0.5,
             )
             ax_c.add_patch(rect)
+
+        def _kbar_idx_range(kbars):
+            if not kbars:
+                return None, None
+            first_t = kbars[0].time
+            last_t = kbars[-1].time
+            i0 = time_to_idx.get(first_t)
+            i1 = time_to_idx.get(last_t)
+            if i0 is None or i1 is None:
+                return None, None
+            return i0, i1
 
         for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
                                   ("Prev Night", chart_prev_night, "#E8E0F0"),
                                   ("Today", today_kbars, "#E0F0E0"),
                                   ("Tonight", today_night_kbars, "#F0E8E0")]:
-            if not kbars:
+            i0, i1 = _kbar_idx_range(kbars)
+            if i0 is None:
                 continue
-            t0 = mdates.date2num(kbars[0].time)
-            t1 = mdates.date2num(kbars[-1].time)
-            ax_c.axvspan(t0, t1, alpha=0.12, color=bg, zorder=0)
-            ax_c.text((t0 + t1) / 2, ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
+            ax_c.axvspan(i0 - 0.5, i1 + 0.5, alpha=0.12, color=bg, zorder=0)
+            ax_c.text((i0 + i1) / 2, ax_c.get_ylim()[1] if ax_c.get_ylim()[1] > 0 else 0,
                       label, ha="center", va="top", fontsize=9, color="#666", fontweight="bold")
 
-        xmin, xmax = dates[0], dates[-1]
+        xmin_idx, xmax_idx = 0, n_bars - 1
         for kl in levels:
             is_signal = kl.price in signal_levels
             clr = "#FF8800" if is_signal else "#AAAAAA"
             lw = 1.0
             alpha = 0.85 if is_signal else 0.6
-            ls_start = mdates.date2num(kl.first_seen) if kl.first_seen else xmin
-            ls_start = max(ls_start, xmin)
-            ax_c.hlines(kl.price, ls_start, xmax, colors=clr, linewidth=lw,
+            ls_start = xmin_idx
+            if kl.first_seen:
+                for idx_t, bt in enumerate(bar_times):
+                    if bt >= kl.first_seen:
+                        ls_start = idx_t
+                        break
+            ax_c.hlines(kl.price, ls_start, xmax_idx, colors=clr, linewidth=lw,
                          alpha=alpha, linestyles="-" if is_signal else "--")
             src_short = ", ".join(kl.sources[:4])
             if len(kl.sources) > 4:
                 src_short += "..."
             role = "SIG" if is_signal else "TRAIL"
-            ax_c.text(xmax + 0.003, kl.price,
+            ax_c.text(xmax_idx + 0.5, kl.price,
                       f" {kl.price}  [{role} s={kl.score:.1f}, {kl.touch_count}t]\n {src_short}",
                       fontsize=6.5, color=clr, va="center",
                       fontweight="bold" if is_signal else "normal")
 
         ax_c.set_ylabel("Price", fontsize=11)
-        ax_c.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+        tick_step = max(1, n_bars // 20)
+        tick_positions = list(range(0, n_bars, tick_step))
+        tick_labels = [bar_times[i].strftime("%m/%d %H:%M") for i in tick_positions]
+        ax_c.set_xticks(tick_positions)
+        ax_c.set_xticklabels([])
         ax_c.tick_params(labelbottom=False)
         ax_c.set_title(
             f"Key Level — {symbol} {timeframe} — {target_date_str}",
@@ -302,7 +323,7 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         level_prices = [kl.price for kl in levels]
         combined = all_prices + level_prices
         ax_c.set_ylim(min(combined) - 30, max(combined) + 30)
-        ax_c.set_xlim(xmin - 0.01, xmax + 0.08)
+        ax_c.set_xlim(-1, n_bars + n_bars * 0.08)
 
         legend_els = [
             Line2D([0], [0], color="#FF8800", lw=1, label=f"Signal Level (top {signal_level_count})"),
@@ -311,11 +332,11 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
 
         vol_colors = ["#26A69A" if r.Close >= r.Open else "#EF5350" for r in df.itertuples()]
-        ax_v.bar(dates, df["Volume"], width=width, color=vol_colors, alpha=0.7)
+        ax_v.bar(xs, df["Volume"], width=width, color=vol_colors, alpha=0.7)
         ax_v.set_ylabel("Volume", fontsize=11)
-        ax_v.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-        ax_v.set_xlim(xmin - 0.01, xmax + 0.08)
-        plt.xticks(rotation=30)
+        ax_v.set_xticks(tick_positions)
+        ax_v.set_xticklabels(tick_labels, rotation=30, fontsize=8)
+        ax_v.set_xlim(-1, n_bars + n_bars * 0.08)
 
         plt.tight_layout()
         fname = f"kl_{symbol}_{timeframe}_{target_date_str}.png"

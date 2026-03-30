@@ -335,6 +335,23 @@ class KeyLevelStrategy(BaseStrategy):
             state["or_low"] = self._or_low
         return state
 
+    def get_instant_trigger_prices(self) -> list[tuple[float, str]]:
+        """Return (price, direction) tuples for instant breakout monitoring.
+
+        direction is "above" or "below" — meaning the trigger fires
+        when tick price goes above/below that price.
+        """
+        if not self._signal_levels or not self._levels_calculated:
+            return []
+        if self._atr <= 0:
+            return []
+        buf = self._atr * self.instant_threshold
+        triggers: list[tuple[float, str]] = []
+        for kl in self._signal_levels:
+            triggers.append((kl.price + buf, "above"))
+            triggers.append((kl.price - buf, "below"))
+        return triggers
+
     def on_position_closed(self) -> None:
         pass
 
@@ -595,16 +612,16 @@ class KeyLevelStrategy(BaseStrategy):
                 )
             meta["override_take_profit_price"] = tp_price
 
-        # Key levels for PM ladder trailing stop
-        if self._trailing_levels:
+        # Key levels for PM ladder trailing stop — use ALL key levels, not just trailing-only
+        all_kl_prices = sorted(set(kl.price for kl in self._key_levels))
+        if all_kl_prices:
             if is_long:
-                levels = sorted([
-                    lv for lv in self._trailing_levels if lv > entry_price
-                ])
+                levels = [p for p in all_kl_prices if p > entry_price]
             else:
-                levels = sorted([
-                    lv for lv in self._trailing_levels if lv < entry_price
-                ], reverse=True)
+                levels = sorted(
+                    [p for p in all_kl_prices if p < entry_price],
+                    reverse=True,
+                )
             if levels:
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = self.key_level_buffer

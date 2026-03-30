@@ -259,9 +259,8 @@ class TradingEngine:
 
                     self._sync_position_record(current_price)
 
-                    calculate_and_wait_to_next_execution(
-                        self.signal_check_interval, True
-                    )
+                    if not self.position_manager.has_position:
+                        self._wait_with_instant_check()
 
             except KeyboardInterrupt:
                 print("\n程式被使用者中斷")
@@ -270,6 +269,74 @@ class TradingEngine:
                 print(f"執行錯誤: {str(e)}")
                 print("結束程式")
                 break
+
+    # ── Instant trigger monitoring ─────────────────────────
+
+    _INSTANT_PROXIMITY = 30   # points: switch to 1s polling
+    _INSTANT_POLL_FAST = 1    # seconds
+    _INSTANT_POLL_NORMAL = 3  # seconds
+
+    def _wait_with_instant_check(self) -> None:
+        """Wait for next bar, but actively monitor tick prices for instant triggers.
+
+        Adaptive polling: 3s normally, 1s when price is within proximity of a trigger.
+        If a trigger is crossed, return immediately so the main loop re-evaluates.
+        """
+        from datetime import timedelta
+
+        triggers = self.trading_unit.strategy.get_instant_trigger_prices()
+
+        if not triggers:
+            calculate_and_wait_to_next_execution(self.signal_check_interval, True)
+            return
+
+        now = datetime.now()
+        current_minute = now.minute
+        interval = self.signal_check_interval
+        next_min = ((current_minute // interval) + 1) * interval
+        if next_min >= 60:
+            next_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        else:
+            next_time = now.replace(minute=next_min, second=0, microsecond=0)
+
+        print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
+        above_triggers = sorted(p for p, d in triggers if d == "above")
+        below_triggers = sorted((p for p, d in triggers if d == "below"), reverse=True)
+        print(
+            f"⚡ Instant monitoring: "
+            f"long triggers={[f'{p:.0f}' for p in above_triggers[:3]]}, "
+            f"short triggers={[f'{p:.0f}' for p in below_triggers[:3]]}"
+        )
+
+        while datetime.now() < next_time:
+            try:
+                quote = self.market_service.get_realtime_quote(
+                    self.symbol, self.sub_symbol
+                )
+                if not quote:
+                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    continue
+
+                price = quote.price
+
+                crossed = any(
+                    (d == "above" and price >= p) or (d == "below" and price <= p)
+                    for p, d in triggers
+                )
+                if crossed:
+                    print(f"⚡ Instant trigger hit! price={price:.0f}")
+                    return
+
+                min_dist = min(abs(price - p) for p, _ in triggers)
+                poll = (
+                    self._INSTANT_POLL_FAST
+                    if min_dist <= self._INSTANT_PROXIMITY
+                    else self._INSTANT_POLL_NORMAL
+                )
+                _time.sleep(poll)
+
+            except Exception:
+                _time.sleep(self._INSTANT_POLL_NORMAL)
 
     def _execute_action(self, action: OrderAction) -> int | None:
         """執行下單指令並處理成交
