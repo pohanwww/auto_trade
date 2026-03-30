@@ -78,7 +78,7 @@ class KeyLevelStrategy(BaseStrategy):
         max_trades_per_day: int = 1,
         sl_atr_multiplier: float = 1.5,
         tp_atr_multiplier: float = 2.0,
-        key_level_buffer: int = 10,
+        key_level_buffer: float = 0.15,
         key_level_trail_mode: str = "current",  # "current" or "previous"
         # --- Entry types ---
         use_breakout: bool = True,
@@ -138,7 +138,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
             "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d\n"
-            "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%d, trail_mode=%s\n"
+            "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
             "  Entry types: breakout=%s, bounce=%s",
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
             use_or, or_bars, or_start_time, entry_end_time, session_end_time,
@@ -631,10 +631,11 @@ class KeyLevelStrategy(BaseStrategy):
             signal_level = sig.key_level.price
             sl_price = self._find_sl_level(is_long, signal_level)
             if sl_price is not None:
+                buf_pts = int(atr * self.key_level_buffer)
                 sl_price = (
-                    sl_price - self.key_level_buffer
+                    sl_price - buf_pts
                     if is_long
-                    else sl_price + self.key_level_buffer
+                    else sl_price + buf_pts
                 )
         # Fallback: ATR-based
         if sl_price is None:
@@ -669,7 +670,7 @@ class KeyLevelStrategy(BaseStrategy):
                 )
             if levels:
                 meta["key_levels"] = levels
-                meta["key_level_buffer"] = self.key_level_buffer
+                meta["key_level_buffer"] = int(atr * self.key_level_buffer)
                 meta["key_level_trail_mode"] = self.key_level_trail_mode
                 meta["key_level_atr"] = round(atr, 1)
 

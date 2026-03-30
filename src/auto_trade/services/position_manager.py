@@ -1061,6 +1061,7 @@ class PositionManager:
         broken_level: int,
         is_long: bool,
         min_dist: int,
+        buffer: int,
     ) -> int | None:
         """Find a valid previous key level for trailing stop.
 
@@ -1075,7 +1076,7 @@ class PositionManager:
             level = key_levels[ci]
             dist = abs(broken_level - level)
             if dist >= min_dist:
-                return level
+                return level - buffer if is_long else level + buffer
 
         # No previous level far enough — check entry price
         entry_dist = abs(broken_level - entry)
@@ -1136,7 +1137,7 @@ class PositionManager:
                 if crossed:
                     if trail_mode == "previous":
                         stop_price = self._find_previous_stop(
-                            key_levels, idx, next_level, is_long, min_trail_dist,
+                            key_levels, idx, next_level, is_long, min_trail_dist, buffer,
                         )
                     else:
                         stop_price = (

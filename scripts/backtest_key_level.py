@@ -53,7 +53,7 @@ PARAM_GRID_TRAILING = {
     "tp_atr_multiplier": [0],
     "signal_level_count": [3, 7],
     "key_level_trail_mode": ["current", "previous"],
-    "key_level_buffer": [10, 20],
+    "key_level_buffer": [0.10, 0.15, 0.20],
     "instant_threshold": [0.3],
     "session_mode": ["day_only", "day_night"],
     "leg_split": ["all_ts"],
@@ -108,7 +108,7 @@ def make_unit(
         max_trades_per_day=params["max_trades_per_day"],
         sl_atr_multiplier=1.0,
         tp_atr_multiplier=params["tp_atr_multiplier"],
-        key_level_buffer=params.get("key_level_buffer", 10),
+        key_level_buffer=params.get("key_level_buffer", 0.15),
         key_level_trail_mode=trail_mode,
         use_breakout=use_breakout,
         use_bounce=use_bounce,
@@ -142,12 +142,13 @@ def make_unit(
         params["entry_type"]
     ]
     sig_n = params.get("signal_level_count", 5)
-    kl_buf = params.get("key_level_buffer", 10)
+    kl_buf = params.get("key_level_buffer", 0.15)
     trail_tag = "prev" if trail_mode == "previous" else "cur"
     sess_tag = "D+N" if session_mode == "day_night" else "D"
+    buf_str = f"{kl_buf:.0f}pt" if kl_buf >= 1 else f"{kl_buf:.2f}×ATR"
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
-        f"{entry_tag} {trail_tag} buf={kl_buf} "
+        f"{entry_tag} {trail_tag} buf={buf_str} "
         f"max{params['max_trades_per_day']}/d n={sig_n}"
     )
 
@@ -398,31 +399,22 @@ def _p(use_or, session, entry, trail, buf, maxt, n, direction="long_only"):
     }
 
 TOP_PARAMS = [
-    # ═══════════════════════════════════════════════════════════
-    # Phase 2: 反彈訊號品質測試 — BK vs BK+BC
-    # 用 OR B (全天候冠軍) 做基準，測反彈是否加分
-    # ═══════════════════════════════════════════════════════════
-    #         use_or  session       entry            trail      buf  maxt n  direction
-    # --- OR B: 只有突破（基準）---
-    _p(True,  "day_only", "breakout_only", "previous", 10, 2, 7, "both"),        # 01 OR B BK
-    # --- OR B: 突破+反彈 ---
-    _p(True,  "day_only", "both",          "previous", 10, 2, 7, "both"),        # 02 OR B BK+BC
-    # --- Pure L: 只有突破（基準）---
-    _p(False, "day_only", "breakout_only", "previous", 10, 2, 7, "long_only"),   # 03 Pure L BK
-    # --- Pure L: 突破+反彈 ---
-    _p(False, "day_only", "both",          "previous", 10, 2, 7, "long_only"),   # 04 Pure L BK+BC
-    # --- OR L: 只有突破（基準）---
-    _p(True,  "day_only", "breakout_only", "previous", 10, 2, 7, "long_only"),   # 05 OR L BK
-    # --- OR L: 突破+反彈 ---
-    _p(True,  "day_only", "both",          "previous", 10, 2, 7, "long_only"),   # 06 OR L BK+BC
+    # buf = ATR ratio (0.15 ≈ 10pts when ATR≈65)
+    #         use_or  session       entry            trail       buf   maxt n  direction
+    _p(True,  "day_only", "breakout_only", "previous", 0.15, 2, 7, "both"),        # 01 OR B BK
+    _p(True,  "day_only", "both",          "previous", 0.15, 2, 7, "both"),        # 02 OR B BK+BC
+    _p(False, "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # 03 Pure L BK
+    _p(False, "day_only", "both",          "previous", 0.15, 2, 7, "long_only"),   # 04 Pure L BK+BC
+    _p(True,  "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # 05 OR L BK  ← current
+    _p(True,  "day_only", "both",          "previous", 0.15, 2, 7, "long_only"),   # 06 OR L BK+BC
 ]
 
 TOP10_PARAMS = TOP_PARAMS
 
 # 2-config subset for multi-timeframe testing (Pure L + OR B)
 MTF_PARAMS = [
-    _p(False, "day_only", "breakout_only", "previous", 10, 2, 7, "long_only"),   # Pure L
-    _p(True,  "day_only", "breakout_only", "previous", 10, 2, 7, "both"),        # OR B
+    _p(False, "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # Pure L
+    _p(True,  "day_only", "breakout_only", "previous", 0.15, 2, 7, "both"),        # OR B
 ]
 
 
