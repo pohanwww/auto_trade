@@ -81,10 +81,18 @@ def make_unit(
         entry_end_time = "04:30"
         session_end_time = "05:00"
         force_exit_time = "04:50"
+        or_start_time = "08:45"
+    elif session_mode == "night_only":
+        entry_end_time = "04:30"
+        session_end_time = "05:00"
+        force_exit_time = "04:50"
+        or_start_time = "15:00"
     else:
         entry_end_time = "12:30"
         session_end_time = "13:45"
         force_exit_time = "13:29"
+        or_start_time = "08:45"
+
 
     or_bars = OR_BARS_BY_TF.get(timeframe, 3)
 
@@ -92,7 +100,7 @@ def make_unit(
         indicator_service,
         use_or=params["use_or"],
         or_bars=or_bars,
-        or_start_time="08:45",
+        or_start_time=or_start_time,
         entry_end_time=entry_end_time,
         session_end_time=session_end_time,
         swing_period=10,
@@ -106,12 +114,16 @@ def make_unit(
         long_only=long_only,
         short_only=short_only,
         max_trades_per_day=params["max_trades_per_day"],
+        max_trades_day_session=params.get("max_trades_day_session"),
+        max_trades_night_session=params.get("max_trades_night_session"),
         sl_atr_multiplier=1.0,
         tp_atr_multiplier=params["tp_atr_multiplier"],
         key_level_buffer=params.get("key_level_buffer", 0.15),
         key_level_trail_mode=trail_mode,
         use_breakout=use_breakout,
         use_bounce=use_bounce,
+        trend_filter=params.get("trend_filter", "or"),
+        trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
     )
 
@@ -136,7 +148,16 @@ def make_unit(
         force_exit_time=force_exit_time,
     )
 
-    or_tag = "OR" if params["use_or"] else "Pure"
+    tf = params.get("trend_filter", "or")
+    if tf == "ema":
+        ema_p = params.get("trend_filter_ema_period", 200)
+        or_tag = f"EMA{ema_p}"
+    elif tf == "none":
+        or_tag = "NoFilt"
+    elif params["use_or"]:
+        or_tag = "OR"
+    else:
+        or_tag = "Pure"
     dir_tag = {"both": "B", "long_only": "L", "short_only": "S"}[params["direction"]]
     entry_tag = {"both": "BK+BC", "breakout_only": "BK", "bounce_only": "BC"}[
         params["entry_type"]
@@ -144,12 +165,22 @@ def make_unit(
     sig_n = params.get("signal_level_count", 5)
     kl_buf = params.get("key_level_buffer", 0.15)
     trail_tag = "prev" if trail_mode == "previous" else "cur"
-    sess_tag = "D+N" if session_mode == "day_night" else "D"
+    sess_tag = (
+        "D+N" if session_mode == "day_night"
+        else "N" if session_mode == "night_only"
+        else "D"
+    )
     buf_str = f"{kl_buf:.0f}pt" if kl_buf >= 1 else f"{kl_buf:.2f}×ATR"
+    max_day = params.get("max_trades_day_session")
+    max_night = params.get("max_trades_night_session")
+    if max_day is not None or max_night is not None:
+        max_tag = f"day{max_day}/night{max_night}"
+    else:
+        max_tag = f"max{params['max_trades_per_day']}/d"
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} "
-        f"max{params['max_trades_per_day']}/d n={sig_n}"
+        f"{max_tag} n={sig_n}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)

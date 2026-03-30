@@ -118,7 +118,8 @@ OR_BARS = 3
 
 
 def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
-                    sub_symbol: str = "MXFR1") -> dict:
+                    sub_symbol: str = "MXFR1",
+                    session: str = "day") -> dict:
     """Fetch data, compute levels, generate PNG.
 
     Key level calculation matches key_level_strategy.py exactly:
@@ -179,6 +180,17 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
             "close": int(latest_night_kbars[-1].close),
         }
 
+    # For night session: include today's day kbars as "prev" data
+    if session == "night" and today_kbars:
+        today_date = target_date.date()
+        day_sessions[today_date] = sorted(today_kbars, key=lambda k: k.time)
+        latest_day_kbars = day_sessions[today_date]
+        day_ohlc = {
+            "high": int(max(k.high for k in latest_day_kbars)),
+            "low": int(min(k.low for k in latest_day_kbars)),
+            "close": int(latest_day_kbars[-1].close),
+        }
+
     # --- Aggregate N most recent sessions for swing/volume ---
     session_lookback = max(1, tf_min // 5)
 
@@ -196,16 +208,25 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         for nd in sorted(recent_night_dates):
             agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
 
-    # --- today_open and OR range (from first OR_BARS bars) ---
-    today_open = int(today_kbars[0].open) if today_kbars else None
-    or_range = 1
-    if len(today_kbars) >= OR_BARS:
-        or_kbars = today_kbars[:OR_BARS]
-        or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
-    elif day_ohlc:
-        or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
+    # --- today_open and OR range ---
+    if session == "night":
+        today_open = int(today_night_kbars[0].open) if today_night_kbars else None
+        or_range = 1
+        if len(today_night_kbars) >= OR_BARS:
+            or_kbars = today_night_kbars[:OR_BARS]
+            or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
+        elif night_ohlc:
+            or_range = max(night_ohlc.get("high", 0) - night_ohlc.get("low", 0), 50)
+    else:
+        today_open = int(today_kbars[0].open) if today_kbars else None
+        or_range = 1
+        if len(today_kbars) >= OR_BARS:
+            or_kbars = today_kbars[:OR_BARS]
+            or_range = max(int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)), 1)
+        elif day_ohlc:
+            or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
 
-    session = SessionData(
+    session_data = SessionData(
         prev_day_high=day_ohlc.get("high", 0),
         prev_day_low=day_ohlc.get("low", 0),
         prev_day_close=day_ohlc.get("close", 0),
@@ -220,15 +241,24 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
 
     signal_level_count = 7
     levels = find_confluence_levels(
-        session, swing_period=10, cluster_tolerance=50,
+        session_data, swing_period=10, cluster_tolerance=50,
         zone_tolerance=50, max_levels=20,
     )
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
-    # For chart: show latest prev day + prev night + today day + today night
-    chart_prev_day = latest_day_kbars
-    chart_prev_night = latest_night_kbars
-    all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
+    # Build chart kbars based on session mode
+    if session == "night":
+        chart_prev_day = latest_day_kbars
+        chart_prev_night = latest_night_kbars
+        all_kbars = chart_prev_day + chart_prev_night + today_night_kbars
+    elif session == "day":
+        chart_prev_day = latest_day_kbars
+        chart_prev_night = latest_night_kbars
+        all_kbars = chart_prev_day + chart_prev_night + today_kbars
+    else:
+        chart_prev_day = latest_day_kbars
+        chart_prev_night = latest_night_kbars
+        all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
@@ -273,10 +303,26 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
                 return None, None
             return i0, i1
 
-        for label, kbars, bg in [("Prev Day", chart_prev_day, "#E0E0E0"),
-                                  ("Prev Night", chart_prev_night, "#E8E0F0"),
-                                  ("Today", today_kbars, "#E0F0E0"),
-                                  ("Tonight", today_night_kbars, "#F0E8E0")]:
+        if session == "night":
+            session_spans = [
+                ("Prev Day", chart_prev_day, "#E0E0E0"),
+                ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Tonight", today_night_kbars, "#F0E8E0"),
+            ]
+        elif session == "day":
+            session_spans = [
+                ("Prev Day", chart_prev_day, "#E0E0E0"),
+                ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Today", today_kbars, "#E0F0E0"),
+            ]
+        else:
+            session_spans = [
+                ("Prev Day", chart_prev_day, "#E0E0E0"),
+                ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Today", today_kbars, "#E0F0E0"),
+                ("Tonight", today_night_kbars, "#F0E8E0"),
+            ]
+        for label, kbars, bg in session_spans:
             i0, i1 = _kbar_idx_range(kbars)
             if i0 is None:
                 continue
@@ -314,8 +360,9 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_c.set_xticks(tick_positions)
         ax_c.set_xticklabels([])
         ax_c.tick_params(labelbottom=False)
+        session_label = {"day": "Day", "night": "Night", "both": "Day+Night"}.get(session, "Day")
         ax_c.set_title(
-            f"Key Level — {symbol} {timeframe} — {target_date_str}",
+            f"Key Level — {symbol} {timeframe} — {target_date_str} ({session_label})",
             fontsize=14, fontweight="bold",
         )
 
@@ -339,7 +386,8 @@ def _generate_chart(target_date_str: str, timeframe: str, symbol: str = "MXF",
         ax_v.set_xlim(-1, n_bars + n_bars * 0.08)
 
         plt.tight_layout()
-        fname = f"kl_{symbol}_{timeframe}_{target_date_str}.png"
+        sess_tag = f"_{session}" if session != "day" else ""
+        fname = f"kl_{symbol}_{timeframe}_{target_date_str}{sess_tag}.png"
         out_path = PNG_DIR / fname
         plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
 
@@ -601,6 +649,7 @@ def api_kl_generate(
     timeframe: str = Query("5m"),
     symbol: str = Query("MXF"),
     sub_symbol: str = Query("MXFR1"),
+    session: str = Query("day", description="day / night / both"),
     token: str | None = Query(None),
 ):
     if not _check_token(token):
@@ -608,7 +657,7 @@ def api_kl_generate(
     if not _kl_gen_lock.acquire(blocking=False):
         return JSONResponse({"ok": False, "error": "Another chart is being generated, please wait"})
     try:
-        result = _generate_chart(date, timeframe, symbol, sub_symbol)
+        result = _generate_chart(date, timeframe, symbol, sub_symbol, session=session)
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -1793,6 +1842,12 @@ def _build_key_levels_html(token_param: str) -> str:
     <option value="30m">30m</option>
     <option value="1h">1h</option>
   </select>
+  <label>Session</label>
+  <select id="inp-session">
+    <option value="day">日盤</option>
+    <option value="night">夜盤</option>
+    <option value="both">日+夜</option>
+  </select>
   <label>Symbol</label>
   <select id="inp-sym">
     <option value="MXF">MXF (小台)</option>
@@ -1857,12 +1912,13 @@ async function generate() {{
   const btn = document.getElementById('btn-gen');
   const date = document.getElementById('inp-date').value;
   const tf = document.getElementById('inp-tf').value;
+  const sess = document.getElementById('inp-session').value;
   const sym = document.getElementById('inp-sym').value;
   const subSym = SUB_MAP[sym] || sym + 'R1';
   btn.disabled = true; btn.textContent = 'Generating...';
   showToast('Fetching data & computing levels...');
   try {{
-    const res = await fetch(`/api/kl/generate?date=${{date}}&timeframe=${{tf}}&symbol=${{sym}}&sub_symbol=${{subSym}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
+    const res = await fetch(`/api/kl/generate?date=${{date}}&timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&sub_symbol=${{subSym}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
     const data = await res.json();
     if (data.ok) {{
       showToast(`Generated: ${{data.filename}} (${{data.bars}} bars, ${{data.levels?.length || 0}} levels)`);

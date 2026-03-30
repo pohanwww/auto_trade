@@ -51,6 +51,10 @@ def _log(msg: str, *args) -> None:
 class KeyLevelStrategy(BaseStrategy):
 
     _TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+    _EXCHANGE_DAY_START = time(8, 45)
+    _EXCHANGE_DAY_END = time(13, 45)
+    _EXCHANGE_NIGHT_START = time(15, 0)
+    _EXCHANGE_NIGHT_END = time(5, 0)
 
     def __init__(
         self,
@@ -76,6 +80,8 @@ class KeyLevelStrategy(BaseStrategy):
         short_only: bool = False,
         # --- Risk ---
         max_trades_per_day: int = 1,
+        max_trades_day_session: int | None = None,
+        max_trades_night_session: int | None = None,
         sl_atr_multiplier: float = 1.5,
         tp_atr_multiplier: float = 2.0,
         key_level_buffer: float = 0.15,
@@ -83,6 +89,9 @@ class KeyLevelStrategy(BaseStrategy):
         # --- Entry types ---
         use_breakout: bool = True,
         use_bounce: bool = True,
+        # --- Trend filter ---
+        trend_filter: str = "or",  # "or", "ema", "none"
+        trend_filter_ema_period: int = 200,
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -122,6 +131,8 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Risk
         self.max_trades_per_day = max_trades_per_day
+        self.max_trades_day_session = max_trades_day_session
+        self.max_trades_night_session = max_trades_night_session
         self.sl_atr_multiplier = sl_atr_multiplier
         self.tp_atr_multiplier = tp_atr_multiplier
         self.key_level_buffer = key_level_buffer
@@ -131,13 +142,18 @@ class KeyLevelStrategy(BaseStrategy):
         self.use_breakout = use_breakout
         self.use_bounce = use_bounce
 
+        # Trend filter
+        self.trend_filter = trend_filter
+        self.trend_filter_ema_period = trend_filter_ema_period
+
         _log(
             "=== KeyLevelStrategy initialized ===\n"
             "  mode=%s | timeframe=%s | session_lookback=%d\n"
             "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
             "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
-            "  Direction: long_only=%s, short_only=%s | max_trades=%d\n"
+            "  Direction: long_only=%s, short_only=%s | max_trades=%d"
+            " | max_day=%s | max_night=%s\n"
             "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
             "  Entry types: breakout=%s, bounce=%s",
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
@@ -145,6 +161,7 @@ class KeyLevelStrategy(BaseStrategy):
             swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
             breakout_buffer, bounce_buffer, instant_threshold, atr_period,
             long_only, short_only, max_trades_per_day,
+            max_trades_day_session, max_trades_night_session,
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
             use_breakout, use_bounce,
         )
@@ -161,6 +178,8 @@ class KeyLevelStrategy(BaseStrategy):
         self._signal_levels: list[KeyLevel] = []
         self._trailing_levels: list[int] = []
         self._trades_today = 0
+        self._trades_day_session = 0
+        self._trades_night_session = 0
         self._atr: float = 0.0
         self._prev_close: int | None = None
         self._levels_calculated = False
@@ -198,8 +217,8 @@ class KeyLevelStrategy(BaseStrategy):
             self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "outside day session")
 
-        # Calculate OR if using OR mode
-        if self.use_or and not self._or_calculated:
+        # Calculate OR if using OR-based trend filter
+        if self.trend_filter == "or" and self.use_or and not self._or_calculated:
             if not self._try_calculate_or(kbar_list):
                 return self._hold(symbol, current_price, "waiting for OR")
 
@@ -222,7 +241,8 @@ class KeyLevelStrategy(BaseStrategy):
             return self._hold(symbol, current_price, "outside entry window")
 
         # Check trade limit
-        if self._trades_today >= self.max_trades_per_day:
+        session_name = self._get_trade_session(bar_time)
+        if self._reached_trade_limit(session_name):
             self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "max trades reached")
 
@@ -282,24 +302,16 @@ class KeyLevelStrategy(BaseStrategy):
                 _log("  SKIP %s: bounce disabled", sig.signal_type)
                 continue
 
-            # OR filter: only long above OR_High, only short below OR_Low
-            if self.use_or and self._or_calculated:
-                close = int(kbar.close)
-                if is_long and close < (self._or_high or 0):
-                    _log(
-                        "  SKIP %s: close=%d < OR_High=%d",
-                        sig.signal_type, close, self._or_high,
-                    )
-                    continue
-                if is_short and close > (self._or_low or 999999):
-                    _log(
-                        "  SKIP %s: close=%d > OR_Low=%d",
-                        sig.signal_type, close, self._or_low,
-                    )
-                    continue
+            # Trend filter
+            if not self._pass_trend_filter(kbar_list, kbar, is_long, is_short, sig):
+                continue
 
             # Valid signal found
             self._trades_today += 1
+            if session_name == "day":
+                self._trades_day_session += 1
+            elif session_name == "night":
+                self._trades_night_session += 1
             entry_price = sig.entry_price
             signal_type = (
                 SignalType.ENTRY_LONG if is_long else SignalType.ENTRY_SHORT
@@ -315,12 +327,15 @@ class KeyLevelStrategy(BaseStrategy):
             dir_str = "LONG" if is_long else "SHORT"
             _log(
                 ">>> ENTRY %s | %s | level=%d (score=%.1f) | entry=%d | instant=%s | "
-                "SL=%s | trail_levels=%s | trade#%d/%d",
+                "SL=%s | trail_levels=%s | trade#%d/%d | session=%s d=%d n=%d",
                 dir_str, sig.signal_type, sig.key_level.price, sig.score,
                 entry_price, sig.instant,
                 meta.get("override_stop_loss_price"),
                 meta.get("key_levels"),
                 self._trades_today, self.max_trades_per_day,
+                session_name,
+                self._trades_day_session,
+                self._trades_night_session,
             )
 
             return StrategySignal(
@@ -350,6 +365,8 @@ class KeyLevelStrategy(BaseStrategy):
                 state["or_low"] = self._or_low
 
         state["trades_today"] = self._trades_today
+        state["trades_day_session"] = self._trades_day_session
+        state["trades_night_session"] = self._trades_night_session
         if self._cooldown_until is not None:
             state["cooldown_until"] = self._cooldown_until.isoformat()
 
@@ -364,6 +381,16 @@ class KeyLevelStrategy(BaseStrategy):
         if trades is not None:
             self._trades_today = int(trades)
             _log("Restored trades_today=%d", self._trades_today)
+
+        day_trades = state.get("trades_day_session")
+        if day_trades is not None:
+            self._trades_day_session = int(day_trades)
+            _log("Restored trades_day_session=%d", self._trades_day_session)
+
+        night_trades = state.get("trades_night_session")
+        if night_trades is not None:
+            self._trades_night_session = int(night_trades)
+            _log("Restored trades_night_session=%d", self._trades_night_session)
 
         cd = state.get("cooldown_until")
         if cd is not None:
@@ -416,8 +443,6 @@ class KeyLevelStrategy(BaseStrategy):
             return
 
         today = self._current_trading_day
-        night_boundary = time(5, 0)
-        day_end = time(13, 45)
         lookback = self._session_lookback
 
         day_ohlc: dict[str, int] = {}
@@ -426,15 +451,23 @@ class KeyLevelStrategy(BaseStrategy):
         day_sessions: dict = {}
         night_sessions: dict = {}
 
+        # When in a night session, today's day session is already closed,
+        # so we include it as historical data for key level calculation.
+        in_night_session = (
+            self._current_date is not None
+            and self._current_date.time() >= self._EXCHANGE_NIGHT_START
+        )
+
         for kbar in kbar_list.kbars:
             d = kbar.time.date()
             t = kbar.time.time()
 
-            if self.or_start_time <= t < day_end and d < today:
-                day_sessions.setdefault(d, []).append(kbar)
-            elif t >= time(15, 0) and d < today:
+            if self._EXCHANGE_DAY_START <= t < self._EXCHANGE_DAY_END:
+                if d < today or (d == today and in_night_session):
+                    day_sessions.setdefault(d, []).append(kbar)
+            elif t >= self._EXCHANGE_NIGHT_START and d < today:
                 night_sessions.setdefault(d, []).append(kbar)
-            elif t < night_boundary:
+            elif t < self._EXCHANGE_NIGHT_END:
                 ns_date = d - timedelta(days=1)
                 if ns_date < today:
                     night_sessions.setdefault(ns_date, []).append(kbar)
@@ -479,7 +512,7 @@ class KeyLevelStrategy(BaseStrategy):
         for kbar in kbar_list.kbars:
             if (
                 self._get_trading_day(kbar.time) == today
-                and kbar.time.time() >= self.or_start_time
+                and self._is_active_session(kbar.time)
             ):
                 today_open = int(kbar.open)
                 break
@@ -551,7 +584,7 @@ class KeyLevelStrategy(BaseStrategy):
             [
                 k for k in kbar_list.kbars
                 if self._get_trading_day(k.time) == today
-                and k.time.time() >= self.or_start_time
+                and self._is_active_session(k.time)
             ],
             key=lambda k: k.time,
         )
@@ -570,17 +603,16 @@ class KeyLevelStrategy(BaseStrategy):
             return False
 
         today = self._current_trading_day
-        day_end = time(13, 45)
-        today_day_kbars = [
+        today_session_kbars = [
             k for k in kbar_list.kbars
             if self._get_trading_day(k.time) == today
-            and self.or_start_time <= k.time.time() < day_end
+            and self._is_active_session(k.time)
         ]
 
-        if len(today_day_kbars) < self.or_bars:
+        if len(today_session_kbars) < self.or_bars:
             return False
 
-        or_kbars = today_day_kbars[:self.or_bars]
+        or_kbars = today_session_kbars[:self.or_bars]
         self._or_high = int(max(k.high for k in or_kbars))
         self._or_low = int(min(k.low for k in or_kbars))
         self._or_mid = (self._or_high + self._or_low) // 2
@@ -722,6 +754,8 @@ class KeyLevelStrategy(BaseStrategy):
         self._signal_levels = []
         self._trailing_levels = []
         self._trades_today = 0
+        self._trades_day_session = 0
+        self._trades_night_session = 0
         self._atr = 0.0
         self._levels_calculated = False
         self._cooldown_until = None
@@ -741,15 +775,94 @@ class KeyLevelStrategy(BaseStrategy):
             return t >= self.or_start_time or t < self.session_end_time
         return self.or_start_time <= t < self.session_end_time
 
+    def _pass_trend_filter(
+        self,
+        kbar_list: KBarList,
+        kbar,
+        is_long: bool,
+        is_short: bool,
+        sig,
+    ) -> bool:
+        """Apply the configured trend filter. Returns True if signal passes."""
+        if self.trend_filter == "none":
+            return True
+
+        if self.trend_filter == "or":
+            if self.use_or and self._or_calculated:
+                close = int(kbar.close)
+                if is_long and close < (self._or_high or 0):
+                    _log(
+                        "  SKIP %s: close=%d < OR_High=%d",
+                        sig.signal_type, close, self._or_high,
+                    )
+                    return False
+                if is_short and close > (self._or_low or 999999):
+                    _log(
+                        "  SKIP %s: close=%d > OR_Low=%d",
+                        sig.signal_type, close, self._or_low,
+                    )
+                    return False
+            return True
+
+        if self.trend_filter == "ema":
+            ema_list = self.indicator_service.calculate_ema(
+                kbar_list, self.trend_filter_ema_period,
+            )
+            if not ema_list or len(ema_list) == 0:
+                return True
+            ema_val = ema_list[-1].ema_value
+            close = float(kbar.close)
+            if is_long and close < ema_val:
+                _log(
+                    "  SKIP %s: close=%.0f < EMA%d=%.0f",
+                    sig.signal_type, close,
+                    self.trend_filter_ema_period, ema_val,
+                )
+                return False
+            if is_short and close > ema_val:
+                _log(
+                    "  SKIP %s: close=%.0f > EMA%d=%.0f",
+                    sig.signal_type, close,
+                    self.trend_filter_ema_period, ema_val,
+                )
+                return False
+            return True
+
+        return True
+
     def _is_in_trading_window(self, bar_time: datetime) -> bool:
         t = bar_time.time()
-        if self.use_or and not self._or_calculated:
+        if self.trend_filter == "or" and self.use_or and not self._or_calculated:
             return False
         start = self.or_start_time
         end = self.entry_end_time
         if end <= start:
             return t >= start or t <= end
         return start <= t and t <= end
+
+    def _get_trade_session(self, bar_time: datetime) -> str | None:
+        """Return the current trading session bucket for separate trade caps."""
+        t = bar_time.time()
+
+        if self._EXCHANGE_DAY_START <= t < self._EXCHANGE_DAY_END:
+            return "day"
+        if t >= self._EXCHANGE_NIGHT_START or t < self._EXCHANGE_NIGHT_END:
+            return "night"
+        return None
+
+    def _reached_trade_limit(self, session_name: str | None) -> bool:
+        """Check either per-session or total daily trade limits."""
+        if (
+            self.max_trades_day_session is not None
+            or self.max_trades_night_session is not None
+        ):
+            if session_name == "day" and self.max_trades_day_session is not None:
+                return self._trades_day_session >= self.max_trades_day_session
+            if session_name == "night" and self.max_trades_night_session is not None:
+                return self._trades_night_session >= self.max_trades_night_session
+            return False
+
+        return self._trades_today >= self.max_trades_per_day
 
     def _hold(self, symbol: str, price: float, reason: str) -> StrategySignal:
         return StrategySignal(
