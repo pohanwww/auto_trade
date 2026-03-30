@@ -49,6 +49,7 @@ def detect_signals(
     breakout_buffer: float = 0.2,
     bounce_buffer: float = 0.3,
     instant_threshold: float = 0.3,
+    current_price: float | None = None,
 ) -> list[KeyLevelSignal]:
     """Scan *key_levels* for breakout / bounce signals on *kbar*.
 
@@ -71,6 +72,9 @@ def detect_signals(
     instant_threshold : float
         ATR multiplier – if intra-bar penetration exceeds this, flag
         instant entry.
+    current_price : float | None
+        Real-time price for instant breakout checks.  When provided,
+        instant signals use this instead of bar high/low.
     """
     if atr <= 0:
         return []
@@ -87,29 +91,54 @@ def detect_signals(
         buf_bounce = atr * bounce_buffer
         buf_instant = atr * instant_threshold
 
-        # --- Instant breakout long (no close confirmation needed) ---
-        if high > level + buf_instant and low <= level + buf_breakout:
-            if prev_close is None or prev_close <= level + buf_breakout:
-                signals.append(KeyLevelSignal(
-                    signal_type="breakout_long",
-                    key_level=kl,
-                    entry_price=int(level + buf_instant),
-                    instant=True,
-                    score=kl.score,
-                ))
-                continue
+        # --- Instant breakout (uses real-time price when available) ---
+        px = current_price if current_price is not None else None
 
-        # --- Instant breakout short (no close confirmation needed) ---
-        if low < level - buf_instant and high >= level - buf_breakout:
-            if prev_close is None or prev_close >= level - buf_breakout:
-                signals.append(KeyLevelSignal(
-                    signal_type="breakout_short",
-                    key_level=kl,
-                    entry_price=int(level - buf_instant),
-                    instant=True,
-                    score=kl.score,
-                ))
-                continue
+        if px is not None:
+            if px > level + buf_instant:
+                if prev_close is None or prev_close <= level + buf_breakout:
+                    signals.append(KeyLevelSignal(
+                        signal_type="breakout_long",
+                        key_level=kl,
+                        entry_price=int(px),
+                        instant=True,
+                        score=kl.score,
+                    ))
+                    continue
+
+            if px < level - buf_instant:
+                if prev_close is None or prev_close >= level - buf_breakout:
+                    signals.append(KeyLevelSignal(
+                        signal_type="breakout_short",
+                        key_level=kl,
+                        entry_price=int(px),
+                        instant=True,
+                        score=kl.score,
+                    ))
+                    continue
+        else:
+            # Fallback: no real-time price, use bar OHLC
+            if high > level + buf_instant and low <= level + buf_breakout and close >= level:
+                if prev_close is None or prev_close <= level + buf_breakout:
+                    signals.append(KeyLevelSignal(
+                        signal_type="breakout_long",
+                        key_level=kl,
+                        entry_price=int(level + buf_instant),
+                        instant=True,
+                        score=kl.score,
+                    ))
+                    continue
+
+            if low < level - buf_instant and high >= level - buf_breakout and close <= level:
+                if prev_close is None or prev_close >= level - buf_breakout:
+                    signals.append(KeyLevelSignal(
+                        signal_type="breakout_short",
+                        key_level=kl,
+                        entry_price=int(level - buf_instant),
+                        instant=True,
+                        score=kl.score,
+                    ))
+                    continue
 
         # --- Close-confirmed breakout long (deferred entry) ---
         if close > level + buf_breakout:

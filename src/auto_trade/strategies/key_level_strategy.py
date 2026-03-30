@@ -161,6 +161,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._atr: float = 0.0
         self._prev_close: int | None = None
         self._levels_calculated = False
+        self._cooldown_until: datetime | None = None
 
     # ──────────────────────────────────────────────
     # Public interface
@@ -220,6 +221,13 @@ class KeyLevelStrategy(BaseStrategy):
             self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "max trades reached")
 
+        # Cooldown: skip 1 bar after last exit
+        if self._cooldown_until is not None:
+            if bar_time <= self._cooldown_until:
+                self._prev_close = int(kbar.close)
+                return self._hold(symbol, current_price, "cooldown")
+            self._cooldown_until = None
+
         # Detect signals
         signals = detect_signals(
             kbar,
@@ -229,6 +237,7 @@ class KeyLevelStrategy(BaseStrategy):
             breakout_buffer=self.breakout_buffer,
             bounce_buffer=self.bounce_buffer,
             instant_threshold=self.instant_threshold,
+            current_price=current_price,
         )
 
         self._prev_close = int(kbar.close)
@@ -353,7 +362,14 @@ class KeyLevelStrategy(BaseStrategy):
         return triggers
 
     def on_position_closed(self) -> None:
-        pass
+        tf_min = self._TF_MINUTES.get(self.timeframe, 5)
+        now = datetime.now()
+        mins_past = now.minute % tf_min
+        next_bar = now.replace(second=0, microsecond=0) + timedelta(
+            minutes=tf_min - mins_past
+        )
+        self._cooldown_until = next_bar
+        _log("Cooldown until %s (skip 1 bar)", next_bar.strftime("%H:%M:%S"))
 
     # ──────────────────────────────────────────────
     # Key level calculation
@@ -678,6 +694,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._trades_today = 0
         self._atr = 0.0
         self._levels_calculated = False
+        self._cooldown_until = None
 
     def _get_trading_day(self, bar_time: datetime):
         """Return business date. Early-morning night-session bars belong to previous day."""
