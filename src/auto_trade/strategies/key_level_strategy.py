@@ -672,7 +672,6 @@ class KeyLevelStrategy(BaseStrategy):
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = int(atr * self.key_level_buffer)
                 meta["key_level_trail_mode"] = self.key_level_trail_mode
-                meta["key_level_atr"] = round(atr, 1)
 
         dir_str = "LONG" if is_long else "SHORT"
         _log(

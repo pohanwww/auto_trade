@@ -1060,30 +1060,17 @@ class PositionManager:
         idx: int,
         broken_level: int,
         is_long: bool,
-        min_dist: int,
         buffer: int,
     ) -> int | None:
-        """Find a valid previous key level for trailing stop.
-
-        Searches backwards from idx for a level at least min_dist away
-        from the broken level. Returns None if no valid level found
-        (trailing stop should not activate — keep original SL).
-        """
+        """Find previous key level for trailing stop, or fall back to entry."""
         entry = self.position.entry_price
         candidates = list(range(idx - 1, -1, -1))
 
         for ci in candidates:
             level = key_levels[ci]
-            dist = abs(broken_level - level)
-            if dist >= min_dist:
-                return level - buffer if is_long else level + buffer
+            return level - buffer if is_long else level + buffer
 
-        # No previous level far enough — check entry price
-        entry_dist = abs(broken_level - entry)
-        if entry_dist >= min_dist:
-            return entry
-
-        return None
+        return entry
 
     def _update_trailing_stops(self, current_price: int) -> None:
         """更新所有 Legs 的移動停損（方向感知）
@@ -1124,8 +1111,6 @@ class PositionManager:
             trail_mode = self.position.metadata.get(
                 "key_level_trail_mode", "current"
             )
-            kl_atr = self.position.metadata.get("key_level_atr", 0)
-            min_trail_dist = int(kl_atr * 1.272) if kl_atr > 0 else 0
 
             while idx < len(key_levels):
                 next_level = key_levels[idx]
@@ -1137,7 +1122,7 @@ class PositionManager:
                 if crossed:
                     if trail_mode == "previous":
                         stop_price = self._find_previous_stop(
-                            key_levels, idx, next_level, is_long, min_trail_dist, buffer,
+                            key_levels, idx, next_level, is_long, buffer,
                         )
                     else:
                         stop_price = (
@@ -1169,12 +1154,6 @@ class PositionManager:
                             f"📊 Key level broken: {next_level}, "
                             f"stop → {stop_price} "
                             f"({idx}/{len(key_levels)} levels)"
-                        )
-                    else:
-                        print(
-                            f"📊 Key level broken: {next_level}, "
-                            f"no valid stop (min_dist={min_trail_dist}), "
-                            f"keep SL ({idx}/{len(key_levels)} levels)"
                         )
                 else:
                     break
