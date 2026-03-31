@@ -35,6 +35,7 @@ class BaseStrategy(ABC):
         kbar_list: KBarList,
         current_price: float,
         symbol: str,
+        bar_close: bool = True,
     ) -> StrategySignal:
         """評估當前市場狀況並產生信號
 
@@ -42,6 +43,7 @@ class BaseStrategy(ABC):
             kbar_list: K線資料列表（包含歷史數據）
             current_price: 當前即時價格
             symbol: 商品代碼
+            bar_close: True = 定時 bar 結束檢查; False = instant 觸發時 mid-bar 呼叫
 
         Returns:
             StrategySignal: 策略信號（純方向信號，不含倉位管理細節）
@@ -56,13 +58,15 @@ class BaseStrategy(ABC):
         """
         return None
 
-    def get_instant_trigger_prices(self) -> list[tuple[float, str]]:  # noqa: B027
-        """回傳 instant breakout 的觸發價位列表。
+    def get_instant_targets(self) -> tuple[float | None, float | None]:  # noqa: B027
+        """回傳 (long_trigger_price, short_trigger_price) 用於 instant 監控。
 
-        Returns list of (price, direction) tuples where direction is
-        "above" or "below". TradingEngine polls ticks between bar
-        evaluations and triggers immediate re-evaluation when crossed.
+        Engine 只需比對 tick price 是否超過這兩個值。
         """
+        return None, None
+
+    def get_instant_trigger_prices(self) -> list[tuple[float, str]]:  # noqa: B027
+        """Legacy: 回傳 instant breakout 的觸發價位列表。"""
         return []
 
     def on_position_closed(self) -> None:  # noqa: B027

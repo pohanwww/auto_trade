@@ -78,8 +78,7 @@ class TradingEngine:
         # 加碼信號去重
         self._addon_checked_this_interval: bool = False
 
-        # instant trigger 防重：上次 trigger hit 但未成交 → 等下根 bar
-        self._instant_hit_no_action: bool = False
+        self._INSTANT_SUPPRESS_SECONDS = 30
 
         # 配置檔名（用於 dashboard 辨識程序）
         self.config_file: str | None = None
@@ -266,16 +265,7 @@ class TradingEngine:
                     self._sync_position_record(current_price)
 
                     if not self.position_manager.has_position:
-                        if self._instant_hit_no_action:
-                            self._instant_hit_no_action = False
-                            print("⏳ Instant trigger 未成交，等待下一根 bar...")
-                            calculate_and_wait_to_next_execution(
-                                self.signal_check_interval, True,
-                            )
-                        else:
-                            hit = self._wait_with_instant_check()
-                            if hit and not actions:
-                                self._instant_hit_no_action = True
+                        self._wait_with_instant_check()
 
             except KeyboardInterrupt:
                 print("\n程式被使用者中斷")
@@ -291,42 +281,48 @@ class TradingEngine:
     _INSTANT_POLL_FAST = 1    # seconds
     _INSTANT_POLL_NORMAL = 3  # seconds
 
-    def _wait_with_instant_check(self) -> bool:
-        """Wait for next bar, but actively monitor tick prices for instant triggers.
+    def _wait_with_instant_check(self) -> None:
+        """Wait for next bar while monitoring instant trigger prices.
 
-        Adaptive polling: 3s normally, 1s when price is within proximity of a trigger.
-        If a trigger is crossed, return immediately so the main loop re-evaluates.
-
-        Returns True if an instant trigger caused early return, False otherwise.
+        When a trigger fires, evaluate+execute inline. If rejected, suppress
+        that trigger for 30s and keep monitoring. No round-trip to main loop.
         """
         from datetime import timedelta
 
-        triggers = self.trading_unit.strategy.get_instant_trigger_prices()
-
-        if not triggers:
-            calculate_and_wait_to_next_execution(self.signal_check_interval, True)
-            return False
-
         now = datetime.now()
-        current_minute = now.minute
         interval = self.signal_check_interval
+        current_minute = now.minute
         next_min = ((current_minute // interval) + 1) * interval
         if next_min >= 60:
             next_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         else:
             next_time = now.replace(minute=next_min, second=0, microsecond=0)
 
+        long_target, short_target = self.trading_unit.strategy.get_instant_targets()
+
+        if long_target is None and short_target is None:
+            print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
+            calculate_and_wait_to_next_execution(self.signal_check_interval, True)
+            return
+
         print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
-        above_triggers = sorted(p for p, d in triggers if d == "above")
-        below_triggers = sorted((p for p, d in triggers if d == "below"), reverse=True)
         print(
             f"⚡ Instant monitoring: "
-            f"long triggers={[f'{p:.0f}' for p in above_triggers[:3]]}, "
-            f"short triggers={[f'{p:.0f}' for p in below_triggers[:3]]}"
+            f"long={f'{long_target:.0f}' if long_target else '-'}, "
+            f"short={f'{short_target:.0f}' if short_target else '-'}"
         )
+
+        suppress_until = 0.0
+        last_refresh_minute = -1
 
         while datetime.now() < next_time:
             try:
+                # Refresh targets at each minute boundary
+                cur_min = datetime.now().minute
+                if cur_min != last_refresh_minute:
+                    last_refresh_minute = cur_min
+                    long_target, short_target = self.trading_unit.strategy.get_instant_targets()
+
                 quote = self.market_service.get_realtime_quote(
                     self.symbol, self.sub_symbol
                 )
@@ -335,16 +331,62 @@ class TradingEngine:
                     continue
 
                 price = quote.price
+                now_ts = _time.monotonic()
 
-                crossed = any(
-                    (d == "above" and price >= p) or (d == "below" and price <= p)
-                    for p, d in triggers
+                # Check suppress
+                if now_ts < suppress_until:
+                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    continue
+
+                triggered = (
+                    (long_target is not None and price >= long_target)
+                    or (short_target is not None and price <= short_target)
                 )
-                if crossed:
-                    print(f"⚡ Instant trigger hit! price={price:.0f}")
-                    return True
 
-                min_dist = min(abs(price - p) for p, _ in triggers)
+                if triggered:
+                    print(f"⚡ Instant trigger hit! price={price:.0f}")
+
+                    kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                        self.symbol,
+                        self.sub_symbol,
+                        self.trading_unit.pm_config.timeframe,
+                        days=5,
+                    )
+                    signal = self.trading_unit.strategy.evaluate(
+                        kbar_list, price, self.sub_symbol, bar_close=False,
+                    )
+                    actions = self.position_manager.on_signal(
+                        signal, kbar_list, self.symbol, self.sub_symbol,
+                    )
+
+                    if actions:
+                        for action in actions:
+                            fill_result = self._execute_action(action)
+                            if fill_result and action.order_type == "Open" and self.position_manager.position:
+                                pos = self.position_manager.position
+                                signal_price = pos.entry_price
+                                pos.entry_price = fill_result
+                                pos.highest_price = fill_result
+                                pos.lowest_price = fill_result
+                                for leg in pos.legs:
+                                    if leg.entry_price == signal_price:
+                                        leg.entry_price = fill_result
+                        self._sync_position_record(price)
+                        return  # position opened, back to main loop
+
+                    # Rejected — suppress for 30s, keep monitoring
+                    suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
+                    print(f"⚡ Trigger rejected, suppress {self._INSTANT_SUPPRESS_SECONDS}s")
+                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    continue
+
+                # Adaptive polling
+                distances = []
+                if long_target is not None:
+                    distances.append(abs(price - long_target))
+                if short_target is not None:
+                    distances.append(abs(price - short_target))
+                min_dist = min(distances) if distances else 9999
                 poll = (
                     self._INSTANT_POLL_FAST
                     if min_dist <= self._INSTANT_PROXIMITY
@@ -354,8 +396,6 @@ class TradingEngine:
 
             except Exception:
                 _time.sleep(self._INSTANT_POLL_NORMAL)
-
-        return False
 
     def _execute_action(self, action: OrderAction) -> int | None:
         """執行下單指令並處理成交
