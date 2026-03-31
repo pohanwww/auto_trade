@@ -78,6 +78,9 @@ class TradingEngine:
         # 加碼信號去重
         self._addon_checked_this_interval: bool = False
 
+        # instant trigger 防重：上次 trigger hit 但未成交 → 等下根 bar
+        self._instant_hit_no_action: bool = False
+
         # 配置檔名（用於 dashboard 辨識程序）
         self.config_file: str | None = None
 
@@ -263,7 +266,16 @@ class TradingEngine:
                     self._sync_position_record(current_price)
 
                     if not self.position_manager.has_position:
-                        self._wait_with_instant_check()
+                        if self._instant_hit_no_action:
+                            self._instant_hit_no_action = False
+                            print("⏳ Instant trigger 未成交，等待下一根 bar...")
+                            calculate_and_wait_to_next_execution(
+                                self.signal_check_interval, True,
+                            )
+                        else:
+                            hit = self._wait_with_instant_check()
+                            if hit and not actions:
+                                self._instant_hit_no_action = True
 
             except KeyboardInterrupt:
                 print("\n程式被使用者中斷")
@@ -279,11 +291,13 @@ class TradingEngine:
     _INSTANT_POLL_FAST = 1    # seconds
     _INSTANT_POLL_NORMAL = 3  # seconds
 
-    def _wait_with_instant_check(self) -> None:
+    def _wait_with_instant_check(self) -> bool:
         """Wait for next bar, but actively monitor tick prices for instant triggers.
 
         Adaptive polling: 3s normally, 1s when price is within proximity of a trigger.
         If a trigger is crossed, return immediately so the main loop re-evaluates.
+
+        Returns True if an instant trigger caused early return, False otherwise.
         """
         from datetime import timedelta
 
@@ -291,7 +305,7 @@ class TradingEngine:
 
         if not triggers:
             calculate_and_wait_to_next_execution(self.signal_check_interval, True)
-            return
+            return False
 
         now = datetime.now()
         current_minute = now.minute
@@ -328,7 +342,7 @@ class TradingEngine:
                 )
                 if crossed:
                     print(f"⚡ Instant trigger hit! price={price:.0f}")
-                    return
+                    return True
 
                 min_dist = min(abs(price - p) for p, _ in triggers)
                 poll = (
@@ -340,6 +354,8 @@ class TradingEngine:
 
             except Exception:
                 _time.sleep(self._INSTANT_POLL_NORMAL)
+
+        return False
 
     def _execute_action(self, action: OrderAction) -> int | None:
         """執行下單指令並處理成交

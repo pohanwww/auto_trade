@@ -682,6 +682,20 @@ class MarketService:
 
         resampled_bars = cached_resampled.kbars
 
+        # 刷新最後一根 5m bar：tick callback 會 in-place 更新 1m bar 的 OHLC，
+        # 但增量 resample 只處理「新增」的 1m bar，不會看到同根 1m 的 tick 更新。
+        # 這裡用最後一根 1m bar 的最新數據同步到對應的 5m bar。
+        if all_1m and resampled_bars:
+            last_1m = all_1m[-1]
+            last_bucket = self._align_to_tf_bucket(last_1m.time, tf_minutes)
+            if resampled_bars[-1].time == last_bucket:
+                bar = resampled_bars[-1]
+                if last_1m.high > bar.high:
+                    bar.high = last_1m.high
+                if last_1m.low < bar.low:
+                    bar.low = last_1m.low
+                bar.close = last_1m.close
+
         # 補充當前時段的合成 bar（成交量少時最新 1m 可能滯後）
         synthetic = None
         if resampled_bars and self.is_trading_time() and all_1m:

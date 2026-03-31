@@ -303,7 +303,7 @@ class KeyLevelStrategy(BaseStrategy):
                 continue
 
             # Trend filter
-            if not self._pass_trend_filter(kbar_list, kbar, is_long, is_short, sig):
+            if not self._pass_trend_filter(kbar_list, kbar, is_long, is_short, sig, current_price):
                 continue
 
             # Valid signal found
@@ -405,16 +405,42 @@ class KeyLevelStrategy(BaseStrategy):
 
         direction is "above" or "below" — meaning the trigger fires
         when tick price goes above/below that price.
+        Respects OR filter direction, cooldown, and trade limits.
         """
         if not self._signal_levels or not self._levels_calculated:
             return []
         if self._atr <= 0:
             return []
+        if not self.use_breakout:
+            return []
+        if self._cooldown_until and datetime.now() < self._cooldown_until:
+            return []
+
+        allow_long = not self.short_only
+        allow_short = not self.long_only
+
+        use_or_filter = (
+            self.trend_filter == "or"
+            and self.use_or
+            and self._or_calculated
+        )
+
         buf = self._atr * self.instant_threshold
         triggers: list[tuple[float, str]] = []
         for kl in self._signal_levels:
-            triggers.append((kl.price + buf, "above"))
-            triggers.append((kl.price - buf, "below"))
+            if allow_long:
+                tp = kl.price + buf
+                if use_or_filter and self._or_high is not None and tp < self._or_high:
+                    pass
+                else:
+                    triggers.append((tp, "above"))
+
+            if allow_short:
+                tp = kl.price - buf
+                if use_or_filter and self._or_low is not None and tp > self._or_low:
+                    pass
+                else:
+                    triggers.append((tp, "below"))
         return triggers
 
     def on_position_closed(self) -> None:
@@ -782,6 +808,7 @@ class KeyLevelStrategy(BaseStrategy):
         is_long: bool,
         is_short: bool,
         sig,
+        current_price: float | None = None,
     ) -> bool:
         """Apply the configured trend filter. Returns True if signal passes."""
         if self.trend_filter == "none":
@@ -789,17 +816,17 @@ class KeyLevelStrategy(BaseStrategy):
 
         if self.trend_filter == "or":
             if self.use_or and self._or_calculated:
-                close = int(kbar.close)
-                if is_long and close < (self._or_high or 0):
+                price = int(current_price) if current_price is not None else int(kbar.close)
+                if is_long and price < (self._or_high or 0):
                     _log(
-                        "  SKIP %s: close=%d < OR_High=%d",
-                        sig.signal_type, close, self._or_high,
+                        "  SKIP %s: price=%d < OR_High=%d",
+                        sig.signal_type, price, self._or_high,
                     )
                     return False
-                if is_short and close > (self._or_low or 999999):
+                if is_short and price > (self._or_low or 999999):
                     _log(
-                        "  SKIP %s: close=%d > OR_Low=%d",
-                        sig.signal_type, close, self._or_low,
+                        "  SKIP %s: price=%d > OR_Low=%d",
+                        sig.signal_type, price, self._or_low,
                     )
                     return False
             return True
