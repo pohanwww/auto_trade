@@ -265,13 +265,12 @@ class KeyLevelStrategy(BaseStrategy):
             current_price=current_price if self.is_live else None,
         )
 
-        self._prev_close = int(kbar.close)
-
         if not signals:
+            self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "no signal")
 
         _log(
-            "[%s] %d signal(s) detected | bar: O=%d H=%d L=%d C=%d | ATR=%.1f | prev_close=%s",
+            "[%s] %d signal(s) detected | bar: O=%d H=%d L=%d C=%d | ATR=%.1f | prev_close=%d",
             bar_time.strftime("%H:%M"), len(signals),
             int(kbar.open), int(kbar.high), int(kbar.low), int(kbar.close),
             atr, self._prev_close,
@@ -306,7 +305,8 @@ class KeyLevelStrategy(BaseStrategy):
             if not self._pass_trend_filter(kbar_list, kbar, is_long, is_short, sig, current_price):
                 continue
 
-            # Valid signal found
+            # Valid signal found — update prev_close now (signal passed all filters)
+            self._prev_close = int(kbar.close)
             self._trades_today += 1
             if session_name == "day":
                 self._trades_day_session += 1

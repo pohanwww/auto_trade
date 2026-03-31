@@ -223,15 +223,20 @@ def _generate_chart(
             agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
 
     # --- today_open and OR range ---
+    or_high: int | None = None
+    or_low: int | None = None
+    or_mid: int | None = None
+    or_kbars_for_chart: list = []
     if session == "night":
         today_open = int(today_night_kbars[0].open) if today_night_kbars else None
         or_range = 1
         if len(today_night_kbars) >= OR_BARS:
             or_kbars = today_night_kbars[:OR_BARS]
-            or_range = max(
-                int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)),
-                1,
-            )
+            or_high = int(max(k.high for k in or_kbars))
+            or_low = int(min(k.low for k in or_kbars))
+            or_mid = (or_high + or_low) // 2
+            or_range = max(or_high - or_low, 1)
+            or_kbars_for_chart = or_kbars
         elif night_ohlc:
             or_range = max(night_ohlc.get("high", 0) - night_ohlc.get("low", 0), 50)
     else:
@@ -239,10 +244,11 @@ def _generate_chart(
         or_range = 1
         if len(today_kbars) >= OR_BARS:
             or_kbars = today_kbars[:OR_BARS]
-            or_range = max(
-                int(max(k.high for k in or_kbars)) - int(min(k.low for k in or_kbars)),
-                1,
-            )
+            or_high = int(max(k.high for k in or_kbars))
+            or_low = int(min(k.low for k in or_kbars))
+            or_mid = (or_high + or_low) // 2
+            or_range = max(or_high - or_low, 1)
+            or_kbars_for_chart = or_kbars
         elif day_ohlc:
             or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
 
@@ -413,6 +419,65 @@ def _generate_chart(
                 fontweight="bold" if is_signal else "normal",
             )
 
+        # --- OR range visualization ---
+        if or_high is not None and or_low is not None and or_kbars_for_chart:
+            or_start_t = or_kbars_for_chart[0].time
+            or_start_idx = time_to_idx.get(or_start_t, 0)
+            or_end_idx = xmax_idx
+            ax_c.fill_between(
+                [or_start_idx - 0.5, or_end_idx + 0.5],
+                or_low,
+                or_high,
+                alpha=0.08,
+                color="#42A5F5",
+                zorder=0,
+            )
+            or_lines = [
+                (or_high, "#26A69A", "OR High"),
+                (or_low, "#EF5350", "OR Low"),
+            ]
+            for price, clr, lbl in or_lines:
+                ax_c.hlines(
+                    price,
+                    or_start_idx,
+                    or_end_idx,
+                    colors=clr,
+                    linewidth=1.2,
+                    alpha=0.9,
+                    linestyles="--",
+                    zorder=2,
+                )
+                ax_c.text(
+                    or_start_idx - 0.8,
+                    price,
+                    f"{lbl} {price}",
+                    fontsize=7,
+                    color=clr,
+                    va="center",
+                    ha="right",
+                    fontweight="bold",
+                )
+            if or_mid is not None:
+                ax_c.hlines(
+                    or_mid,
+                    or_start_idx,
+                    or_end_idx,
+                    colors="#78909C",
+                    linewidth=0.8,
+                    alpha=0.6,
+                    linestyles=":",
+                    zorder=2,
+                )
+                ax_c.text(
+                    or_start_idx - 0.8,
+                    or_mid,
+                    f"OR Mid {or_mid}",
+                    fontsize=6.5,
+                    color="#78909C",
+                    va="center",
+                    ha="right",
+                )
+
         ax_c.set_ylabel("Price", fontsize=11)
         tick_step = max(1, n_bars // 20)
         tick_positions = list(range(0, n_bars, tick_step))
@@ -431,7 +496,8 @@ def _generate_chart(
 
         all_prices = [k.high for k in all_kbars] + [k.low for k in all_kbars]
         level_prices = [kl.price for kl in levels]
-        combined = all_prices + level_prices
+        or_prices = [p for p in [or_high, or_low] if p is not None]
+        combined = all_prices + level_prices + or_prices
         ax_c.set_ylim(min(combined) - 30, max(combined) + 30)
         ax_c.set_xlim(-1, n_bars + n_bars * 0.08)
 
@@ -447,6 +513,17 @@ def _generate_chart(
                 [0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"
             ),
         ]
+        if or_high is not None:
+            legend_els.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="#42A5F5",
+                    lw=1.2,
+                    linestyle="--",
+                    label=f"OR Range ({or_range} pts)",
+                )
+            )
         ax_c.legend(handles=legend_els, loc="upper left", fontsize=8)
 
         vol_colors = [

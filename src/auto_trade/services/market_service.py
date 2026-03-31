@@ -252,6 +252,11 @@ class MarketService:
                 existing_kbars.kbars = merged_kbars
                 cached_data["last_api_sync"] = now
 
+                # 清除 resample 緩存，強制從有 volume 的新數據重建
+                for key in list(cached_data.keys()):
+                    if key.startswith("_resample_"):
+                        del cached_data[key]
+
                 print(f"✅ 同步完成，當前共 {len(merged_kbars)} 根 K 線")
             else:
                 # 緩存為空，直接使用新數據
@@ -668,6 +673,7 @@ class MarketService:
                     if kb.low < bar.low:
                         bar.low = kb.low
                     bar.close = kb.close
+                    bar.volume += kb.volume
                 else:
                     bars.append(
                         KBar(
@@ -676,6 +682,7 @@ class MarketService:
                             high=kb.high,
                             low=kb.low,
                             close=kb.close,
+                            volume=kb.volume,
                         )
                     )
             cached_data[resample_idx_key] = len(all_1m)
