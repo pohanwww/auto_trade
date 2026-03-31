@@ -69,10 +69,11 @@ class BaseStrategy(ABC):
         """Legacy: 回傳 instant breakout 的觸發價位列表。"""
         return []
 
-    def on_position_closed(self) -> None:  # noqa: B027
+    def on_position_closed(self, exit_price: int | None = None) -> None:  # noqa: B027
         """平倉後回呼（可選覆寫）
 
         供需要在平倉後重設內部狀態的策略使用（如冷卻計數器）。
+        exit_price: 平倉成交價，用於更新 prev_close 等狀態。
         """
 
     def __repr__(self) -> str:

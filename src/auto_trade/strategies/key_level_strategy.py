@@ -38,7 +38,7 @@ from auto_trade.services.key_level_detector import (
     SessionData,
     find_confluence_levels,
 )
-from auto_trade.services.key_level_signal import KeyLevelSignal, detect_signals
+from auto_trade.services.key_level_signal import KeyLevelSignal
 from auto_trade.strategies.base_strategy import BaseStrategy
 
 
@@ -181,7 +181,6 @@ class KeyLevelStrategy(BaseStrategy):
         self._trades_day_session = 0
         self._trades_night_session = 0
         self._atr: float = 0.0
-        self._prev_close: int | None = None
         self._levels_calculated = False
         self._cooldown_until: datetime | None = None
         self._last_bar_time: datetime | None = None
@@ -189,7 +188,8 @@ class KeyLevelStrategy(BaseStrategy):
         # Targeted breakout tracking
         self._target_long: KeyLevel | None = None
         self._target_short: KeyLevel | None = None
-        self._current_bar_open: int | None = None
+        self._instant_target_long: KeyLevel | None = None
+        self._instant_target_short: KeyLevel | None = None
 
     # ──────────────────────────────────────────────
     # Public interface
@@ -213,6 +213,7 @@ class KeyLevelStrategy(BaseStrategy):
             return self._hold(symbol, current_price, "insufficient data")
 
         kbar = kbar_list.kbars[-1]
+        prev_kbar = kbar_list.kbars[-2]
         bar_time = kbar.time
         self._last_bar_time = bar_time
 
@@ -226,8 +227,6 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Only trade during active session
         if not self._is_active_session(bar_time):
-            if bar_close:
-                self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "outside day session")
 
         # Calculate OR if using OR-based trend filter
@@ -235,12 +234,10 @@ class KeyLevelStrategy(BaseStrategy):
             if not self._try_calculate_or(kbar_list):
                 return self._hold(symbol, current_price, "waiting for OR")
 
-        # Calculate key levels (once per day, after OR or at session start)
         if not self._levels_calculated:
             self._calculate_key_levels(kbar_list)
             if not self._signal_levels:
                 return self._hold(symbol, current_price, "no key levels found")
-            self._init_history_state(kbar_list)
 
         # ATR
         atr = self.indicator_service.calculate_atr(kbar_list, self.atr_period)
@@ -248,28 +245,21 @@ class KeyLevelStrategy(BaseStrategy):
             return self._hold(symbol, current_price, "ATR unavailable")
         self._atr = atr
 
-        # Compute targets after ATR is available (first time or at bar close)
-        if self._target_long is None and self._target_short is None and self._levels_calculated:
-            self._compute_active_targets(kbar)
+        # Compute targets from kbar data (always fresh, no stale state)
+        self._compute_active_targets(kbar_list)
 
         # Check trading window
         if not self._is_in_trading_window(bar_time):
-            if bar_close:
-                self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "outside entry window")
 
         # Check trade limit
         session_name = self._get_trade_session(bar_time)
         if self._reached_trade_limit(session_name):
-            if bar_close:
-                self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "max trades reached")
 
         # Cooldown: skip 1 bar after last exit
         if self._cooldown_until is not None:
             if bar_time <= self._cooldown_until:
-                if bar_close:
-                    self._prev_close = int(kbar.close)
                 return self._hold(symbol, current_price, "cooldown")
             self._cooldown_until = None
 
@@ -278,27 +268,23 @@ class KeyLevelStrategy(BaseStrategy):
             current_price, kbar_list, kbar,
         )
         if not allow_long and not allow_short:
-            if bar_close:
-                self._prev_close = int(kbar.close)
             return self._hold(symbol, current_price, "no direction allowed")
 
         # === Breakout check (targeted: only the next level in each direction) ===
         signal = self._check_breakout_target(
-            current_price, kbar, allow_long, allow_short, bar_close, symbol,
+            current_price, kbar, prev_kbar,
+            allow_long, allow_short, bar_close, symbol,
         )
         if signal:
             return signal
 
         # === Bounce check (bar close only, scans all signal levels) ===
         if bar_close:
-            signal = self._check_bounce(kbar, allow_long, allow_short, symbol)
+            signal = self._check_bounce(
+                kbar, prev_kbar, allow_long, allow_short, symbol,
+            )
             if signal:
                 return signal
-
-        # No signal — update state only at bar close
-        if bar_close:
-            self._prev_close = int(kbar.close)
-            self._compute_active_targets(kbar)
 
         return self._hold(symbol, current_price, "no signal")
 
@@ -319,12 +305,18 @@ class KeyLevelStrategy(BaseStrategy):
                 state["target_long"] = self._target_long.price
             if self._target_short:
                 state["target_short"] = self._target_short.price
+            if self._instant_target_long:
+                state["instant_target_long"] = self._instant_target_long.price
+            if self._instant_target_short:
+                state["instant_target_short"] = self._instant_target_short.price
 
         state["trades_today"] = self._trades_today
         state["trades_day_session"] = self._trades_day_session
         state["trades_night_session"] = self._trades_night_session
         if self._cooldown_until is not None:
             state["cooldown_until"] = self._cooldown_until.isoformat()
+        if self._current_trading_day is not None:
+            state["trading_day"] = str(self._current_trading_day)
 
         return state if state else None
 
@@ -332,6 +324,16 @@ class KeyLevelStrategy(BaseStrategy):
         """Restore runtime state from persisted strategy_state."""
         if not state:
             return
+
+        from datetime import date as _date
+
+        td = state.get("trading_day")
+        if td is not None:
+            try:
+                self._current_trading_day = _date.fromisoformat(td)
+                _log("Restored trading_day=%s", td)
+            except (ValueError, TypeError):
+                pass
 
         trades = state.get("trades_today")
         if trades is not None:
@@ -372,8 +374,8 @@ class KeyLevelStrategy(BaseStrategy):
         short_price = None
 
         # Long target
-        if self._target_long and not self.short_only:
-            tp = self._target_long.price + buf
+        if self._instant_target_long and not self.short_only:
+            tp = self._instant_target_long.price + buf
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
                 if self._or_high is not None and tp < self._or_high:
                     pass  # trigger below OR_high → impossible to pass OR gate
@@ -383,8 +385,8 @@ class KeyLevelStrategy(BaseStrategy):
                 long_price = tp
 
         # Short target
-        if self._target_short and not self.long_only:
-            tp = self._target_short.price - buf
+        if self._instant_target_short and not self.long_only:
+            tp = self._instant_target_short.price - buf
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
                 if self._or_low is not None and tp > self._or_low:
                     pass  # trigger above OR_low → impossible to pass OR gate
@@ -405,11 +407,11 @@ class KeyLevelStrategy(BaseStrategy):
             triggers.append((short_p, "below"))
         return triggers
 
-    def on_position_closed(self) -> None:
+    def on_position_closed(self, exit_price: int | None = None) -> None:
         tf_min = self._TF_MINUTES.get(self.timeframe, 5)
-        ref = self._last_bar_time or datetime.now()
-        mins_past = ref.minute % tf_min
-        next_bar = ref.replace(second=0, microsecond=0) + timedelta(
+        now = datetime.now()
+        mins_past = now.minute % tf_min
+        next_bar = now.replace(second=0, microsecond=0) + timedelta(
             minutes=tf_min - mins_past,
         )
         self._cooldown_until = next_bar
@@ -556,31 +558,6 @@ class KeyLevelStrategy(BaseStrategy):
             )
         if self._trailing_levels:
             _log("  Trailing ladder: %s", self._trailing_levels)
-
-    def _init_history_state(self, kbar_list: KBarList) -> None:
-        """Recover prev_close from today's kbar history.
-
-        Called once after key levels are calculated, so that a mid-day restart
-        has correct prev_close state for breakout detection (prev_close=None
-        would bypass the "was price on the other side?" check).
-        """
-        if self._current_trading_day is None:
-            return
-
-        today = self._current_trading_day
-        today_kbars = sorted(
-            [
-                k for k in kbar_list.kbars
-                if self._get_trading_day(k.time) == today
-                and self._is_active_session(k.time)
-            ],
-            key=lambda k: k.time,
-        )
-
-        if self._prev_close is None and len(today_kbars) >= 2:
-            self._prev_close = int(today_kbars[-2].close)
-            _log("  Recovered prev_close from history: %d (from %d today bars)",
-                 self._prev_close, len(today_kbars))
 
     # ──────────────────────────────────────────────
     # OR calculation
@@ -749,7 +726,8 @@ class KeyLevelStrategy(BaseStrategy):
         self._cooldown_until = None
         self._target_long = None
         self._target_short = None
-        self._current_bar_open = None
+        self._instant_target_long = None
+        self._instant_target_short = None
 
     def _get_trading_day(self, bar_time: datetime):
         """Return business date. Early-morning night-session bars belong to previous day."""
@@ -793,53 +771,72 @@ class KeyLevelStrategy(BaseStrategy):
 
         return allow_long, allow_short
 
-    def _compute_active_targets(self, kbar) -> None:
+    def _compute_active_targets(self, kbar_list: KBarList) -> None:
         """Determine the next breakout target KL in each direction.
 
-        Called at bar close and after key level calculation.
-        Long target: nearest signal KL above where prev_close hasn't broken through.
-        Short target: nearest signal KL below where prev_close hasn't broken through.
+        Computes two sets of targets:
+          - bar-close targets (ref = prev_kbar.close): for regular bar evaluations
+          - instant targets (ref = kbar.open): for mid-bar instant monitoring
         """
         self._target_long = None
         self._target_short = None
-        self._current_bar_open = int(kbar.open)
+        self._instant_target_long = None
+        self._instant_target_short = None
 
-        if not self._signal_levels or self._atr <= 0:
+        if not self._signal_levels or self._atr <= 0 or len(kbar_list) < 2:
             return
+
+        kbar = kbar_list.kbars[-1]
+        prev_kbar = kbar_list.kbars[-2]
+        bar_ref = int(prev_kbar.close)
+        instant_ref = int(kbar.open)
 
         levels_asc = sorted(self._signal_levels, key=lambda kl: kl.price)
         buf = self._atr * self.breakout_buffer
 
-        if self.use_breakout and not self.short_only and self._prev_close is not None:
+        if self.use_breakout and not self.short_only:
             for kl in levels_asc:
-                if self._prev_close <= kl.price + buf:
+                if self._target_long is None and bar_ref <= kl.price + buf:
                     self._target_long = kl
+                if self._instant_target_long is None and instant_ref <= kl.price + buf:
+                    self._instant_target_long = kl
+                if self._target_long and self._instant_target_long:
                     break
 
-        if self.use_breakout and not self.long_only and self._prev_close is not None:
+        if self.use_breakout and not self.long_only:
             for kl in reversed(levels_asc):
-                if self._prev_close >= kl.price - buf:
+                if self._target_short is None and bar_ref >= kl.price - buf:
                     self._target_short = kl
+                if self._instant_target_short is None and instant_ref >= kl.price - buf:
+                    self._instant_target_short = kl
+                if self._target_short and self._instant_target_short:
                     break
 
         _log(
-            "  Targets: long=%s short=%s | prev_close=%s | bar_open=%d",
+            "  Targets: long=%s short=%s | instant_long=%s instant_short=%s | bar_ref=%d instant_ref=%d",
             self._target_long.price if self._target_long else None,
             self._target_short.price if self._target_short else None,
-            self._prev_close,
-            self._current_bar_open,
+            self._instant_target_long.price if self._instant_target_long else None,
+            self._instant_target_short.price if self._instant_target_short else None,
+            bar_ref, instant_ref,
         )
 
     def _check_breakout_target(
         self,
         current_price: float,
         kbar,
+        prev_kbar,
         allow_long: bool,
         allow_short: bool,
         bar_close: bool,
         symbol: str,
     ) -> StrategySignal | None:
-        """Check if price has broken through the active target level."""
+        """Check if price has broken through the active target level.
+
+        Reference price for "was on the other side":
+          - bar_close: prev_kbar.close (the completed bar before current)
+          - instant: kbar.open (current bar's open)
+        """
         if self._atr <= 0:
             return None
 
@@ -848,59 +845,58 @@ class KeyLevelStrategy(BaseStrategy):
         ibuf = self._atr * self.instant_threshold
 
         # --- Long breakout ---
-        if allow_long and self.use_breakout and self._target_long:
-            kl = self._target_long
+        long_kl = self._target_long if bar_close else self._instant_target_long
+        if allow_long and self.use_breakout and long_kl:
+            kl = long_kl
+            ref = int(prev_kbar.close) if bar_close else int(kbar.open)
 
             if bar_close and not self.is_live:
-                # Backtest: check simulated instant first (bar OHLC)
                 if (int(kbar.high) > kl.price + ibuf
                         and int(kbar.low) <= kl.price + bbuf
-                        and (self._prev_close is None or self._prev_close <= kl.price + bbuf)):
+                        and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(kl.price + ibuf), True,
                         kbar, session_name, "breakout_long", symbol,
                     )
-                # Then close-confirmed
                 if (int(kbar.close) > kl.price + bbuf
-                        and (self._prev_close is None or self._prev_close <= kl.price + bbuf)):
+                        and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_long", symbol,
                     )
 
             elif bar_close and self.is_live:
-                # Live bar close: use kbar.close with breakout_buffer
                 if (int(kbar.close) > kl.price + bbuf
-                        and (self._prev_close is None or self._prev_close <= kl.price + bbuf)):
+                        and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_long", symbol,
                     )
 
             else:
-                # Instant (live, between bars): current_price with instant_threshold
-                bar_open = self._current_bar_open or int(kbar.open)
                 if (int(current_price) > kl.price + ibuf
-                        and bar_open <= kl.price + bbuf):
+                        and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(current_price), True,
                         kbar, session_name, "breakout_long", symbol,
                     )
 
         # --- Short breakout ---
-        if allow_short and self.use_breakout and self._target_short:
-            kl = self._target_short
+        short_kl = self._target_short if bar_close else self._instant_target_short
+        if allow_short and self.use_breakout and short_kl:
+            kl = short_kl
+            ref = int(prev_kbar.close) if bar_close else int(kbar.open)
 
             if bar_close and not self.is_live:
                 if (int(kbar.low) < kl.price - ibuf
                         and int(kbar.high) >= kl.price - bbuf
-                        and (self._prev_close is None or self._prev_close >= kl.price - bbuf)):
+                        and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(kl.price - ibuf), True,
                         kbar, session_name, "breakout_short", symbol,
                     )
                 if (int(kbar.close) < kl.price - bbuf
-                        and (self._prev_close is None or self._prev_close >= kl.price - bbuf)):
+                        and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_short", symbol,
@@ -908,16 +904,15 @@ class KeyLevelStrategy(BaseStrategy):
 
             elif bar_close and self.is_live:
                 if (int(kbar.close) < kl.price - bbuf
-                        and (self._prev_close is None or self._prev_close >= kl.price - bbuf)):
+                        and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_short", symbol,
                     )
 
             else:
-                bar_open = self._current_bar_open or int(kbar.open)
                 if (int(current_price) < kl.price - ibuf
-                        and bar_open >= kl.price - bbuf):
+                        and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(current_price), True,
                         kbar, session_name, "breakout_short", symbol,
@@ -928,32 +923,34 @@ class KeyLevelStrategy(BaseStrategy):
     def _check_bounce(
         self,
         kbar,
+        prev_kbar,
         allow_long: bool,
         allow_short: bool,
         symbol: str,
     ) -> StrategySignal | None:
         """Check bounce signals at bar close (scan all signal levels)."""
-        if not self.use_bounce or self._atr <= 0 or self._prev_close is None:
+        if not self.use_bounce or self._atr <= 0:
             return None
 
         buf = self._atr * self.bounce_buffer
         close = int(kbar.close)
         high = int(kbar.high)
         low = int(kbar.low)
+        ref = int(prev_kbar.close)
         session_name = self._get_trade_session(kbar.time)
 
         for kl in self._signal_levels:
             level = kl.price
 
             if allow_long and low <= level + buf and close > level:
-                if self._prev_close > level:
+                if ref > level:
                     return self._emit_entry(
                         True, kl, close, False,
                         kbar, session_name, "bounce_long", symbol,
                     )
 
             if allow_short and high >= level - buf and close < level:
-                if self._prev_close < level:
+                if ref < level:
                     return self._emit_entry(
                         False, kl, close, False,
                         kbar, session_name, "bounce_short", symbol,
@@ -973,7 +970,6 @@ class KeyLevelStrategy(BaseStrategy):
         symbol: str,
     ) -> StrategySignal:
         """Build and return an entry signal, updating trade counters."""
-        self._prev_close = int(kbar.close)
         self._trades_today += 1
         if session_name == "day":
             self._trades_day_session += 1

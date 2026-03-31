@@ -799,7 +799,7 @@ class TradingEngine:
             # 全部平倉 → 清除 position.json + 通知策略
             if pm.position is None:
                 self.record_service.remove_position(sub_symbol=action.sub_symbol)
-                self.trading_unit.strategy.on_position_closed()
+                self.trading_unit.strategy.on_position_closed(exit_price=fill_price)
             else:
                 # 部分平倉 → 更新 position.json（移除已平倉 leg 的條目）
                 legs_info = existing_record.legs_info or {}
