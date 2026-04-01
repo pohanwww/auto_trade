@@ -126,6 +126,7 @@ def _generate_chart(
     symbol: str = "MXF",
     sub_symbol: str = "MXFR1",
     session: str = "day",
+    lookback: int = 1,
 ) -> dict:
     """Fetch data, compute levels, generate PNG.
 
@@ -152,7 +153,8 @@ def _generate_chart(
 
     tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
     tf_min = tf_minutes.get(timeframe, 5)
-    lookback_days = max(5, 5 * tf_min // 5)
+    session_lookback = max(lookback, tf_min // 5)
+    lookback_days = max(5, session_lookback * 3 + 2)
     start_date = target_date - timedelta(days=lookback_days)
 
     kbar_list = ms.get_futures_kbars_by_date_range(
@@ -204,8 +206,6 @@ def _generate_chart(
         }
 
     # --- Aggregate N most recent sessions for swing/volume ---
-    session_lookback = max(1, tf_min // 5)
-
     if session_lookback <= 1:
         agg_day_kbars = latest_day_kbars
         agg_night_kbars = latest_night_kbars
@@ -276,17 +276,19 @@ def _generate_chart(
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
     # Build chart kbars based on session mode
-    if session == "night":
-        chart_prev_day = latest_day_kbars
-        chart_prev_night = latest_night_kbars
-        all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
-    elif session == "day":
-        chart_prev_day = latest_day_kbars
-        chart_prev_night = latest_night_kbars
-        all_kbars = chart_prev_day + chart_prev_night + today_kbars
+    # When lookback > 1, show all aggregated historical kbars on chart
+    if session_lookback > 1:
+        chart_prev_day = agg_day_kbars
+        chart_prev_night = agg_night_kbars
     else:
         chart_prev_day = latest_day_kbars
         chart_prev_night = latest_night_kbars
+
+    if session == "night":
+        all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
+    elif session == "day":
+        all_kbars = chart_prev_day + chart_prev_night + today_kbars
+    else:
         all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
@@ -488,8 +490,9 @@ def _generate_chart(
         session_label = {"day": "Day", "night": "Night", "both": "Day+Night"}.get(
             session, "Day"
         )
+        lb_tag = f" | lookback={session_lookback}" if session_lookback > 1 else ""
         ax_c.set_title(
-            f"Key Level — {symbol} {timeframe} — {target_date_str} ({session_label})",
+            f"Key Level — {symbol} {timeframe} — {target_date_str} ({session_label}{lb_tag})",
             fontsize=14,
             fontweight="bold",
         )
@@ -537,7 +540,8 @@ def _generate_chart(
 
         plt.tight_layout()
         sess_tag = f"_{session}" if session != "day" else ""
-        fname = f"kl_{symbol}_{timeframe}_{target_date_str}{sess_tag}.png"
+        lb_tag = f"_lb{session_lookback}" if session_lookback > 1 else ""
+        fname = f"kl_{symbol}_{timeframe}_{target_date_str}{sess_tag}{lb_tag}.png"
         out_path = PNG_DIR / fname
         plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
 
@@ -812,6 +816,7 @@ def api_kl_generate(
     symbol: str = Query("MXF"),
     sub_symbol: str = Query("MXFR1"),
     session: str = Query("day", description="day / night / both"),
+    lookback: int = Query(1, ge=1, le=10, description="KL lookback sessions (1=default)"),
     token: str | None = Query(None),
 ):
     if not _check_token(token):
@@ -821,7 +826,7 @@ def api_kl_generate(
             {"ok": False, "error": "Another chart is being generated, please wait"}
         )
     try:
-        result = _generate_chart(date, timeframe, symbol, sub_symbol, session=session)
+        result = _generate_chart(date, timeframe, symbol, sub_symbol, session=session, lookback=lookback)
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -2024,6 +2029,15 @@ def _build_key_levels_html(token_param: str) -> str:
     <option value="MXF">MXF (小台)</option>
     <option value="TXF">TXF (大台)</option>
   </select>
+  <label>Lookback</label>
+  <select id="inp-lb">
+    <option value="1" selected>1 (預設)</option>
+    <option value="2">2 sessions</option>
+    <option value="3">3 sessions</option>
+    <option value="5">5 sessions</option>
+    <option value="7">7 sessions</option>
+    <option value="10">10 sessions</option>
+  </select>
   <button class="btn" id="btn-gen" onclick="generate()">Generate</button>
 </div>
 
@@ -2085,11 +2099,12 @@ async function generate() {{
   const tf = document.getElementById('inp-tf').value;
   const sess = document.getElementById('inp-session').value;
   const sym = document.getElementById('inp-sym').value;
+  const lb = document.getElementById('inp-lb').value;
   const subSym = SUB_MAP[sym] || sym + 'R1';
   btn.disabled = true; btn.textContent = 'Generating...';
   showToast('Fetching data & computing levels...');
   try {{
-    const res = await fetch(`/api/kl/generate?date=${{date}}&timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&sub_symbol=${{subSym}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
+    const res = await fetch(`/api/kl/generate?date=${{date}}&timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&sub_symbol=${{subSym}}&lookback=${{lb}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
     const data = await res.json();
     if (data.ok) {{
       showToast(`Generated: ${{data.filename}} (${{data.bars}} bars, ${{data.levels?.length || 0}} levels)`);
