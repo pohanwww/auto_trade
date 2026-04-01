@@ -144,7 +144,11 @@ def _generate_chart(
 
     from auto_trade.services.key_level_detector import (
         SessionData,
+        count_touches_for_zones,
+        detect_swing_clusters,
+        detect_volume_nodes,
         find_confluence_levels,
+        merge_to_zones,
     )
 
     ms = _get_kl_market_service()
@@ -266,13 +270,100 @@ def _generate_chart(
     )
 
     signal_level_count = 7
-    levels = find_confluence_levels(
+    swing_period = 10
+    cluster_tol = 50
+    zone_tol = 50
+
+    # --- Step 1: base KL (recency pool 20 → score top 15) ---
+    base_pool = find_confluence_levels(
         session_data,
-        swing_period=10,
-        cluster_tolerance=50,
-        zone_tolerance=50,
-        max_levels=15,
+        swing_period=swing_period,
+        cluster_tolerance=cluster_tol,
+        zone_tolerance=zone_tol,
+        max_levels=20,
+        recency_pool=20,
     )
+    base_pool.sort(key=lambda z: z.score, reverse=True)
+    levels = base_pool[:15]
+
+    # --- Step 2: auto-expand if signal KLs don't cover both sides of OR ---
+    anchor = or_mid or today_open or day_ohlc.get("close", 0)
+    if anchor and session_lookback <= 1:
+        sig = levels[:signal_level_count]
+        sig_above = sum(1 for kl in sig if kl.price >= anchor)
+        sig_below = sum(1 for kl in sig if kl.price < anchor)
+        missing_above = sig_above < 1
+        missing_below = sig_below < 1
+
+        if missing_above or missing_below:
+            existing_prices = {kl.price for kl in base_pool}
+            max_expand = min(5, max(len(day_sessions), len(night_sessions), 1))
+            for lb in range(2, max_expand + 1):
+                exp_day_dates = sorted(day_sessions.keys(), reverse=True)[:lb]
+                exp_day = []
+                for dd in sorted(exp_day_dates):
+                    exp_day.extend(sorted(day_sessions[dd], key=lambda k: k.time))
+                exp_night_dates = sorted(night_sessions.keys(), reverse=True)[:lb]
+                exp_night = []
+                for nd in sorted(exp_night_dates):
+                    exp_night.extend(sorted(night_sessions[nd], key=lambda k: k.time))
+
+                exp_session = SessionData(
+                    prev_day_high=day_ohlc.get("high", 0),
+                    prev_day_low=day_ohlc.get("low", 0),
+                    prev_day_close=day_ohlc.get("close", 0),
+                    prev_night_high=night_ohlc.get("high"),
+                    prev_night_low=night_ohlc.get("low"),
+                    prev_night_close=night_ohlc.get("close"),
+                    today_open=today_open,
+                    or_range=or_range,
+                    prev_day_kbars=exp_day,
+                    prev_night_kbars=exp_night,
+                )
+                all_zones = find_confluence_levels(
+                    exp_session, swing_period=swing_period,
+                    cluster_tolerance=cluster_tol, zone_tolerance=zone_tol,
+                    max_levels=999, recency_pool=999,
+                )
+                for z in all_zones:
+                    if any(abs(z.price - ep) <= zone_tol for ep in existing_prices):
+                        continue
+                    if missing_above and z.price >= anchor:
+                        base_pool.append(z)
+                        existing_prices.add(z.price)
+                    elif missing_below and z.price < anchor:
+                        base_pool.append(z)
+                        existing_prices.add(z.price)
+
+                base_pool.sort(key=lambda z: z.score, reverse=True)
+                levels = base_pool[:15]
+                sig = levels[:signal_level_count]
+                sa = sum(1 for kl in sig if kl.price >= anchor)
+                sb = sum(1 for kl in sig if kl.price < anchor)
+                if (not missing_above or sa >= 1) and (not missing_below or sb >= 1):
+                    break
+
+    # --- Step 3: intraday KL supplement (using today's kbars) ---
+    today_session_kbars = today_night_kbars if session == "night" else today_kbars
+    if today_session_kbars and len(today_session_kbars) >= swing_period * 2 + 1:
+        sig_threshold = levels[signal_level_count].score if len(levels) > signal_level_count else 0
+        trail_threshold = levels[-1].score if levels else 0
+        existing_prices = {kl.price for kl in levels}
+
+        raw_intra = detect_swing_clusters(today_session_kbars, period=swing_period, cluster_tolerance=cluster_tol)
+        raw_intra.extend(detect_volume_nodes(today_session_kbars, bucket_size=10))
+        if raw_intra:
+            intra_zones = merge_to_zones(raw_intra, zone_tolerance=zone_tol)
+            count_touches_for_zones(intra_zones, today_session_kbars, period=swing_period, tolerance=zone_tol)
+            for z in intra_zones:
+                z.score = round(z.score + z.touch_count, 2)
+            for z in intra_zones:
+                if any(abs(z.price - ep) <= zone_tol for ep in existing_prices):
+                    continue
+                if z.score >= trail_threshold:
+                    levels.append(z)
+                    existing_prices.add(z.price)
+
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
     # Build chart kbars based on session mode

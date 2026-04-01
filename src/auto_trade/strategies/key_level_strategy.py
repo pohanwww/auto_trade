@@ -248,6 +248,11 @@ class KeyLevelStrategy(BaseStrategy):
         self._instant_target_long: KeyLevel | None = None
         self._instant_target_short: KeyLevel | None = None
 
+        # Intraday KL supplement state
+        self._last_supplement_hour: int | None = None
+        self._signal_score_threshold: float = 0.0
+        self._trailing_score_threshold: float = 0.0
+
     # ──────────────────────────────────────────────
     # Public interface
     # ──────────────────────────────────────────────
