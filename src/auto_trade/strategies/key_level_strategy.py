@@ -36,7 +36,11 @@ from auto_trade.services.indicator_service import IndicatorService
 from auto_trade.services.key_level_detector import (
     KeyLevel,
     SessionData,
+    count_touches_for_zones,
+    detect_swing_clusters,
+    detect_volume_nodes,
     find_confluence_levels,
+    merge_to_zones,
 )
 from auto_trade.services.key_level_signal import KeyLevelSignal
 from auto_trade.strategies.base_strategy import BaseStrategy
@@ -297,6 +301,9 @@ class KeyLevelStrategy(BaseStrategy):
         if atr is None or atr <= 0:
             return self._hold(symbol, current_price, "ATR unavailable")
         self._atr = atr
+
+        # Hourly intraday KL supplement (before target computation)
+        self._try_supplement_intraday_kls(kbar_list, bar_time)
 
         # Compute targets from kbar data (always fresh, no stale state)
         self._compute_active_targets(kbar_list)
@@ -677,6 +684,14 @@ class KeyLevelStrategy(BaseStrategy):
         )
         self._levels_calculated = True
 
+        # Score thresholds for intraday supplement
+        if len(self._key_levels) > n:
+            self._signal_score_threshold = self._key_levels[n].score
+        elif self._key_levels:
+            self._signal_score_threshold = self._key_levels[-1].score
+        if self._key_levels:
+            self._trailing_score_threshold = self._key_levels[-1].score
+
         _log("  Total levels found: %d (signal=%d, trailing=%d)",
                  len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
         for i, kl in enumerate(self._key_levels):
@@ -688,6 +703,71 @@ class KeyLevelStrategy(BaseStrategy):
             )
         if self._trailing_levels:
             _log("  Trailing ladder: %s", self._trailing_levels)
+
+    # ──────────────────────────────────────────────
+    # Intraday KL supplement (hourly)
+    # ──────────────────────────────────────────────
+
+    def _try_supplement_intraday_kls(self, kbar_list: KBarList, bar_time: datetime) -> None:
+        """Detect new KLs from today's intraday kbars and append if score qualifies."""
+        current_hour = bar_time.hour
+        if self._last_supplement_hour is not None and current_hour == self._last_supplement_hour:
+            return
+        if not self._levels_calculated:
+            return
+
+        self._last_supplement_hour = current_hour
+
+        today = self._current_trading_day
+        today_kbars = [
+            k for k in kbar_list.kbars
+            if self._get_trading_day(k.time) == today
+            and self._is_active_session(k.time)
+        ]
+        today_kbars.sort(key=lambda k: k.time)
+
+        if len(today_kbars) < self.swing_period * 2 + 1:
+            return
+
+        raw = detect_swing_clusters(
+            today_kbars, period=self.swing_period, cluster_tolerance=self.cluster_tolerance,
+        )
+        raw.extend(detect_volume_nodes(today_kbars, bucket_size=10))
+
+        if not raw:
+            return
+
+        zones = merge_to_zones(raw, zone_tolerance=self.zone_tolerance)
+        count_touches_for_zones(zones, today_kbars, period=self.swing_period, tolerance=self.zone_tolerance)
+        for z in zones:
+            z.score = round(z.score + z.touch_count, 2)
+
+        existing_prices = {kl.price for kl in self._key_levels}
+        existing_trail = set(self._trailing_levels)
+        zt = self.zone_tolerance
+        added = []
+
+        for z in zones:
+            if any(abs(z.price - ep) <= zt for ep in existing_prices | existing_trail):
+                continue
+
+            if z.score >= self._signal_score_threshold:
+                self._signal_levels.append(z)
+                self._key_levels.append(z)
+                existing_prices.add(z.price)
+                added.append(("SIG", z))
+            elif z.score >= self._trailing_score_threshold:
+                self._trailing_levels.append(z.price)
+                self._trailing_levels.sort()
+                self._key_levels.append(z)
+                existing_prices.add(z.price)
+                added.append(("TRAIL", z))
+
+        if added:
+            _log("  Intraday KL supplement (hour=%d): +%d levels", current_hour, len(added))
+            for role, z in added:
+                _log("    [%s] price=%d | score=%.1f | sources=%s",
+                     role, z.price, z.score, ", ".join(z.sources))
 
     # ──────────────────────────────────────────────
     # OR calculation
@@ -858,6 +938,9 @@ class KeyLevelStrategy(BaseStrategy):
         self._target_short = None
         self._instant_target_long = None
         self._instant_target_short = None
+        self._last_supplement_hour: int | None = None
+        self._signal_score_threshold: float = 0.0
+        self._trailing_score_threshold: float = 0.0
 
     def _get_trading_day(self, bar_time: datetime):
         """Return business date. Early-morning night-session bars belong to previous day."""
