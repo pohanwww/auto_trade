@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_trade.models.market import KBar
+    from auto_trade.models.market import KBar, KBarList
 
 
 # ──────────────────────────────────────────────
@@ -548,3 +548,241 @@ def find_confluence_levels(
     recent = zones[:recency_pool]
     recent.sort(key=lambda z: z.score, reverse=True)
     return recent[:max_levels]
+
+
+# ──────────────────────────────────────────────
+# Shared high-level KL calculation (strategy + dashboard)
+# ──────────────────────────────────────────────
+
+EXCHANGE_DAY_START = time(8, 45)
+EXCHANGE_DAY_END = time(13, 45)
+EXCHANGE_NIGHT_START = time(15, 0)
+EXCHANGE_NIGHT_END = time(5, 0)
+
+
+@dataclass
+class KLCalcResult:
+    """Result container for calculate_key_levels_from_kbars."""
+    levels: list[KeyLevel]
+    day_ohlc: dict[str, int]
+    night_ohlc: dict[str, int]
+    today_open: int | None
+    day_sessions: dict
+    night_sessions: dict
+    today_day_kbars: list
+    today_night_kbars: list
+    agg_day_kbars: list
+    agg_night_kbars: list
+
+
+def split_sessions(
+    kbars: list[KBar],
+    trading_day: date,
+    in_night_session: bool = False,
+) -> tuple[dict, dict, list, list]:
+    """Split kbars into grouped day/night sessions.
+
+    Canonical session-splitting logic shared between strategy and dashboard.
+    In night mode, today's day kbars are also placed into day_sessions
+    so they participate in KL calculation as "prev" data.
+
+    Returns:
+        day_sessions:  dict[date, list[KBar]] — historical (+ today's day for night mode)
+        night_sessions: dict[date, list[KBar]] — historical night sessions
+        today_day_kbars:  list[KBar] — today's day session (chart display)
+        today_night_kbars: list[KBar] — tonight's session (chart + intraday supplement)
+    """
+    day_sessions: dict[date, list] = {}
+    night_sessions: dict[date, list] = {}
+    today_day: list = []
+    today_night: list = []
+
+    for kbar in kbars:
+        d = kbar.time.date()
+        t = kbar.time.time()
+
+        if EXCHANGE_DAY_START <= t < EXCHANGE_DAY_END:
+            if d < trading_day:
+                day_sessions.setdefault(d, []).append(kbar)
+            elif d == trading_day:
+                today_day.append(kbar)
+                if in_night_session:
+                    day_sessions.setdefault(d, []).append(kbar)
+        elif t >= EXCHANGE_NIGHT_START:
+            if d < trading_day:
+                night_sessions.setdefault(d, []).append(kbar)
+            elif d == trading_day and in_night_session:
+                today_night.append(kbar)
+        elif t < EXCHANGE_NIGHT_END:
+            ns_date = d - timedelta(days=1)
+            if ns_date < trading_day:
+                night_sessions.setdefault(ns_date, []).append(kbar)
+            elif ns_date == trading_day and in_night_session:
+                today_night.append(kbar)
+
+    today_day.sort(key=lambda k: k.time)
+    today_night.sort(key=lambda k: k.time)
+    return day_sessions, night_sessions, today_day, today_night
+
+
+def calculate_key_levels_from_kbars(
+    kbars: list[KBar],
+    trading_day: date,
+    in_night_session: bool = False,
+    *,
+    or_range: int = 1,
+    swing_period: int = 10,
+    cluster_tolerance: int = 50,
+    zone_tolerance: int = 50,
+    signal_level_count: int = 7,
+    recency_pool: int = 20,
+    session_lookback: int = 1,
+    include_intraday: bool = False,
+) -> KLCalcResult:
+    """Full KL calculation pipeline — shared by strategy and dashboard.
+
+    1. Split kbars into day/night sessions
+    2. Extract OHLC from latest session (for pivot points)
+    3. Aggregate N sessions of kbars for swing/volume detection
+    4. Run find_confluence_levels → score sort → top 15
+    5. Optionally run intraday supplement on today's session kbars
+    """
+    # 1. Session split
+    day_sessions, night_sessions, today_day, today_night = split_sessions(
+        kbars, trading_day, in_night_session,
+    )
+
+    # 2. OHLC from latest session
+    day_ohlc: dict[str, int] = {}
+    latest_day_kbars: list = []
+    if day_sessions:
+        latest = max(day_sessions.keys())
+        latest_day_kbars = sorted(day_sessions[latest], key=lambda k: k.time)
+        day_ohlc = {
+            "high": int(max(k.high for k in latest_day_kbars)),
+            "low": int(min(k.low for k in latest_day_kbars)),
+            "close": int(latest_day_kbars[-1].close),
+        }
+
+    night_ohlc: dict[str, int] = {}
+    latest_night_kbars: list = []
+    if night_sessions:
+        latest_n = max(night_sessions.keys())
+        latest_night_kbars = sorted(night_sessions[latest_n], key=lambda k: k.time)
+        night_ohlc = {
+            "high": int(max(k.high for k in latest_night_kbars)),
+            "low": int(min(k.low for k in latest_night_kbars)),
+            "close": int(latest_night_kbars[-1].close),
+        }
+
+    # today_open from session's first bar
+    today_session = today_night if in_night_session else today_day
+    today_open = int(today_session[0].open) if today_session else None
+
+    # 3. Aggregate kbars
+    if session_lookback <= 1:
+        agg_day = latest_day_kbars
+        agg_night = latest_night_kbars
+    else:
+        d_dates = sorted(day_sessions.keys(), reverse=True)[:session_lookback]
+        agg_day = []
+        for dd in sorted(d_dates):
+            agg_day.extend(sorted(day_sessions[dd], key=lambda k: k.time))
+        n_dates = sorted(night_sessions.keys(), reverse=True)[:session_lookback]
+        agg_night = []
+        for nd in sorted(n_dates):
+            agg_night.extend(sorted(night_sessions[nd], key=lambda k: k.time))
+
+    session_data = SessionData(
+        prev_day_high=day_ohlc.get("high", 0),
+        prev_day_low=day_ohlc.get("low", 0),
+        prev_day_close=day_ohlc.get("close", 0),
+        prev_night_high=night_ohlc.get("high"),
+        prev_night_low=night_ohlc.get("low"),
+        prev_night_close=night_ohlc.get("close"),
+        today_open=today_open,
+        or_range=or_range,
+        prev_day_kbars=agg_day,
+        prev_night_kbars=agg_night,
+    )
+
+    # 4. Detect + score sort → top 15
+    pool = find_confluence_levels(
+        session_data,
+        swing_period=swing_period,
+        cluster_tolerance=cluster_tolerance,
+        zone_tolerance=zone_tolerance,
+        max_levels=recency_pool,
+        recency_pool=recency_pool,
+    )
+    pool.sort(key=lambda z: z.score, reverse=True)
+    levels = pool[:15]
+
+    # 5. Intraday supplement
+    if include_intraday:
+        supplement_intraday_kls(
+            levels, today_session, signal_level_count,
+            swing_period=swing_period,
+            cluster_tolerance=cluster_tolerance,
+            zone_tolerance=zone_tolerance,
+        )
+
+    return KLCalcResult(
+        levels=levels,
+        day_ohlc=day_ohlc,
+        night_ohlc=night_ohlc,
+        today_open=today_open,
+        day_sessions=day_sessions,
+        night_sessions=night_sessions,
+        today_day_kbars=today_day,
+        today_night_kbars=today_night,
+        agg_day_kbars=agg_day,
+        agg_night_kbars=agg_night,
+    )
+
+
+def supplement_intraday_kls(
+    levels: list[KeyLevel],
+    today_kbars: list[KBar],
+    signal_level_count: int = 7,
+    *,
+    swing_period: int = 10,
+    cluster_tolerance: int = 50,
+    zone_tolerance: int = 50,
+) -> list[tuple[str, KeyLevel]]:
+    """Detect intraday KLs from today's session kbars and append to levels.
+
+    Modifies ``levels`` in-place.  Returns list of (role, zone) added
+    so the caller can log or update internal state.
+    """
+    if not today_kbars or len(today_kbars) < swing_period * 2 + 1:
+        return []
+
+    sig_threshold = levels[signal_level_count].score if len(levels) > signal_level_count else 0
+    trail_threshold = levels[-1].score if levels else 0
+    existing_prices = {kl.price for kl in levels}
+
+    raw = detect_swing_clusters(today_kbars, period=swing_period, cluster_tolerance=cluster_tolerance)
+    raw.extend(detect_volume_nodes(today_kbars, bucket_size=10))
+    if not raw:
+        return []
+
+    zones = merge_to_zones(raw, zone_tolerance=zone_tolerance)
+    count_touches_for_zones(zones, today_kbars, period=swing_period, tolerance=zone_tolerance)
+    for z in zones:
+        z.score = round(z.score + z.touch_count, 2)
+
+    added: list[tuple[str, KeyLevel]] = []
+    for z in zones:
+        if any(abs(z.price - ep) <= zone_tolerance for ep in existing_prices):
+            continue
+        if z.score >= sig_threshold:
+            levels.append(z)
+            existing_prices.add(z.price)
+            added.append(("SIG", z))
+        elif z.score >= trail_threshold:
+            levels.append(z)
+            existing_prices.add(z.price)
+            added.append(("TRAIL", z))
+
+    return added

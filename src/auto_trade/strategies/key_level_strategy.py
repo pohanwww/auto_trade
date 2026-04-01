@@ -35,12 +35,8 @@ from auto_trade.models.strategy import SignalType, StrategySignal
 from auto_trade.services.indicator_service import IndicatorService
 from auto_trade.services.key_level_detector import (
     KeyLevel,
-    SessionData,
-    count_touches_for_zones,
-    detect_swing_clusters,
-    detect_volume_nodes,
-    find_confluence_levels,
-    merge_to_zones,
+    calculate_key_levels_from_kbars,
+    supplement_intraday_kls,
 )
 from auto_trade.services.key_level_signal import KeyLevelSignal
 from auto_trade.strategies.base_strategy import BaseStrategy
@@ -497,114 +493,31 @@ class KeyLevelStrategy(BaseStrategy):
     _BASE_RECENCY_POOL = 20
 
     def _calculate_key_levels(self, kbar_list: KBarList) -> None:
-        """Build SessionData and run confluence detection."""
+        """Build SessionData and run confluence detection via shared function."""
         if self._current_trading_day is None:
             return
 
-        today = self._current_trading_day
-
-        day_ohlc: dict[str, int] = {}
-        night_ohlc: dict[str, int] = {}
-
-        day_sessions: dict = {}
-        night_sessions: dict = {}
-
-        in_night_session = (
+        in_night = (
             self._current_date is not None
             and self._current_date.time() >= self._EXCHANGE_NIGHT_START
         )
 
-        for kbar in kbar_list.kbars:
-            d = kbar.time.date()
-            t = kbar.time.time()
-
-            if self._EXCHANGE_DAY_START <= t < self._EXCHANGE_DAY_END:
-                if d < today or (d == today and in_night_session):
-                    day_sessions.setdefault(d, []).append(kbar)
-            elif t >= self._EXCHANGE_NIGHT_START and d < today:
-                night_sessions.setdefault(d, []).append(kbar)
-            elif t < self._EXCHANGE_NIGHT_END:
-                ns_date = d - timedelta(days=1)
-                if ns_date < today:
-                    night_sessions.setdefault(ns_date, []).append(kbar)
-
-        # OHLC from latest session (for pivot points) — always single session
-        latest_day_kbars: list[KBar] = []
-        if day_sessions:
-            latest = max(day_sessions.keys())
-            latest_day_kbars = sorted(day_sessions[latest], key=lambda k: k.time)
-            day_ohlc = {
-                "high": int(max(k.high for k in latest_day_kbars)),
-                "low": int(min(k.low for k in latest_day_kbars)),
-                "close": int(latest_day_kbars[-1].close),
-            }
-
-        latest_night_kbars: list[KBar] = []
-        if night_sessions:
-            latest = max(night_sessions.keys())
-            latest_night_kbars = sorted(night_sessions[latest], key=lambda k: k.time)
-            night_ohlc = {
-                "high": int(max(k.high for k in latest_night_kbars)),
-                "low": int(min(k.low for k in latest_night_kbars)),
-                "close": int(latest_night_kbars[-1].close),
-            }
-
-        today_open = None
-        for kbar in kbar_list.kbars:
-            if (
-                self._get_trading_day(kbar.time) == today
-                and self._is_active_session(kbar.time)
-            ):
-                today_open = int(kbar.open)
-                break
-
-        or_mid = None
-        if self._or_high is not None and self._or_low is not None:
-            or_mid = (self._or_high + self._or_low) // 2
-
-        anchor = or_mid or today_open or day_ohlc.get("close", 0)
-
-        def _build_session_data(lb):
-            if lb <= 1:
-                d_kbars, n_kbars = latest_day_kbars, latest_night_kbars
-            else:
-                d_dates = sorted(day_sessions.keys(), reverse=True)[:lb]
-                d_kbars = []
-                for dd in sorted(d_dates):
-                    d_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
-                n_dates = sorted(night_sessions.keys(), reverse=True)[:lb]
-                n_kbars = []
-                for nd in sorted(n_dates):
-                    n_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
-            return SessionData(
-                prev_day_high=day_ohlc.get("high", 0),
-                prev_day_low=day_ohlc.get("low", 0),
-                prev_day_close=day_ohlc.get("close", 0),
-                prev_night_high=night_ohlc.get("high"),
-                prev_night_low=night_ohlc.get("low"),
-                prev_night_close=night_ohlc.get("close"),
-                today_open=today_open,
-                or_range=self._or_range or 1,
-                prev_day_kbars=d_kbars,
-                prev_night_kbars=n_kbars,
-            ), d_kbars, n_kbars
-
-        # Step 1: base run — recency pool 20 → get pool (max_levels=20)
-        base_lookback = self._session_lookback
-        base_session, agg_day_kbars, agg_night_kbars = _build_session_data(base_lookback)
-        base_pool = find_confluence_levels(
-            base_session,
+        result = calculate_key_levels_from_kbars(
+            kbar_list.kbars,
+            self._current_trading_day,
+            in_night_session=in_night,
+            or_range=self._or_range or 1,
             swing_period=self.swing_period,
             cluster_tolerance=self.cluster_tolerance,
             zone_tolerance=self.zone_tolerance,
-            max_levels=self._BASE_RECENCY_POOL,
+            signal_level_count=self.signal_level_count,
             recency_pool=self._BASE_RECENCY_POOL,
+            session_lookback=self._session_lookback,
         )
 
-        # Score sort → top 15
-        base_pool.sort(key=lambda z: z.score, reverse=True)
-        levels = base_pool[:15]
-        lookback = base_lookback
+        levels = result.levels
+        day_ohlc = result.day_ohlc
+        night_ohlc = result.night_ohlc
 
         _log(
             "=== Key Level Calculation [%s] ===\n"
@@ -614,12 +527,11 @@ class KeyLevelStrategy(BaseStrategy):
             self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
             day_ohlc.get("high"), day_ohlc.get("low"), day_ohlc.get("close"),
             night_ohlc.get("high"), night_ohlc.get("low"), night_ohlc.get("close"),
-            today_open, self._or_range, lookback,
-            len(agg_day_kbars), len(agg_night_kbars),
+            result.today_open, self._or_range, self._session_lookback,
+            len(result.agg_day_kbars), len(result.agg_night_kbars),
         )
 
         self._key_levels = levels
-
         n = self.signal_level_count
         self._signal_levels = self._key_levels[:n]
         self._trailing_levels = sorted(
@@ -627,7 +539,6 @@ class KeyLevelStrategy(BaseStrategy):
         )
         self._levels_calculated = True
 
-        # Score thresholds for intraday supplement
         if len(self._key_levels) > n:
             self._signal_score_threshold = self._key_levels[n].score
         elif self._key_levels:
@@ -669,42 +580,19 @@ class KeyLevelStrategy(BaseStrategy):
         ]
         today_kbars.sort(key=lambda k: k.time)
 
-        if len(today_kbars) < self.swing_period * 2 + 1:
-            return
-
-        raw = detect_swing_clusters(
-            today_kbars, period=self.swing_period, cluster_tolerance=self.cluster_tolerance,
+        added = supplement_intraday_kls(
+            self._key_levels, today_kbars, self.signal_level_count,
+            swing_period=self.swing_period,
+            cluster_tolerance=self.cluster_tolerance,
+            zone_tolerance=self.zone_tolerance,
         )
-        raw.extend(detect_volume_nodes(today_kbars, bucket_size=10))
 
-        if not raw:
-            return
-
-        zones = merge_to_zones(raw, zone_tolerance=self.zone_tolerance)
-        count_touches_for_zones(zones, today_kbars, period=self.swing_period, tolerance=self.zone_tolerance)
-        for z in zones:
-            z.score = round(z.score + z.touch_count, 2)
-
-        existing_prices = {kl.price for kl in self._key_levels}
-        existing_trail = set(self._trailing_levels)
-        zt = self.zone_tolerance
-        added = []
-
-        for z in zones:
-            if any(abs(z.price - ep) <= zt for ep in existing_prices | existing_trail):
-                continue
-
-            if z.score >= self._signal_score_threshold:
+        for role, z in added:
+            if role == "SIG":
                 self._signal_levels.append(z)
-                self._key_levels.append(z)
-                existing_prices.add(z.price)
-                added.append(("SIG", z))
-            elif z.score >= self._trailing_score_threshold:
+            else:
                 self._trailing_levels.append(z.price)
                 self._trailing_levels.sort()
-                self._key_levels.append(z)
-                existing_prices.add(z.price)
-                added.append(("TRAIL", z))
 
         if added:
             _log("  Intraday KL supplement (hour=%d): +%d levels", current_hour, len(added))

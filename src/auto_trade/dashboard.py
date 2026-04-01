@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 import threading
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import matplotlib
@@ -41,12 +41,6 @@ _kl_api_lock = threading.Lock()
 _kl_api_client = None
 _kl_market_service = None
 
-DAY_START = time(8, 45)
-DAY_END = time(13, 45)
-NIGHT_START = time(15, 0)
-NIGHT_BOUNDARY = time(5, 0)
-
-
 def _get_kl_market_service():
     global _kl_api_client, _kl_market_service
     if _kl_market_service is not None:
@@ -68,53 +62,6 @@ def _get_kl_market_service():
         )
         _kl_market_service = MarketService(_kl_api_client)
         return _kl_market_service
-
-
-def _split_sessions(kbar_list, target_date):
-    """Split kbars into grouped sessions (matching strategy logic).
-
-    Returns (day_sessions, night_sessions, today_day, today_night) where
-    day/night_sessions are dict[date, list[KBar]] for aggregation,
-    today_day/today_night are for chart display only (not used in KL calc).
-    """
-    today = target_date.date()
-    day_sessions: dict = {}
-    night_sessions: dict = {}
-    today_day = []
-    today_night = []
-
-    for kbar in kbar_list.kbars:
-        d = kbar.time.date()
-        t = kbar.time.time()
-        if d == today and DAY_START <= t < DAY_END:
-            today_day.append(kbar)
-        elif d == today and t >= NIGHT_START:
-            today_night.append(kbar)
-        elif DAY_START <= t < DAY_END and d < today:
-            day_sessions.setdefault(d, []).append(kbar)
-        elif t >= NIGHT_START and d < today:
-            night_sessions.setdefault(d, []).append(kbar)
-        elif t < NIGHT_BOUNDARY:
-            ns_date = d - timedelta(days=1)
-            if ns_date < today:
-                night_sessions.setdefault(ns_date, []).append(kbar)
-            elif ns_date == today:
-                today_night.append(kbar)
-
-    today_day.sort(key=lambda k: k.time)
-    today_night.sort(key=lambda k: k.time)
-    return day_sessions, night_sessions, today_day, today_night
-
-
-def _compute_ohlc(kbars):
-    if not kbars:
-        return {"open": 0, "high": 0, "low": 0, "close": 0}
-    return {
-        "open": int(kbars[0].open),
-        "high": int(max(k.high for k in kbars)),
-        "low": int(min(k.low for k in kbars)),
-        "close": int(kbars[-1].close),
-    }
 
 
 OR_BARS = 3
@@ -143,12 +90,8 @@ def _generate_chart(
     from matplotlib.patches import FancyBboxPatch
 
     from auto_trade.services.key_level_detector import (
-        SessionData,
-        count_touches_for_zones,
-        detect_swing_clusters,
-        detect_volume_nodes,
-        find_confluence_levels,
-        merge_to_zones,
+        calculate_key_levels_from_kbars,
+        split_sessions,
     )
 
     ms = _get_kl_market_service()
@@ -171,175 +114,61 @@ def _generate_chart(
     if len(kbar_list) == 0:
         return {"ok": False, "error": "No data fetched"}
 
-    day_sessions, night_sessions, today_kbars, today_night_kbars = _split_sessions(
-        kbar_list, target_date
+    in_night = session == "night"
+    signal_level_count = 7
+
+    # --- OR calculation (before KL calc, same as strategy) ---
+    # Need today_session_kbars for OR, so run split_sessions first
+    _, _, today_kbars, today_night_kbars = split_sessions(
+        kbar_list.kbars, target_date.date(), in_night_session=in_night,
     )
+    today_session_kbars = today_night_kbars if in_night else today_kbars
 
-    # --- OHLC from latest session only (for pivot points) ---
-    day_ohlc: dict[str, int] = {}
-    latest_day_kbars: list = []
-    if day_sessions:
-        latest = max(day_sessions.keys())
-        latest_day_kbars = sorted(day_sessions[latest], key=lambda k: k.time)
-        day_ohlc = {
-            "high": int(max(k.high for k in latest_day_kbars)),
-            "low": int(min(k.low for k in latest_day_kbars)),
-            "close": int(latest_day_kbars[-1].close),
-        }
-
-    night_ohlc: dict[str, int] = {}
-    latest_night_kbars: list = []
-    if night_sessions:
-        latest_n = max(night_sessions.keys())
-        latest_night_kbars = sorted(night_sessions[latest_n], key=lambda k: k.time)
-        night_ohlc = {
-            "high": int(max(k.high for k in latest_night_kbars)),
-            "low": int(min(k.low for k in latest_night_kbars)),
-            "close": int(latest_night_kbars[-1].close),
-        }
-
-    # For night session: include today's day kbars as "prev" data
-    if session == "night" and today_kbars:
-        today_date = target_date.date()
-        day_sessions[today_date] = sorted(today_kbars, key=lambda k: k.time)
-        latest_day_kbars = day_sessions[today_date]
-        day_ohlc = {
-            "high": int(max(k.high for k in latest_day_kbars)),
-            "low": int(min(k.low for k in latest_day_kbars)),
-            "close": int(latest_day_kbars[-1].close),
-        }
-
-    # --- Aggregate N most recent sessions for swing/volume ---
-    if session_lookback <= 1:
-        agg_day_kbars = latest_day_kbars
-        agg_night_kbars = latest_night_kbars
-    else:
-        recent_day_dates = sorted(day_sessions.keys(), reverse=True)[:session_lookback]
-        agg_day_kbars = []
-        for dd in sorted(recent_day_dates):
-            agg_day_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
-
-        recent_night_dates = sorted(night_sessions.keys(), reverse=True)[
-            :session_lookback
-        ]
-        agg_night_kbars = []
-        for nd in sorted(recent_night_dates):
-            agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
-
-    # --- today_open and OR range ---
     or_high: int | None = None
     or_low: int | None = None
     or_mid: int | None = None
+    or_range = 1
     or_kbars_for_chart: list = []
-    if session == "night":
-        today_open = int(today_night_kbars[0].open) if today_night_kbars else None
-        or_range = 1
-        if len(today_night_kbars) >= OR_BARS:
-            or_kbars = today_night_kbars[:OR_BARS]
-            or_high = int(max(k.high for k in or_kbars))
-            or_low = int(min(k.low for k in or_kbars))
-            or_mid = (or_high + or_low) // 2
-            or_range = max(or_high - or_low, 1)
-            or_kbars_for_chart = or_kbars
-        elif night_ohlc:
-            or_range = max(night_ohlc.get("high", 0) - night_ohlc.get("low", 0), 50)
-    else:
-        today_open = int(today_kbars[0].open) if today_kbars else None
-        or_range = 1
-        if len(today_kbars) >= OR_BARS:
-            or_kbars = today_kbars[:OR_BARS]
-            or_high = int(max(k.high for k in or_kbars))
-            or_low = int(min(k.low for k in or_kbars))
-            or_mid = (or_high + or_low) // 2
-            or_range = max(or_high - or_low, 1)
-            or_kbars_for_chart = or_kbars
-        elif day_ohlc:
-            or_range = max(day_ohlc.get("high", 0) - day_ohlc.get("low", 0), 50)
+    if today_session_kbars and len(today_session_kbars) >= OR_BARS:
+        or_kbars = today_session_kbars[:OR_BARS]
+        or_high = int(max(k.high for k in or_kbars))
+        or_low = int(min(k.low for k in or_kbars))
+        or_mid = (or_high + or_low) // 2
+        or_range = max(or_high - or_low, 1)
+        or_kbars_for_chart = or_kbars
 
-    session_data = SessionData(
-        prev_day_high=day_ohlc.get("high", 0),
-        prev_day_low=day_ohlc.get("low", 0),
-        prev_day_close=day_ohlc.get("close", 0),
-        prev_night_high=night_ohlc.get("high"),
-        prev_night_low=night_ohlc.get("low"),
-        prev_night_close=night_ohlc.get("close"),
-        today_open=today_open,
+    # --- Shared KL calculation (identical to strategy) ---
+    kl = calculate_key_levels_from_kbars(
+        kbar_list.kbars,
+        target_date.date(),
+        in_night_session=in_night,
         or_range=or_range,
-        prev_day_kbars=agg_day_kbars,
-        prev_night_kbars=agg_night_kbars,
+        session_lookback=session_lookback,
+        signal_level_count=signal_level_count,
+        include_intraday=True,
     )
 
-    signal_level_count = 7
-    swing_period = 10
-    cluster_tol = 50
-    zone_tol = 50
+    levels = kl.levels
+    day_ohlc = kl.day_ohlc
+    night_ohlc = kl.night_ohlc
+    today_open = kl.today_open
+    day_sessions = kl.day_sessions
+    night_sessions = kl.night_sessions
+    today_kbars = kl.today_day_kbars
+    today_night_kbars = kl.today_night_kbars
+    agg_day_kbars = kl.agg_day_kbars
+    agg_night_kbars = kl.agg_night_kbars
 
-    # --- Step 1: base KL (recency pool 20 → score top 15) ---
-    base_pool = find_confluence_levels(
-        session_data,
-        swing_period=swing_period,
-        cluster_tolerance=cluster_tol,
-        zone_tolerance=zone_tol,
-        max_levels=20,
-        recency_pool=20,
-    )
-    base_pool.sort(key=lambda z: z.score, reverse=True)
-    levels = base_pool[:15]
+    signal_levels = set(lv.price for lv in levels[:signal_level_count])
 
-    # --- Step 2: intraday KL supplement (using today's kbars) ---
-    today_session_kbars = today_night_kbars if session == "night" else today_kbars
-    intra_added = 0
-    print(f"[KL-chart] intraday supplement: today_session_kbars={len(today_session_kbars) if today_session_kbars else 0}, min_required={swing_period * 2 + 1}")
-    if today_session_kbars and len(today_session_kbars) >= swing_period * 2 + 1:
-        sig_threshold = levels[signal_level_count].score if len(levels) > signal_level_count else 0
-        trail_threshold = levels[-1].score if levels else 0
-        existing_prices = {kl.price for kl in levels}
-
-        raw_intra = detect_swing_clusters(today_session_kbars, period=swing_period, cluster_tolerance=cluster_tol)
-        raw_intra.extend(detect_volume_nodes(today_session_kbars, bucket_size=10))
-        print(f"[KL-chart] raw_intra={len(raw_intra)} zones")
-        if raw_intra:
-            intra_zones = merge_to_zones(raw_intra, zone_tolerance=zone_tol)
-            count_touches_for_zones(intra_zones, today_session_kbars, period=swing_period, tolerance=zone_tol)
-            for z in intra_zones:
-                z.score = round(z.score + z.touch_count, 2)
-            print(f"[KL-chart] merged intra_zones={len(intra_zones)}, trail_threshold={trail_threshold:.1f}, existing={sorted(existing_prices)}")
-            for z in intra_zones:
-                too_close = any(abs(z.price - ep) <= zone_tol for ep in existing_prices)
-                if too_close:
-                    print(f"[KL-chart]   skip {z.price} (score={z.score:.1f}) — too close to existing")
-                    continue
-                if z.score >= trail_threshold:
-                    levels.append(z)
-                    existing_prices.add(z.price)
-                    intra_added += 1
-                    print(f"[KL-chart]   +add {z.price} (score={z.score:.1f})")
-                else:
-                    print(f"[KL-chart]   skip {z.price} (score={z.score:.1f} < threshold {trail_threshold:.1f})")
-    print(f"[KL-chart] intraday supplement done: +{intra_added} levels, total={len(levels)}")
-
-    signal_levels = set(kl.price for kl in levels[:signal_level_count])
-
-    # Build chart kbars based on session mode
-    if session_lookback > 1:
-        # Multiple sessions: merge all and sort chronologically
-        if session == "night":
-            all_kbars = agg_night_kbars + agg_day_kbars + today_night_kbars
-        elif session == "day":
-            all_kbars = agg_day_kbars + agg_night_kbars + today_kbars
-        else:
-            all_kbars = agg_day_kbars + agg_night_kbars + today_kbars + today_night_kbars
-        all_kbars = sorted(all_kbars, key=lambda k: k.time)
+    # Build chart kbars — always sorted chronologically
+    if in_night:
+        all_kbars = agg_night_kbars + agg_day_kbars + today_night_kbars
+    elif session == "day":
+        all_kbars = agg_day_kbars + agg_night_kbars + today_kbars
     else:
-        chart_prev_day = latest_day_kbars
-        chart_prev_night = latest_night_kbars
-        if session == "night":
-            all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
-        elif session == "day":
-            all_kbars = chart_prev_day + chart_prev_night + today_kbars
-        else:
-            all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
-        all_kbars = sorted(all_kbars, key=lambda k: k.time)
+        all_kbars = agg_day_kbars + agg_night_kbars + today_kbars + today_night_kbars
+    all_kbars = sorted(all_kbars, key=lambda k: k.time)
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
@@ -424,20 +253,20 @@ def _generate_chart(
                 ]
         elif session == "night":
             session_spans = [
-                ("Prev Night", chart_prev_night, "#E8E0F0"),
-                ("Prev Day", chart_prev_day, "#E0E0E0"),
+                ("Prev Night", agg_night_kbars, "#E8E0F0"),
+                ("Prev Day", agg_day_kbars, "#E0E0E0"),
                 ("Tonight", today_night_kbars, "#F0E8E0"),
             ]
         elif session == "day":
             session_spans = [
-                ("Prev Day", chart_prev_day, "#E0E0E0"),
-                ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Prev Day", agg_day_kbars, "#E0E0E0"),
+                ("Prev Night", agg_night_kbars, "#E8E0F0"),
                 ("Today", today_kbars, "#E0F0E0"),
             ]
         else:
             session_spans = [
-                ("Prev Day", chart_prev_day, "#E0E0E0"),
-                ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Prev Day", agg_day_kbars, "#E0E0E0"),
+                ("Prev Night", agg_night_kbars, "#E8E0F0"),
                 ("Today", today_kbars, "#E0F0E0"),
                 ("Tonight", today_night_kbars, "#F0E8E0"),
             ]
