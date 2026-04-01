@@ -483,14 +483,16 @@ class KeyLevelStrategy(BaseStrategy):
     # ──────────────────────────────────────────────
 
     _MAX_LOOKBACK = 5
-    _MIN_KL_PER_SIDE = 3
+    _BASE_RECENCY_POOL = 20
+    _RECENCY_POOL_STEP = 5
 
     def _calculate_key_levels(self, kbar_list: KBarList) -> None:
         """Build SessionData and run confluence detection.
 
-        Auto-expands lookback (up to _MAX_LOOKBACK sessions) when fewer
-        than _MIN_KL_PER_SIDE KLs exist above or below the OR mid.
-        OHLC and pivot points always use the latest session only.
+        Auto-expands lookback (up to _MAX_LOOKBACK sessions) when no
+        signal KL exists above or below the OR mid.  Each expansion
+        adds 5 to the recency pool (20 → 25 → 30 …) while always
+        picking top 15 by score. OHLC/pivots use latest session only.
         """
         if self._current_trading_day is None:
             return
@@ -558,9 +560,10 @@ class KeyLevelStrategy(BaseStrategy):
 
         anchor = or_mid or today_open or day_ohlc.get("close", 0)
 
-        # Auto-expand lookback until coverage is sufficient
+        # Auto-expand lookback until signal KLs cover both sides of OR
         base_lookback = self._session_lookback
-        max_lb = min(self._MAX_LOOKBACK, max(len(day_sessions), len(night_sessions)))
+        max_lb = min(self._MAX_LOOKBACK, max(len(day_sessions), len(night_sessions), 1))
+        n_signal = self.signal_level_count
 
         for lookback in range(base_lookback, max_lb + 1):
             if lookback <= 1:
@@ -590,23 +593,24 @@ class KeyLevelStrategy(BaseStrategy):
                 prev_night_kbars=agg_night_kbars,
             )
 
+            pool = self._BASE_RECENCY_POOL + (lookback - base_lookback) * self._RECENCY_POOL_STEP
             levels = find_confluence_levels(
                 session,
                 swing_period=self.swing_period,
                 cluster_tolerance=self.cluster_tolerance,
                 zone_tolerance=self.zone_tolerance,
                 max_levels=15,
-                ref_price=anchor,
-                min_per_side=self._MIN_KL_PER_SIDE,
+                recency_pool=pool,
             )
 
-            n_above = sum(1 for kl in levels if kl.price >= anchor) if anchor else 0
-            n_below = sum(1 for kl in levels if kl.price < anchor) if anchor else 0
+            signal_levels = levels[:n_signal]
+            sig_above = sum(1 for kl in signal_levels if kl.price >= anchor) if anchor else 0
+            sig_below = sum(1 for kl in signal_levels if kl.price < anchor) if anchor else 0
 
-            if (n_above >= self._MIN_KL_PER_SIDE and n_below >= self._MIN_KL_PER_SIDE) or lookback >= max_lb:
+            if (sig_above >= 1 and sig_below >= 1) or lookback >= max_lb:
                 if lookback > base_lookback:
-                    _log("  Auto-expanded lookback: %d → %d (above=%d, below=%d)",
-                         base_lookback, lookback, n_above, n_below)
+                    _log("  Auto-expanded lookback: %d → %d (pool=%d, sig_above=%d, sig_below=%d)",
+                         base_lookback, lookback, pool, sig_above, sig_below)
                 break
 
         _log(
