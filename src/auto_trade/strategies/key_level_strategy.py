@@ -482,19 +482,20 @@ class KeyLevelStrategy(BaseStrategy):
     # Key level calculation
     # ──────────────────────────────────────────────
 
+    _MAX_LOOKBACK = 5
+    _MIN_KL_PER_SIDE = 3
+
     def _calculate_key_levels(self, kbar_list: KBarList) -> None:
         """Build SessionData and run confluence detection.
 
-        For larger timeframes (15m, 30m, 1h), aggregates multiple previous
-        sessions so that the total number of kbars fed to swing/volume
-        detectors is comparable to what 5m gets from a single session.
+        Auto-expands lookback (up to _MAX_LOOKBACK sessions) when fewer
+        than _MIN_KL_PER_SIDE KLs exist above or below the OR mid.
         OHLC and pivot points always use the latest session only.
         """
         if self._current_trading_day is None:
             return
 
         today = self._current_trading_day
-        lookback = self._session_lookback
 
         day_ohlc: dict[str, int] = {}
         night_ohlc: dict[str, int] = {}
@@ -502,8 +503,6 @@ class KeyLevelStrategy(BaseStrategy):
         day_sessions: dict = {}
         night_sessions: dict = {}
 
-        # When in a night session, today's day session is already closed,
-        # so we include it as historical data for key level calculation.
         in_night_session = (
             self._current_date is not None
             and self._current_date.time() >= self._EXCHANGE_NIGHT_START
@@ -523,7 +522,7 @@ class KeyLevelStrategy(BaseStrategy):
                 if ns_date < today:
                     night_sessions.setdefault(ns_date, []).append(kbar)
 
-        # OHLC from latest session (for pivot points)
+        # OHLC from latest session (for pivot points) — always single session
         latest_day_kbars: list[KBar] = []
         if day_sessions:
             latest = max(day_sessions.keys())
@@ -544,21 +543,6 @@ class KeyLevelStrategy(BaseStrategy):
                 "close": int(latest_night_kbars[-1].close),
             }
 
-        # Aggregate N most recent sessions for swing/volume detection
-        if lookback <= 1:
-            agg_day_kbars = latest_day_kbars
-            agg_night_kbars = latest_night_kbars
-        else:
-            recent_day_dates = sorted(day_sessions.keys(), reverse=True)[:lookback]
-            agg_day_kbars = []
-            for dd in sorted(recent_day_dates):
-                agg_day_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
-
-            recent_night_dates = sorted(night_sessions.keys(), reverse=True)[:lookback]
-            agg_night_kbars = []
-            for nd in sorted(recent_night_dates):
-                agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
-
         today_open = None
         for kbar in kbar_list.kbars:
             if (
@@ -568,18 +552,62 @@ class KeyLevelStrategy(BaseStrategy):
                 today_open = int(kbar.open)
                 break
 
-        session = SessionData(
-            prev_day_high=day_ohlc.get("high", 0),
-            prev_day_low=day_ohlc.get("low", 0),
-            prev_day_close=day_ohlc.get("close", 0),
-            prev_night_high=night_ohlc.get("high"),
-            prev_night_low=night_ohlc.get("low"),
-            prev_night_close=night_ohlc.get("close"),
-            today_open=today_open,
-            or_range=self._or_range or 1,
-            prev_day_kbars=agg_day_kbars,
-            prev_night_kbars=agg_night_kbars,
-        )
+        or_mid = None
+        if self._or_high is not None and self._or_low is not None:
+            or_mid = (self._or_high + self._or_low) // 2
+
+        anchor = or_mid or today_open or day_ohlc.get("close", 0)
+
+        # Auto-expand lookback until coverage is sufficient
+        base_lookback = self._session_lookback
+        max_lb = min(self._MAX_LOOKBACK, max(len(day_sessions), len(night_sessions)))
+
+        for lookback in range(base_lookback, max_lb + 1):
+            if lookback <= 1:
+                agg_day_kbars = latest_day_kbars
+                agg_night_kbars = latest_night_kbars
+            else:
+                recent_day_dates = sorted(day_sessions.keys(), reverse=True)[:lookback]
+                agg_day_kbars = []
+                for dd in sorted(recent_day_dates):
+                    agg_day_kbars.extend(sorted(day_sessions[dd], key=lambda k: k.time))
+
+                recent_night_dates = sorted(night_sessions.keys(), reverse=True)[:lookback]
+                agg_night_kbars = []
+                for nd in sorted(recent_night_dates):
+                    agg_night_kbars.extend(sorted(night_sessions[nd], key=lambda k: k.time))
+
+            session = SessionData(
+                prev_day_high=day_ohlc.get("high", 0),
+                prev_day_low=day_ohlc.get("low", 0),
+                prev_day_close=day_ohlc.get("close", 0),
+                prev_night_high=night_ohlc.get("high"),
+                prev_night_low=night_ohlc.get("low"),
+                prev_night_close=night_ohlc.get("close"),
+                today_open=today_open,
+                or_range=self._or_range or 1,
+                prev_day_kbars=agg_day_kbars,
+                prev_night_kbars=agg_night_kbars,
+            )
+
+            levels = find_confluence_levels(
+                session,
+                swing_period=self.swing_period,
+                cluster_tolerance=self.cluster_tolerance,
+                zone_tolerance=self.zone_tolerance,
+                max_levels=20,
+                ref_price=anchor,
+                min_per_side=self._MIN_KL_PER_SIDE,
+            )
+
+            n_above = sum(1 for kl in levels if kl.price >= anchor) if anchor else 0
+            n_below = sum(1 for kl in levels if kl.price < anchor) if anchor else 0
+
+            if (n_above >= self._MIN_KL_PER_SIDE and n_below >= self._MIN_KL_PER_SIDE) or lookback >= max_lb:
+                if lookback > base_lookback:
+                    _log("  Auto-expanded lookback: %d → %d (above=%d, below=%d)",
+                         base_lookback, lookback, n_above, n_below)
+                break
 
         _log(
             "=== Key Level Calculation [%s] ===\n"
@@ -593,13 +621,7 @@ class KeyLevelStrategy(BaseStrategy):
             len(agg_day_kbars), len(agg_night_kbars),
         )
 
-        self._key_levels = find_confluence_levels(
-            session,
-            swing_period=self.swing_period,
-            cluster_tolerance=self.cluster_tolerance,
-            zone_tolerance=self.zone_tolerance,
-            max_levels=20,
-        )
+        self._key_levels = levels
 
         n = self.signal_level_count
         self._signal_levels = self._key_levels[:n]

@@ -481,13 +481,16 @@ def find_confluence_levels(
     round_scan_range: int = 500,
     touch_weight: float = 1.0,
     max_levels: int = 10,
+    ref_price: int | None = None,
+    min_per_side: int = 3,
 ) -> list[KeyLevel]:
     """Run all detectors, merge into zones, count touches, and score.
 
     score = total_weight + touch_weight × touch_count
 
-    Returns up to ``max_levels`` KeyLevels, sorted by last_touch
-    (most recent first), then by score descending as tiebreaker.
+    Selection uses proximity to *ref_price* (defaults to today_open or
+    prev_day_close) to guarantee at least ``min_per_side`` KLs above
+    and below, then fills remaining slots by score.
     """
     all_kbars = session.prev_day_kbars + session.prev_night_kbars
     raw: list[RawKeyLevel] = []
@@ -511,10 +514,10 @@ def find_confluence_levels(
         ))
 
     # 4. Round Numbers
-    ref_price = session.today_open or session.prev_day_close
-    if ref_price:
+    open_price = session.today_open or session.prev_day_close
+    if open_price:
         raw.extend(detect_round_numbers(
-            ref_price, scan_range=round_scan_range,
+            open_price, scan_range=round_scan_range,
         ))
 
     # 6. Session OHLC
@@ -538,11 +541,44 @@ def find_confluence_levels(
         for zone in zones:
             zone.score = round(zone.score + touch_weight * zone.touch_count, 2)
 
-    epoch = datetime.min
-    zones.sort(
-        key=lambda z: (z.last_touch or z.first_seen or epoch, z.score),
-        reverse=True,
-    )
-    recent = zones[:15]
-    recent.sort(key=lambda z: z.score, reverse=True)
-    return recent[:max_levels]
+    # --- Selection: proximity to ref_price with min coverage per side ---
+    anchor = ref_price or open_price or session.prev_day_close
+    if not anchor:
+        zones.sort(key=lambda z: z.score, reverse=True)
+        return zones[:max_levels]
+
+    above = [z for z in zones if z.price >= anchor]
+    below = [z for z in zones if z.price < anchor]
+
+    above.sort(key=lambda z: (z.price - anchor, -z.score))
+    below.sort(key=lambda z: (anchor - z.price, -z.score))
+
+    n_above = min(len(above), max(min_per_side, max_levels // 2))
+    n_below = min(len(below), max(min_per_side, max_levels // 2))
+
+    if n_above + n_below > max_levels:
+        half = max_levels // 2
+        if n_above <= half:
+            n_below = max_levels - n_above
+        elif n_below <= half:
+            n_above = max_levels - n_below
+        else:
+            n_above = half
+            n_below = max_levels - half
+
+    selected_above = above[:n_above]
+    selected_below = below[:n_below]
+    selected = set(id(z) for z in selected_above + selected_below)
+
+    remaining = max_levels - len(selected)
+    if remaining > 0:
+        rest = [z for z in zones if id(z) not in selected]
+        rest.sort(key=lambda z: z.score, reverse=True)
+        for z in rest[:remaining]:
+            selected.add(id(z))
+        selected_above = [z for z in above if id(z) in selected]
+        selected_below = [z for z in below if id(z) in selected]
+
+    result = selected_above + selected_below
+    result.sort(key=lambda z: z.score, reverse=True)
+    return result[:max_levels]
