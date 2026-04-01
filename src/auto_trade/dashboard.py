@@ -355,7 +355,28 @@ def _generate_chart(
                 return None, None
             return i0, i1
 
-        if session == "night":
+        if session_lookback > 1:
+            # Multi-session: just mark history vs today
+            if session == "night":
+                history_kbars = sorted(agg_night_kbars + agg_day_kbars, key=lambda k: k.time)
+                session_spans = [
+                    ("History", history_kbars, "#E0E0E0"),
+                    ("Tonight", today_night_kbars, "#F0E8E0"),
+                ]
+            elif session == "day":
+                history_kbars = sorted(agg_day_kbars + agg_night_kbars, key=lambda k: k.time)
+                session_spans = [
+                    ("History", history_kbars, "#E0E0E0"),
+                    ("Today", today_kbars, "#E0F0E0"),
+                ]
+            else:
+                history_kbars = sorted(agg_day_kbars + agg_night_kbars, key=lambda k: k.time)
+                session_spans = [
+                    ("History", history_kbars, "#E0E0E0"),
+                    ("Today", today_kbars, "#E0F0E0"),
+                    ("Tonight", today_night_kbars, "#F0E8E0"),
+                ]
+        elif session == "night":
             session_spans = [
                 ("Prev Night", chart_prev_night, "#E8E0F0"),
                 ("Prev Day", chart_prev_day, "#E0E0E0"),
