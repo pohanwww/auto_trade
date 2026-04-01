@@ -194,6 +194,9 @@ class TradingEngine:
                     elif current_time.minute % self.signal_check_interval != 0:
                         self._addon_checked_this_interval = False
 
+                    # Sync intraday KL updates to PM position
+                    self._try_sync_kl_to_position(current_price)
+
                     # 同步倉位狀態到 position.json
                     self._sync_position_record(current_price)
 
@@ -517,6 +520,65 @@ class TradingEngine:
         else:
             print(f"❌ 下單失敗: {fill_result.message}")
             return None
+
+    def _try_sync_kl_to_position(self, current_price: float) -> None:
+        """Sync intraday KL updates from strategy to PM position metadata.
+
+        Adjusts next_key_level_idx so it still points to the same KL
+        as before the list was updated (new intermediate levels are
+        inserted before/after but the pointer stays on the same target).
+        """
+        strategy = self.trading_unit.strategy
+        if not getattr(strategy, "_kl_updated", False):
+            return
+        strategy._kl_updated = False
+
+        pm = self.position_manager
+        if not pm.has_position or not pm.position:
+            return
+
+        pos = pm.position
+        old_levels = pos.metadata.get("key_levels")
+        if old_levels is None:
+            return
+
+        is_long = pos.direction.value == "Buy"
+        entry_price = pos.entry_price
+        all_kl_prices = sorted(set(kl.price for kl in strategy._key_levels))
+
+        if is_long:
+            new_levels = [p for p in all_kl_prices if p > entry_price]
+        else:
+            new_levels = sorted(
+                [p for p in all_kl_prices if p < entry_price],
+                reverse=True,
+            )
+
+        if new_levels == old_levels:
+            return
+
+        old_idx = pos.metadata.get("next_key_level_idx", 0)
+
+        # Remap idx so it still points to the same KL
+        if old_idx < len(old_levels):
+            target_level = old_levels[old_idx]
+            try:
+                new_idx = new_levels.index(target_level)
+            except ValueError:
+                new_idx = min(old_idx, len(new_levels))
+        else:
+            new_idx = len(new_levels)
+
+        pos.metadata["key_levels"] = new_levels
+        pos.metadata["next_key_level_idx"] = new_idx
+
+        print(
+            f"[KL] Synced key_levels to position: "
+            f"{len(old_levels)} → {len(new_levels)} levels, "
+            f"idx {old_idx} → {new_idx} "
+            f"(target={'done' if new_idx >= len(new_levels) else new_levels[new_idx]}, "
+            f"price={current_price:.0f})"
+        )
 
     def _sync_position_record(self, current_price: float) -> None:
         """同步倉位狀態 + 即時價格到 position.json（供 dashboard 讀取）"""

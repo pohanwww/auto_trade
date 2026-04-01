@@ -248,6 +248,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._last_supplement_hour: int | None = None
         self._signal_score_threshold: float = 0.0
         self._trailing_score_threshold: float = 0.0
+        self._kl_updated: bool = False
 
     # ──────────────────────────────────────────────
     # Public interface
@@ -595,6 +596,7 @@ class KeyLevelStrategy(BaseStrategy):
                 self._trailing_levels.sort()
 
         if added:
+            self._kl_updated = True
             _log("  Intraday KL supplement (hour=%d): +%d levels", current_hour, len(added))
             for role, z in added:
                 _log("    [%s] price=%d | score=%.1f | sources=%s",

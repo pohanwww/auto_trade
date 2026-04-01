@@ -726,6 +726,7 @@ def calculate_key_levels_from_kbars(
             cluster_tolerance=cluster_tolerance,
             zone_tolerance=zone_tolerance,
         )
+        levels.sort(key=lambda z: z.score, reverse=True)
 
     return KLCalcResult(
         levels=levels,
