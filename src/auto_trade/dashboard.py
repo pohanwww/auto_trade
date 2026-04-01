@@ -276,20 +276,24 @@ def _generate_chart(
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
     # Build chart kbars based on session mode
-    # When lookback > 1, show all aggregated historical kbars on chart
     if session_lookback > 1:
-        chart_prev_day = agg_day_kbars
-        chart_prev_night = agg_night_kbars
+        # Multiple sessions: merge all and sort chronologically
+        if session == "night":
+            all_kbars = agg_night_kbars + agg_day_kbars + today_night_kbars
+        elif session == "day":
+            all_kbars = agg_day_kbars + agg_night_kbars + today_kbars
+        else:
+            all_kbars = agg_day_kbars + agg_night_kbars + today_kbars + today_night_kbars
+        all_kbars = sorted(all_kbars, key=lambda k: k.time)
     else:
         chart_prev_day = latest_day_kbars
         chart_prev_night = latest_night_kbars
-
-    if session == "night":
-        all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
-    elif session == "day":
-        all_kbars = chart_prev_day + chart_prev_night + today_kbars
-    else:
-        all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
+        if session == "night":
+            all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
+        elif session == "day":
+            all_kbars = chart_prev_day + chart_prev_night + today_kbars
+        else:
+            all_kbars = chart_prev_day + chart_prev_night + today_kbars + today_night_kbars
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
 
