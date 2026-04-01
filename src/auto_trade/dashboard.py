@@ -266,15 +266,12 @@ def _generate_chart(
     )
 
     signal_level_count = 7
-    anchor = or_mid or today_open or day_ohlc.get("close", 0)
     levels = find_confluence_levels(
         session_data,
         swing_period=10,
         cluster_tolerance=50,
         zone_tolerance=50,
         max_levels=15,
-        ref_price=anchor,
-        min_per_side=3,
     )
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
