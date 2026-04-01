@@ -288,6 +288,8 @@ def _generate_chart(
 
     # --- Step 2: intraday KL supplement (using today's kbars) ---
     today_session_kbars = today_night_kbars if session == "night" else today_kbars
+    intra_added = 0
+    print(f"[KL-chart] intraday supplement: today_session_kbars={len(today_session_kbars) if today_session_kbars else 0}, min_required={swing_period * 2 + 1}")
     if today_session_kbars and len(today_session_kbars) >= swing_period * 2 + 1:
         sig_threshold = levels[signal_level_count].score if len(levels) > signal_level_count else 0
         trail_threshold = levels[-1].score if levels else 0
@@ -295,17 +297,26 @@ def _generate_chart(
 
         raw_intra = detect_swing_clusters(today_session_kbars, period=swing_period, cluster_tolerance=cluster_tol)
         raw_intra.extend(detect_volume_nodes(today_session_kbars, bucket_size=10))
+        print(f"[KL-chart] raw_intra={len(raw_intra)} zones")
         if raw_intra:
             intra_zones = merge_to_zones(raw_intra, zone_tolerance=zone_tol)
             count_touches_for_zones(intra_zones, today_session_kbars, period=swing_period, tolerance=zone_tol)
             for z in intra_zones:
                 z.score = round(z.score + z.touch_count, 2)
+            print(f"[KL-chart] merged intra_zones={len(intra_zones)}, trail_threshold={trail_threshold:.1f}, existing={sorted(existing_prices)}")
             for z in intra_zones:
-                if any(abs(z.price - ep) <= zone_tol for ep in existing_prices):
+                too_close = any(abs(z.price - ep) <= zone_tol for ep in existing_prices)
+                if too_close:
+                    print(f"[KL-chart]   skip {z.price} (score={z.score:.1f}) — too close to existing")
                     continue
                 if z.score >= trail_threshold:
                     levels.append(z)
                     existing_prices.add(z.price)
+                    intra_added += 1
+                    print(f"[KL-chart]   +add {z.price} (score={z.score:.1f})")
+                else:
+                    print(f"[KL-chart]   skip {z.price} (score={z.score:.1f} < threshold {trail_threshold:.1f})")
+    print(f"[KL-chart] intraday supplement done: +{intra_added} levels, total={len(levels)}")
 
     signal_levels = set(kl.price for kl in levels[:signal_level_count])
 
