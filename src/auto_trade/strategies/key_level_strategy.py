@@ -494,18 +494,10 @@ class KeyLevelStrategy(BaseStrategy):
     # Key level calculation
     # ──────────────────────────────────────────────
 
-    _MAX_LOOKBACK = 5
     _BASE_RECENCY_POOL = 20
 
     def _calculate_key_levels(self, kbar_list: KBarList) -> None:
-        """Build SessionData and run confluence detection.
-
-        Auto-expands lookback (up to _MAX_LOOKBACK sessions) when no
-        signal KL exists above or below the OR mid.  Expansion adds
-        above/below-anchor KLs from extended data into the base
-        recency pool, then re-selects top 15 by score.
-        OHLC/pivots use latest session only.
-        """
+        """Build SessionData and run confluence detection."""
         if self._current_trading_day is None:
             return
 
@@ -613,60 +605,6 @@ class KeyLevelStrategy(BaseStrategy):
         base_pool.sort(key=lambda z: z.score, reverse=True)
         levels = base_pool[:15]
         lookback = base_lookback
-
-        # Step 2: check signal coverage, expand if needed
-        n_signal = self.signal_level_count
-        max_lb = min(self._MAX_LOOKBACK, max(len(day_sessions), len(night_sessions), 1))
-        zt = self.zone_tolerance
-
-        if anchor and max_lb > base_lookback:
-            signal_kls = levels[:n_signal]
-            sig_above = sum(1 for kl in signal_kls if kl.price >= anchor)
-            sig_below = sum(1 for kl in signal_kls if kl.price < anchor)
-            missing_above = sig_above < 1
-            missing_below = sig_below < 1
-
-            if missing_above or missing_below:
-                existing_prices = {kl.price for kl in base_pool}
-
-                for lb in range(base_lookback + 1, max_lb + 1):
-                    exp_session, agg_day_kbars, agg_night_kbars = _build_session_data(lb)
-                    all_zones = find_confluence_levels(
-                        exp_session,
-                        swing_period=self.swing_period,
-                        cluster_tolerance=self.cluster_tolerance,
-                        zone_tolerance=self.zone_tolerance,
-                        max_levels=999,
-                        recency_pool=999,
-                    )
-
-                    # Add missing-direction KLs to pool (de-dup by price proximity)
-                    for z in all_zones:
-                        if any(abs(z.price - ep) <= zt for ep in existing_prices):
-                            continue
-                        if missing_above and z.price >= anchor:
-                            base_pool.append(z)
-                            existing_prices.add(z.price)
-                        elif missing_below and z.price < anchor:
-                            base_pool.append(z)
-                            existing_prices.add(z.price)
-
-                    base_pool.sort(key=lambda z: z.score, reverse=True)
-                    levels = base_pool[:15]
-                    lookback = lb
-
-                    signal_kls = levels[:n_signal]
-                    sig_above = sum(1 for kl in signal_kls if kl.price >= anchor)
-                    sig_below = sum(1 for kl in signal_kls if kl.price < anchor)
-
-                    if (not missing_above or sig_above >= 1) and (not missing_below or sig_below >= 1):
-                        _log("  Auto-expanded lookback: %d → %d (sig_above=%d, sig_below=%d, pool=%d)",
-                             base_lookback, lb, sig_above, sig_below, len(base_pool))
-                        break
-
-                if lookback > base_lookback and lookback >= max_lb:
-                    _log("  Auto-expanded lookback: %d → %d (max, sig_above=%d, sig_below=%d, pool=%d)",
-                         base_lookback, lookback, sig_above, sig_below, len(base_pool))
 
         _log(
             "=== Key Level Calculation [%s] ===\n"
