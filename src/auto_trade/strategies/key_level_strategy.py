@@ -595,7 +595,7 @@ class KeyLevelStrategy(BaseStrategy):
                 swing_period=self.swing_period,
                 cluster_tolerance=self.cluster_tolerance,
                 zone_tolerance=self.zone_tolerance,
-                max_levels=20,
+                max_levels=15,
                 ref_price=anchor,
                 min_per_side=self._MIN_KL_PER_SIDE,
             )

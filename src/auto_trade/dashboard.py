@@ -272,7 +272,7 @@ def _generate_chart(
         swing_period=10,
         cluster_tolerance=50,
         zone_tolerance=50,
-        max_levels=20,
+        max_levels=15,
         ref_price=anchor,
         min_per_side=3,
     )
