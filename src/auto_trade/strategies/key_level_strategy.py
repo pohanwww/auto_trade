@@ -149,6 +149,21 @@ class KeyLevelStrategy(BaseStrategy):
         self.use_breakout = use_breakout
         self.use_bounce = use_bounce
 
+        # Per-direction overrides (fallback to base value when not set)
+        self.use_breakout_long = kwargs.get("use_breakout_long", use_breakout)
+        self.use_breakout_short = kwargs.get("use_breakout_short", use_breakout)
+        self.use_bounce_long = kwargs.get("use_bounce_long", use_bounce)
+        self.use_bounce_short = kwargs.get("use_bounce_short", use_bounce)
+        self.use_instant_long = kwargs.get("use_instant_long", True)
+        self.use_instant_short = kwargs.get("use_instant_short", True)
+        self.breakout_buffer_long = kwargs.get("breakout_buffer_long", breakout_buffer)
+        self.breakout_buffer_short = kwargs.get("breakout_buffer_short", breakout_buffer)
+        self.instant_threshold_long = kwargs.get("instant_threshold_long", instant_threshold)
+        self.instant_threshold_short = kwargs.get("instant_threshold_short", instant_threshold)
+        self.bounce_buffer_long = kwargs.get("bounce_buffer_long", bounce_buffer)
+        self.bounce_buffer_short = kwargs.get("bounce_buffer_short", bounce_buffer)
+        self.bounce_ignore_or = kwargs.get("bounce_ignore_or", False)
+
         # Trend filter
         self.trend_filter = trend_filter
         self.trend_filter_ema_period = trend_filter_ema_period
@@ -172,6 +187,37 @@ class KeyLevelStrategy(BaseStrategy):
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
             use_breakout, use_bounce,
         )
+
+        # Log per-direction overrides (only when different from base)
+        overrides = []
+        if self.use_breakout_long != use_breakout:
+            overrides.append(f"breakout_long={self.use_breakout_long}")
+        if self.use_breakout_short != use_breakout:
+            overrides.append(f"breakout_short={self.use_breakout_short}")
+        if self.use_bounce_long != use_bounce:
+            overrides.append(f"bounce_long={self.use_bounce_long}")
+        if self.use_bounce_short != use_bounce:
+            overrides.append(f"bounce_short={self.use_bounce_short}")
+        if not self.use_instant_long:
+            overrides.append("instant_long=False")
+        if not self.use_instant_short:
+            overrides.append("instant_short=False")
+        if self.breakout_buffer_long != breakout_buffer:
+            overrides.append(f"bb_long={self.breakout_buffer_long:.2f}")
+        if self.breakout_buffer_short != breakout_buffer:
+            overrides.append(f"bb_short={self.breakout_buffer_short:.2f}")
+        if self.instant_threshold_long != instant_threshold:
+            overrides.append(f"ib_long={self.instant_threshold_long:.2f}")
+        if self.instant_threshold_short != instant_threshold:
+            overrides.append(f"ib_short={self.instant_threshold_short:.2f}")
+        if self.bounce_buffer_long != bounce_buffer:
+            overrides.append(f"bnc_long={self.bounce_buffer_long:.2f}")
+        if self.bounce_buffer_short != bounce_buffer:
+            overrides.append(f"bnc_short={self.bounce_buffer_short:.2f}")
+        if self.bounce_ignore_or:
+            overrides.append("bounce_ignore_or=True")
+        if overrides:
+            _log("  Per-direction: %s", ", ".join(overrides))
 
         # Daily state
         self._current_date: datetime | None = None
@@ -287,8 +333,13 @@ class KeyLevelStrategy(BaseStrategy):
 
         # === Bounce check (bar close only, scans all signal levels) ===
         if bar_close:
+            if self.bounce_ignore_or:
+                bounce_long = not self.short_only
+                bounce_short = not self.long_only
+            else:
+                bounce_long, bounce_short = allow_long, allow_short
             signal = self._check_bounce(
-                kbar, prev_kbar, allow_long, allow_short, symbol,
+                kbar, prev_kbar, bounce_long, bounce_short, symbol,
             )
             if signal:
                 return signal
@@ -371,32 +422,35 @@ class KeyLevelStrategy(BaseStrategy):
         Already filtered by OR direction, cooldown, and trade limits.
         The engine only needs to compare tick price against these two values.
         """
-        if not self._levels_calculated or self._atr <= 0 or not self.use_breakout:
+        if not self._levels_calculated or self._atr <= 0:
             return None, None
         if self._cooldown_until and datetime.now() < self._cooldown_until:
             return None, None
 
-        buf = self._atr * self.instant_threshold
         long_price = None
         short_price = None
 
         # Long target
-        if self._instant_target_long and not self.short_only:
-            tp = self._instant_target_long.price + buf
+        if (self.use_breakout_long and self.use_instant_long
+                and self._instant_target_long and not self.short_only):
+            buf_l = self._atr * self.instant_threshold_long
+            tp = self._instant_target_long.price + buf_l
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
                 if self._or_high is not None and tp < self._or_high:
-                    pass  # trigger below OR_high → impossible to pass OR gate
+                    pass
                 else:
                     long_price = tp
             else:
                 long_price = tp
 
         # Short target
-        if self._instant_target_short and not self.long_only:
-            tp = self._instant_target_short.price - buf
+        if (self.use_breakout_short and self.use_instant_short
+                and self._instant_target_short and not self.long_only):
+            buf_s = self._atr * self.instant_threshold_short
+            tp = self._instant_target_short.price - buf_s
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
                 if self._or_low is not None and tp > self._or_low:
-                    pass  # trigger above OR_low → impossible to pass OR gate
+                    pass
                 else:
                     short_price = tp
             else:
@@ -849,12 +903,12 @@ class KeyLevelStrategy(BaseStrategy):
             return None
 
         session_name = self._get_trade_session(kbar.time)
-        bbuf = self._atr * self.breakout_buffer
-        ibuf = self._atr * self.instant_threshold
 
         # --- Long breakout ---
         long_kl = self._target_long if bar_close else self._instant_target_long
-        if allow_long and self.use_breakout and long_kl:
+        if allow_long and self.use_breakout_long and long_kl:
+            bbuf = self._atr * self.breakout_buffer_long
+            ibuf = self._atr * self.instant_threshold_long
             kl = long_kl
             ref = int(prev_kbar.close) if bar_close else int(kbar.open)
 
@@ -882,7 +936,8 @@ class KeyLevelStrategy(BaseStrategy):
                     )
 
             else:
-                if (int(current_price) > kl.price + ibuf
+                if (self.use_instant_long
+                        and int(current_price) > kl.price + ibuf
                         and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(current_price), True,
@@ -891,7 +946,9 @@ class KeyLevelStrategy(BaseStrategy):
 
         # --- Short breakout ---
         short_kl = self._target_short if bar_close else self._instant_target_short
-        if allow_short and self.use_breakout and short_kl:
+        if allow_short and self.use_breakout_short and short_kl:
+            bbuf = self._atr * self.breakout_buffer_short
+            ibuf = self._atr * self.instant_threshold_short
             kl = short_kl
             ref = int(prev_kbar.close) if bar_close else int(kbar.open)
 
@@ -919,7 +976,8 @@ class KeyLevelStrategy(BaseStrategy):
                     )
 
             else:
-                if (int(current_price) < kl.price - ibuf
+                if (self.use_instant_short
+                        and int(current_price) < kl.price - ibuf
                         and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(current_price), True,
@@ -937,10 +995,11 @@ class KeyLevelStrategy(BaseStrategy):
         symbol: str,
     ) -> StrategySignal | None:
         """Check bounce signals at bar close (scan all signal levels)."""
-        if not self.use_bounce or self._atr <= 0:
+        if (not self.use_bounce_long and not self.use_bounce_short) or self._atr <= 0:
             return None
 
-        buf = self._atr * self.bounce_buffer
+        buf_long = self._atr * self.bounce_buffer_long
+        buf_short = self._atr * self.bounce_buffer_short
         close = int(kbar.close)
         high = int(kbar.high)
         low = int(kbar.low)
@@ -950,14 +1009,14 @@ class KeyLevelStrategy(BaseStrategy):
         for kl in self._signal_levels:
             level = kl.price
 
-            if allow_long and low <= level + buf and close > level:
+            if allow_long and self.use_bounce_long and low <= level + buf_long and close > level:
                 if ref > level:
                     return self._emit_entry(
                         True, kl, close, False,
                         kbar, session_name, "bounce_long", symbol,
                     )
 
-            if allow_short and high >= level - buf and close < level:
+            if allow_short and self.use_bounce_short and high >= level - buf_short and close < level:
                 if ref < level:
                     return self._emit_entry(
                         False, kl, close, False,

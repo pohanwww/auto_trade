@@ -173,6 +173,14 @@ def build_trading_units_from_config(
             "use_breakout",
             "use_bounce",
             "key_level_trail_mode",
+            # Key Level per-direction overrides
+            "use_breakout_long", "use_breakout_short",
+            "use_bounce_long", "use_bounce_short",
+            "use_instant_long", "use_instant_short",
+            "breakout_buffer_long", "breakout_buffer_short",
+            "instant_threshold_long", "instant_threshold_short",
+            "bounce_buffer_long", "bounce_buffer_short",
+            "bounce_ignore_or",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 

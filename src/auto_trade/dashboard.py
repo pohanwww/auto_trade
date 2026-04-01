@@ -279,7 +279,7 @@ def _generate_chart(
     if session == "night":
         chart_prev_day = latest_day_kbars
         chart_prev_night = latest_night_kbars
-        all_kbars = chart_prev_day + chart_prev_night + today_night_kbars
+        all_kbars = chart_prev_night + chart_prev_day + today_night_kbars
     elif session == "day":
         chart_prev_day = latest_day_kbars
         chart_prev_night = latest_night_kbars
@@ -351,8 +351,8 @@ def _generate_chart(
 
         if session == "night":
             session_spans = [
-                ("Prev Day", chart_prev_day, "#E0E0E0"),
                 ("Prev Night", chart_prev_night, "#E8E0F0"),
+                ("Prev Day", chart_prev_day, "#E0E0E0"),
                 ("Tonight", today_night_kbars, "#F0E8E0"),
             ]
         elif session == "day":
