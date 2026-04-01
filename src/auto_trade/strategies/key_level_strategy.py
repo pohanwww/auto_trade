@@ -42,8 +42,15 @@ from auto_trade.services.key_level_signal import KeyLevelSignal
 from auto_trade.strategies.base_strategy import BaseStrategy
 
 
-def _log(msg: str, *args) -> None:
+import os as _os
+
+_KL_VERBOSE = _os.environ.get("KL_VERBOSE", "1") == "1"
+
+
+def _log(msg: str, *args, verbose: bool = False) -> None:
     """Print with [KL] prefix for easy grep."""
+    if verbose and not _KL_VERBOSE:
+        return
     text = msg % args if args else msg
     print(f"[KL] {text}")
 
@@ -819,6 +826,7 @@ class KeyLevelStrategy(BaseStrategy):
             self._instant_target_long.price if self._instant_target_long else None,
             self._instant_target_short.price if self._instant_target_short else None,
             bar_ref, instant_ref,
+            verbose=True,
         )
 
     def _check_breakout_target(

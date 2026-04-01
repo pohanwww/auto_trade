@@ -39,6 +39,10 @@ PERIODS = {
     # ── 舊定義（保留向後兼容）──
     "2024": ("2024-01-01", "2024-12-31"),
     "2025": ("2025-01-01", "2025-12-31"),
+    # ── 常用驗證期 ──
+    "2025H2": ("2025-07-01", "2025-12-31"),
+    "2026Q1": ("2026-01-01", "2026-03-20"),
+    "202603": ("2026-03-01", "2026-03-20"),
 }
 
 LOTS = 4
@@ -171,6 +175,9 @@ def make_unit(
         else "D"
     )
     buf_str = f"{kl_buf:.0f}pt" if kl_buf >= 1 else f"{kl_buf:.2f}×ATR"
+    bb = params.get("breakout_buffer", 0.3)
+    ib = params.get("instant_threshold", 0.3)
+    bb_ib_tag = f"bb={bb:.2f}/ib={ib:.2f}"
     max_day = params.get("max_trades_day_session")
     max_night = params.get("max_trades_night_session")
     if max_day is not None or max_night is not None:
@@ -179,7 +186,7 @@ def make_unit(
         max_tag = f"max{params['max_trades_per_day']}/d"
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
-        f"{entry_tag} {trail_tag} buf={buf_str} "
+        f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
         f"{max_tag} n={sig_n}"
     )
 
@@ -442,6 +449,57 @@ TOP_PARAMS = [
 
 TOP10_PARAMS = TOP_PARAMS
 
+
+def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
+    """Helper for instant buffer sweep: build param dict with specific bb/ib."""
+    return {
+        **_FIXED,
+        "breakout_buffer": bb,
+        "bounce_buffer": 0.3,
+        "instant_threshold": ib,
+        "direction": direction,
+        "use_or": use_or,
+        "session_mode": session,
+        "entry_type": "breakout_only",
+        "key_level_trail_mode": "previous",
+        "key_level_buffer": 0.15,
+        "max_trades_per_day": 2,
+        "signal_level_count": 7,
+        "trend_filter": trend_filter,
+    }
+
+
+def _make_instant_buf_params(fine: bool = False) -> list[dict]:
+    """Generate instant_threshold vs breakout_buffer sweep combos.
+
+    fine=True: narrow grid around bb=0.30, ib=0.30 sweet spot.
+    """
+    if fine:
+        combos = [
+            (0.20, 0.20), (0.20, 0.30), (0.20, 0.40),
+            (0.25, 0.25), (0.25, 0.30), (0.25, 0.40),
+            (0.30, 0.30), (0.30, 0.40),
+            (0.35, 0.30), (0.35, 0.35),
+            (0.40, 0.30), (0.40, 0.40),
+        ]
+    else:
+        combos = [
+            (0.15, 0.3),
+            (0.3, 0.3),   # baseline
+            (0.3, 0.5),
+            (0.3, 0.7),
+        ]
+    params = []
+    for bb, ib in combos:
+        params.append(_pb(True, "day_only", "both", bb, ib))
+        params.append(_pb(True, "day_only", "long_only", bb, ib))
+        params.append(_pb(True, "night_only", "both", bb, ib, trend_filter="or"))
+    return params
+
+
+INSTANT_BUF_PARAMS = _make_instant_buf_params()
+INSTANT_BUF_FINE_PARAMS = _make_instant_buf_params(fine=True)
+
 # 2-config subset for multi-timeframe testing (Pure L + OR B)
 MTF_PARAMS = [
     _p(False, "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # Pure L
@@ -456,6 +514,12 @@ def parse_args():
         choices=list(PERIODS.keys()) + ["all_con", "all_bull", "all_bear", "validate"],
         default="con_quiet",
         help="Period to test. all_con/all_bull/all_bear = run all of that type.",
+    )
+    parser.add_argument(
+        "--grid",
+        choices=["trailing", "instant_buf", "instant_buf_fine"],
+        default=None,
+        help="Parameter grid. instant_buf = coarse sweep, instant_buf_fine = fine grid around bb=0.30/ib=0.30.",
     )
     parser.add_argument(
         "--max-combos",
@@ -512,17 +576,27 @@ def main():
 
     periods_to_run = [(k, PERIODS[k]) for k in period_keys]
 
+    # Select params based on grid
+    if args.grid == "instant_buf":
+        sweep_params = INSTANT_BUF_PARAMS
+    elif args.grid == "instant_buf_fine":
+        sweep_params = INSTANT_BUF_FINE_PARAMS
+    else:
+        sweep_params = TOP10_PARAMS
+
     slip = args.slippage
     tf = args.timeframe
     for period_name, (start, end) in periods_to_run:
         tag = f"{period_name}_slip{slip}" if slip != 1 else period_name
         if tf != "5m":
             tag = f"{tag}_{tf}"
+        if args.grid:
+            tag = f"{tag}_{args.grid}"
         run_sweep(
             tag, start, end,
             max_combos=args.max_combos,
             save=args.save,
-            specific_params=TOP10_PARAMS,
+            specific_params=sweep_params,
             slippage=slip,
             timeframe=tf,
         )

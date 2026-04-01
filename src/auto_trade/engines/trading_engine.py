@@ -416,11 +416,13 @@ class TradingEngine:
             if action.order_type == "Open":
                 self._record_open(action, fill_result.fill_price)
 
-            # 平倉 → 先取 entry_price（on_fill 後 position 可能變 None）
+            # 平倉 → 先取 entry_price / direction（on_fill 後 position 可能變 None）
             close_entry_price = 0
+            close_direction = None
             close_remaining_qty = 0
             if action.order_type == "Close" and self.position_manager.position:
                 pos = self.position_manager.position
+                close_direction = pos.direction
                 close_leg_ids = []
                 if action.leg_id:
                     close_leg_ids = [action.leg_id]
@@ -503,6 +505,7 @@ class TradingEngine:
                             quantity=action.quantity,
                             exit_reason=action.reason,
                             entry_price=close_entry_price,
+                            direction=close_direction,
                             strategy_name=strategy,
                             remaining_quantity=max(close_remaining_qty, 0),
                             equity=equity,

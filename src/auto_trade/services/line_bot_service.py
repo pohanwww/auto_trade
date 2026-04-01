@@ -143,13 +143,21 @@ class LineBotService:
         quantity: int,
         exit_reason: str,
         entry_price: float = 0,
+        direction=None,
         strategy_name: str = "",
         remaining_quantity: int = 0,
         equity: float | None = None,
     ) -> bool:
         """發送平倉通知訊息"""
+        from auto_trade.models.account import Action
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        pnl_pts = price - entry_price if entry_price else 0
+        if not entry_price:
+            pnl_pts = 0
+        elif direction == Action.Sell:
+            pnl_pts = entry_price - price
+        else:
+            pnl_pts = price - entry_price
         point_value = 50 if symbol.startswith("MXF") else 200
         pnl_twd = pnl_pts * quantity * point_value
         pnl_sign = "+" if pnl_pts >= 0 else ""
