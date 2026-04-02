@@ -36,7 +36,6 @@ from auto_trade.services.indicator_service import IndicatorService
 from auto_trade.services.key_level_detector import (
     KeyLevel,
     calculate_key_levels_from_kbars,
-    supplement_intraday_kls,
 )
 from auto_trade.services.key_level_signal import KeyLevelSignal
 from auto_trade.strategies.base_strategy import BaseStrategy
@@ -245,9 +244,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._instant_target_short: KeyLevel | None = None
 
         # Intraday KL supplement state
-        self._last_supplement_hour: int | None = None
-        self._signal_score_threshold: float = 0.0
-        self._trailing_score_threshold: float = 0.0
+        self._supplement_done: bool = False
         self._kl_updated: bool = False
 
     # ──────────────────────────────────────────────
@@ -304,8 +301,8 @@ class KeyLevelStrategy(BaseStrategy):
             return self._hold(symbol, current_price, "ATR unavailable")
         self._atr = atr
 
-        # Intraday KL supplement — disabled pending redesign
-        # self._try_supplement_intraday_kls(kbar_list, bar_time)
+        # Intraday KL supplement (coverage-gap triggered, runs at most once)
+        self._try_supplement_intraday(kbar_list)
 
         # Compute targets from kbar data (always fresh, no stale state)
         self._compute_active_targets(kbar_list)
@@ -359,15 +356,30 @@ class KeyLevelStrategy(BaseStrategy):
         if not self._levels_calculated:
             state: dict = {}
         else:
-            state = {
+            state: dict = {
                 "signal_levels": [
                     {"price": kl.price, "score": kl.score}
                     for kl in self._signal_levels
                 ],
+                "key_levels": [
+                    {
+                        "price": kl.price,
+                        "score": kl.score,
+                        "num_methods": kl.num_methods,
+                        "touch_count": kl.touch_count,
+                        "sources": list(kl.sources),
+                    }
+                    for kl in self._key_levels
+                ],
+                "levels_calculated": True,
+                "supplement_done": self._supplement_done,
             }
             if self.use_or and self._or_calculated:
                 state["or_high"] = self._or_high
                 state["or_low"] = self._or_low
+                state["or_mid"] = self._or_mid
+                state["or_range"] = self._or_range
+                state["or_calculated"] = True
             if self._target_long:
                 state["target_long"] = self._target_long.price
             if self._target_short:
@@ -416,6 +428,45 @@ class KeyLevelStrategy(BaseStrategy):
         if night_trades is not None:
             self._trades_night_session = int(night_trades)
             _log("Restored trades_night_session=%d", self._trades_night_session)
+
+        # Restore full key_levels list (avoids re-supplement producing different results)
+        kl_data = state.get("key_levels")
+        if kl_data and state.get("levels_calculated"):
+            restored: list[KeyLevel] = []
+            for d in kl_data:
+                restored.append(KeyLevel(
+                    price=d["price"],
+                    score=d["score"],
+                    num_methods=d.get("num_methods", 1),
+                    touch_count=d.get("touch_count", 0),
+                    sources=d.get("sources", []),
+                ))
+            self._key_levels = restored
+            n = self.signal_level_count
+            self._signal_levels = self._key_levels[:n]
+            self._trailing_levels = sorted(
+                [kl.price for kl in self._key_levels[n:]],
+            )
+            self._levels_calculated = True
+            self._supplement_done = bool(state.get("supplement_done", False))
+            _log(
+                "Restored key_levels=%d (signal=%d, trailing=%d), "
+                "supplement_done=%s",
+                len(self._key_levels), len(self._signal_levels),
+                len(self._trailing_levels), self._supplement_done,
+            )
+
+        # Restore OR state
+        if state.get("or_calculated"):
+            self._or_high = state.get("or_high")
+            self._or_low = state.get("or_low")
+            self._or_mid = state.get("or_mid")
+            self._or_range = state.get("or_range")
+            self._or_calculated = True
+            _log(
+                "Restored OR: high=%s, low=%s, mid=%s, range=%s",
+                self._or_high, self._or_low, self._or_mid, self._or_range,
+            )
 
         cd = state.get("cooldown_until")
         if cd is not None:
@@ -493,7 +544,9 @@ class KeyLevelStrategy(BaseStrategy):
 
     _BASE_RECENCY_POOL = 20
 
-    def _calculate_key_levels(self, kbar_list: KBarList) -> None:
+    def _calculate_key_levels(
+        self, kbar_list: KBarList, *, include_intraday: str = "never",
+    ) -> None:
         """Build SessionData and run confluence detection via shared function."""
         if self._current_trading_day is None:
             return
@@ -514,6 +567,10 @@ class KeyLevelStrategy(BaseStrategy):
             signal_level_count=self.signal_level_count,
             recency_pool=self._BASE_RECENCY_POOL,
             session_lookback=self._session_lookback,
+            include_intraday=include_intraday,
+            or_high=self._or_high,
+            or_low=self._or_low,
+            atr=int(self._atr) if self._atr > 0 else None,
         )
 
         levels = result.levels
@@ -521,11 +578,12 @@ class KeyLevelStrategy(BaseStrategy):
         night_ohlc = result.night_ohlc
 
         _log(
-            "=== Key Level Calculation [%s] ===\n"
+            "=== Key Level Calculation [%s] (intraday=%s, supplemented=%s) ===\n"
             "  Session data: prev_day H/L/C=%s/%s/%s | prev_night H/L/C=%s/%s/%s\n"
             "  today_open=%s | or_range=%s | lookback=%d sessions\n"
             "  Kbar counts: day=%d, night=%d",
             self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
+            include_intraday, result.supplemented,
             day_ohlc.get("high"), day_ohlc.get("low"), day_ohlc.get("close"),
             night_ohlc.get("high"), night_ohlc.get("low"), night_ohlc.get("close"),
             result.today_open, self._or_range, self._session_lookback,
@@ -540,12 +598,9 @@ class KeyLevelStrategy(BaseStrategy):
         )
         self._levels_calculated = True
 
-        if len(self._key_levels) > n:
-            self._signal_score_threshold = self._key_levels[n].score
-        elif self._key_levels:
-            self._signal_score_threshold = self._key_levels[-1].score
-        if self._key_levels:
-            self._trailing_score_threshold = self._key_levels[-1].score
+        if result.supplemented:
+            self._supplement_done = True
+            self._kl_updated = True
 
         _log("  Total levels found: %d (signal=%d, trailing=%d)",
                  len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
@@ -560,47 +615,18 @@ class KeyLevelStrategy(BaseStrategy):
             _log("  Trailing ladder: %s", self._trailing_levels)
 
     # ──────────────────────────────────────────────
-    # Intraday KL supplement (hourly)
+    # Intraday KL supplement (coverage-gap triggered)
     # ──────────────────────────────────────────────
 
-    def _try_supplement_intraday_kls(self, kbar_list: KBarList, bar_time: datetime) -> None:
-        """Detect new KLs from today's intraday kbars and append if score qualifies."""
-        current_hour = bar_time.hour
-        if self._last_supplement_hour is not None and current_hour == self._last_supplement_hour:
+    def _try_supplement_intraday(self, kbar_list: KBarList) -> None:
+        """Re-run KL calculation with ``include_intraday="auto"``.
+
+        Skipped if supplement was already performed this session or if
+        the base levels haven't been computed yet.
+        """
+        if self._supplement_done or not self._levels_calculated:
             return
-        if not self._levels_calculated:
-            return
-
-        self._last_supplement_hour = current_hour
-
-        today = self._current_trading_day
-        today_kbars = [
-            k for k in kbar_list.kbars
-            if self._get_trading_day(k.time) == today
-            and self._is_active_session(k.time)
-        ]
-        today_kbars.sort(key=lambda k: k.time)
-
-        added = supplement_intraday_kls(
-            self._key_levels, today_kbars, self.signal_level_count,
-            swing_period=self.swing_period,
-            cluster_tolerance=self.cluster_tolerance,
-            zone_tolerance=self.zone_tolerance,
-        )
-
-        for role, z in added:
-            if role == "SIG":
-                self._signal_levels.append(z)
-            else:
-                self._trailing_levels.append(z.price)
-                self._trailing_levels.sort()
-
-        if added:
-            self._kl_updated = True
-            _log("  Intraday KL supplement (hour=%d): +%d levels", current_hour, len(added))
-            for role, z in added:
-                _log("    [%s] price=%d | score=%.1f | sources=%s",
-                     role, z.price, z.score, ", ".join(z.sources))
+        self._calculate_key_levels(kbar_list, include_intraday="auto")
 
     # ──────────────────────────────────────────────
     # OR calculation
@@ -771,9 +797,8 @@ class KeyLevelStrategy(BaseStrategy):
         self._target_short = None
         self._instant_target_long = None
         self._instant_target_short = None
-        self._last_supplement_hour: int | None = None
-        self._signal_score_threshold: float = 0.0
-        self._trailing_score_threshold: float = 0.0
+        self._supplement_done = False
+        self._kl_updated = False
 
     def _get_trading_day(self, bar_time: datetime):
         """Return business date. Early-morning night-session bars belong to previous day."""

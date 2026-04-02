@@ -573,6 +573,7 @@ class KLCalcResult:
     today_night_kbars: list
     agg_day_kbars: list
     agg_night_kbars: list
+    supplemented: bool = False
 
 
 def split_sessions(
@@ -637,7 +638,11 @@ def calculate_key_levels_from_kbars(
     signal_level_count: int = 7,
     recency_pool: int = 20,
     session_lookback: int = 1,
-    include_intraday: bool = False,
+    include_intraday: str = "never",
+    or_high: int | None = None,
+    or_low: int | None = None,
+    atr: int | None = None,
+    min_today_kbars: int = 21,
 ) -> KLCalcResult:
     """Full KL calculation pipeline — shared by strategy and dashboard.
 
@@ -645,7 +650,10 @@ def calculate_key_levels_from_kbars(
     2. Extract OHLC from latest session (for pivot points)
     3. Aggregate N sessions of kbars for swing/volume detection
     4. Run find_confluence_levels → score sort → top 15
-    5. Optionally run intraday supplement on today's session kbars
+    5. Optionally run intraday supplement (``include_intraday``):
+       - ``"never"``  : skip supplement
+       - ``"auto"``   : supplement only when coverage gap detected
+       - ``"always"`` : always supplement (for testing)
     """
     # 1. Session split
     day_sessions, night_sessions, today_day, today_night = split_sessions(
@@ -719,14 +727,52 @@ def calculate_key_levels_from_kbars(
     levels = pool[:15]
 
     # 5. Intraday supplement
-    if include_intraday:
-        supplement_intraday_kls(
-            levels, today_session, signal_level_count,
-            swing_period=swing_period,
-            cluster_tolerance=cluster_tolerance,
-            zone_tolerance=zone_tolerance,
-        )
-        levels.sort(key=lambda z: z.score, reverse=True)
+    supplemented = False
+    if include_intraday != "never" and today_session:
+        run_supplement = False
+        if include_intraday == "always":
+            run_supplement = len(today_session) >= min_today_kbars
+        elif include_intraday == "auto":
+            if len(today_session) >= min_today_kbars:
+                current_price = int(today_session[-1].close)
+                eff_atr = atr if atr and atr > 0 else 100
+                run_supplement = has_coverage_gap(
+                    levels, current_price, signal_level_count,
+                    or_high=or_high, or_low=or_low, atr=eff_atr,
+                )
+
+        if run_supplement:
+            supp_session = SessionData(
+                prev_day_high=day_ohlc.get("high", 0),
+                prev_day_low=day_ohlc.get("low", 0),
+                prev_day_close=day_ohlc.get("close", 0),
+                prev_night_high=night_ohlc.get("high"),
+                prev_night_low=night_ohlc.get("low"),
+                prev_night_close=night_ohlc.get("close"),
+                today_open=today_open,
+                or_range=or_range,
+                prev_day_kbars=agg_day + today_session,
+                prev_night_kbars=agg_night,
+            ) if not in_night_session else SessionData(
+                prev_day_high=day_ohlc.get("high", 0),
+                prev_day_low=day_ohlc.get("low", 0),
+                prev_day_close=day_ohlc.get("close", 0),
+                prev_night_high=night_ohlc.get("high"),
+                prev_night_low=night_ohlc.get("low"),
+                prev_night_close=night_ohlc.get("close"),
+                today_open=today_open,
+                or_range=or_range,
+                prev_day_kbars=agg_day,
+                prev_night_kbars=agg_night + today_session,
+            )
+            supplement_intraday_kls(
+                levels, agg_day + agg_night + today_session, supp_session,
+                swing_period=swing_period,
+                cluster_tolerance=cluster_tolerance,
+                zone_tolerance=zone_tolerance,
+                recency_pool=recency_pool,
+            )
+            supplemented = True
 
     return KLCalcResult(
         levels=levels,
@@ -739,51 +785,103 @@ def calculate_key_levels_from_kbars(
         today_night_kbars=today_night,
         agg_day_kbars=agg_day,
         agg_night_kbars=agg_night,
+        supplemented=supplemented,
     )
+
+
+def has_coverage_gap(
+    levels: list[KeyLevel],
+    current_price: int,
+    signal_level_count: int = 7,
+    *,
+    or_high: int | None = None,
+    or_low: int | None = None,
+    atr: int = 100,
+    max_gap_atr: float = 3.0,
+) -> bool:
+    """Check whether signal KLs have coverage gaps near current_price.
+
+    A gap exists when:
+    - No usable signal above or below current_price
+    - Nearest usable signal is farther than ``max_gap_atr * atr``
+
+    Signals inside the OR range are excluded (can't trigger breakout).
+    """
+    sig_prices = [kl.price for kl in levels[:signal_level_count]]
+
+    if or_high is not None and or_low is not None:
+        usable = [p for p in sig_prices if p > or_high or p < or_low]
+    else:
+        usable = sig_prices
+
+    if not usable:
+        return True
+
+    above = [p for p in usable if p > current_price]
+    below = [p for p in usable if p < current_price]
+
+    if not above or not below:
+        return True
+
+    max_gap = atr * max_gap_atr
+    if min(above) - current_price > max_gap:
+        return True
+    if current_price - max(below) > max_gap:
+        return True
+
+    return False
 
 
 def supplement_intraday_kls(
     levels: list[KeyLevel],
-    today_kbars: list[KBar],
-    signal_level_count: int = 7,
+    all_kbars: list[KBar],
+    session_data: SessionData,
     *,
     swing_period: int = 10,
     cluster_tolerance: int = 50,
     zone_tolerance: int = 50,
-) -> list[tuple[str, KeyLevel]]:
-    """Detect intraday KLs from today's session kbars and append to levels.
+    recency_pool: int = 20,
+) -> list[KeyLevel]:
+    """Re-detect KLs from history+today kbars and merge into *levels*.
 
-    Modifies ``levels`` in-place.  Returns list of (role, zone) added
-    so the caller can log or update internal state.
+    Uses the full ``find_confluence_levels`` pipeline so that scores are
+    comparable with the base 15.  Merge logic:
+
+    - Overlapping zone (within ``zone_tolerance``) → update score to max
+    - Brand-new zone → append to ``levels``
+    - Existing levels are never removed
+
+    Modifies ``levels`` in-place.  Returns the list of *newly added* zones.
     """
-    if not today_kbars or len(today_kbars) < swing_period * 2 + 1:
+    if not all_kbars:
         return []
 
-    sig_threshold = levels[signal_level_count].score if len(levels) > signal_level_count else 0
-    trail_threshold = levels[-1].score if levels else 0
-    existing_prices = {kl.price for kl in levels}
+    new_pool = find_confluence_levels(
+        session_data,
+        swing_period=swing_period,
+        cluster_tolerance=cluster_tolerance,
+        zone_tolerance=zone_tolerance,
+        max_levels=recency_pool,
+        recency_pool=recency_pool,
+    )
 
-    raw = detect_swing_clusters(today_kbars, period=swing_period, cluster_tolerance=cluster_tolerance)
-    raw.extend(detect_volume_nodes(today_kbars, bucket_size=10))
-    if not raw:
-        return []
+    added: list[KeyLevel] = []
+    for nz in new_pool:
+        matched = False
+        for existing in levels:
+            if abs(nz.price - existing.price) <= zone_tolerance:
+                if nz.score > existing.score:
+                    existing.score = nz.score
+                    existing.num_methods = max(existing.num_methods, nz.num_methods)
+                    existing.touch_count = max(existing.touch_count, nz.touch_count)
+                    for src in nz.sources:
+                        if src not in existing.sources:
+                            existing.sources.append(src)
+                matched = True
+                break
+        if not matched:
+            levels.append(nz)
+            added.append(nz)
 
-    zones = merge_to_zones(raw, zone_tolerance=zone_tolerance)
-    count_touches_for_zones(zones, today_kbars, period=swing_period, tolerance=zone_tolerance)
-    for z in zones:
-        z.score = round(z.score + z.touch_count, 2)
-
-    added: list[tuple[str, KeyLevel]] = []
-    for z in zones:
-        if any(abs(z.price - ep) <= zone_tolerance for ep in existing_prices):
-            continue
-        if z.score >= sig_threshold:
-            levels.append(z)
-            existing_prices.add(z.price)
-            added.append(("SIG", z))
-        elif z.score >= trail_threshold:
-            levels.append(z)
-            existing_prices.add(z.price)
-            added.append(("TRAIL", z))
-
+    levels.sort(key=lambda z: z.score, reverse=True)
     return added
