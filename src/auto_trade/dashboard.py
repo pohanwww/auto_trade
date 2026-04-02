@@ -172,7 +172,8 @@ def _generate_chart(
     agg_day_kbars = kl.agg_day_kbars
     agg_night_kbars = kl.agg_night_kbars
 
-    signal_levels = set(lv.price for lv in levels[:signal_level_count])
+    effective_signal_count = signal_level_count + kl.supp_signal_count
+    signal_levels = set(lv.price for lv in levels[:effective_signal_count])
 
     # Build chart kbars — always sorted chronologically
     if in_night:
@@ -423,7 +424,7 @@ def _generate_chart(
                 [0],
                 color="#FF8800",
                 lw=1,
-                label=f"Signal Level (top {signal_level_count})",
+                label=f"Signal Level (top {effective_signal_count})",
             ),
             Line2D(
                 [0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"

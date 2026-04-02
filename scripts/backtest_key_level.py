@@ -129,6 +129,7 @@ def make_unit(
         trend_filter=params.get("trend_filter", "or"),
         trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
+        pivot_mode=params.get("pivot_mode", "combined"),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -184,10 +185,12 @@ def make_unit(
         max_tag = f"day{max_day}/night{max_night}"
     else:
         max_tag = f"max{params['max_trades_per_day']}/d"
+    pvt = params.get("pivot_mode", "combined")
+    pvt_tag = f" pvt={pvt}" if pvt != "combined" else ""
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}"
+        f"{max_tag} n={sig_n}{pvt_tag}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -449,6 +452,45 @@ TOP_PARAMS = [
 
 TOP10_PARAMS = TOP_PARAMS
 
+SUPP_TEST_PARAMS = [
+    _p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+    _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+]
+
+PIVOT_SAME_PARAMS = [
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "same"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "same"},
+]
+
+PIVOT_CROSS_PARAMS = [
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "cross"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "cross"},
+]
+
+PIVOT_NONE_PARAMS = [
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
+]
+
+PIVOT_CMP_PARAMS = [
+    # OR B D BK × 3 pivot modes
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "none"},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "same"},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "combined"},
+    # OR B N BK × 3 pivot modes
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "none"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "same"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "combined"},
+]
+
+NO_PVT_SUPP_PARAMS = [
+    # pivot=none + supplement enabled: OR L BK D/N + OR B BK D/N
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "pivot_mode": "none"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "pivot_mode": "none"},
+]
+
 
 def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
     """Helper for instant buffer sweep: build param dict with specific bb/ib."""
@@ -517,7 +559,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "pivot_same", "pivot_cross", "pivot_none", "pivot_cmp", "no_pvt_supp"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -581,6 +623,18 @@ def main():
         sweep_params = INSTANT_BUF_PARAMS
     elif args.grid == "instant_buf_fine":
         sweep_params = INSTANT_BUF_FINE_PARAMS
+    elif args.grid == "supp_test":
+        sweep_params = SUPP_TEST_PARAMS
+    elif args.grid == "pivot_same":
+        sweep_params = PIVOT_SAME_PARAMS
+    elif args.grid == "pivot_cross":
+        sweep_params = PIVOT_CROSS_PARAMS
+    elif args.grid == "pivot_none":
+        sweep_params = PIVOT_NONE_PARAMS
+    elif args.grid == "pivot_cmp":
+        sweep_params = PIVOT_CMP_PARAMS
+    elif args.grid == "no_pvt_supp":
+        sweep_params = NO_PVT_SUPP_PARAMS
     else:
         sweep_params = TOP10_PARAMS
 

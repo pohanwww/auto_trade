@@ -482,6 +482,8 @@ def find_confluence_levels(
     touch_weight: float = 1.0,
     max_levels: int = 10,
     recency_pool: int = 20,
+    pivot_mode: str = "combined",
+    in_night_session: bool = False,
 ) -> list[KeyLevel]:
     """Run all detectors, merge into zones, count touches, and score.
 
@@ -500,10 +502,43 @@ def find_confluence_levels(
         ))
 
     # 2. Pivot Points
-    if session.prev_day_high and session.prev_day_low:
-        raw.extend(detect_pivot_points(
-            session.prev_day_high, session.prev_day_low, session.prev_day_close,
-        ))
+    pivot_h = pivot_l = pivot_c = 0
+    if pivot_mode == "same":
+        # Day → prev_day OHLC; Night → prev_night OHLC
+        if in_night_session:
+            pivot_h = session.prev_night_high or 0
+            pivot_l = session.prev_night_low or 0
+            pivot_c = session.prev_night_close or 0
+        else:
+            pivot_h = session.prev_day_high or 0
+            pivot_l = session.prev_day_low or 0
+            pivot_c = session.prev_day_close or 0
+    elif pivot_mode == "cross":
+        # Day → prev_night OHLC; Night → prev_day OHLC (= today's day)
+        if in_night_session:
+            pivot_h = session.prev_day_high or 0
+            pivot_l = session.prev_day_low or 0
+            pivot_c = session.prev_day_close or 0
+        else:
+            pivot_h = session.prev_night_high or 0
+            pivot_l = session.prev_night_low or 0
+            pivot_c = session.prev_night_close or 0
+    else:  # "combined" — merge day+night into one
+        pivot_h = session.prev_day_high or 0
+        pivot_l = session.prev_day_low or 0
+        pivot_c = session.prev_day_close or 0
+        if session.prev_night_high:
+            pivot_h = max(pivot_h, session.prev_night_high)
+        if session.prev_night_low and session.prev_night_low > 0:
+            pivot_l = min(pivot_l, session.prev_night_low) if pivot_l > 0 else session.prev_night_low
+        day_last = session.prev_day_kbars[-1].time if session.prev_day_kbars else None
+        night_last = session.prev_night_kbars[-1].time if session.prev_night_kbars else None
+        if day_last and night_last:
+            pivot_c = session.prev_day_close if day_last > night_last else (session.prev_night_close or pivot_c)
+        elif night_last and session.prev_night_close:
+            pivot_c = session.prev_night_close
+    if pivot_mode != "none" and pivot_h and pivot_l:
+        raw.extend(detect_pivot_points(pivot_h, pivot_l, pivot_c))
 
     # 3. Volume Profile
     if all_kbars:
@@ -574,6 +609,7 @@ class KLCalcResult:
     agg_day_kbars: list
     agg_night_kbars: list
     supplemented: bool = False
+    supp_signal_count: int = 0
 
 
 def split_sessions(
@@ -643,6 +679,7 @@ def calculate_key_levels_from_kbars(
     or_low: int | None = None,
     atr: int | None = None,
     min_today_kbars: int = 21,
+    pivot_mode: str = "combined",
 ) -> KLCalcResult:
     """Full KL calculation pipeline — shared by strategy and dashboard.
 
@@ -722,12 +759,17 @@ def calculate_key_levels_from_kbars(
         zone_tolerance=zone_tolerance,
         max_levels=recency_pool,
         recency_pool=recency_pool,
+        pivot_mode=pivot_mode,
+        in_night_session=in_night_session,
     )
     pool.sort(key=lambda z: z.score, reverse=True)
     levels = pool[:15]
 
     # 5. Intraday supplement
+    #    Uses only the previous single session + today's first 2h kbars.
+    #    Top 3 results become SIGNAL KLs (or promote existing TRAIL).
     supplemented = False
+    supp_sig_n = 0
     if include_intraday != "never" and today_session:
         run_supplement = False
         if include_intraday == "always":
@@ -743,31 +785,31 @@ def calculate_key_levels_from_kbars(
 
         if run_supplement:
             supp_today = today_session[:min_today_kbars]
-            supp_session = SessionData(
-                prev_day_high=day_ohlc.get("high", 0),
-                prev_day_low=day_ohlc.get("low", 0),
-                prev_day_close=day_ohlc.get("close", 0),
-                prev_night_high=night_ohlc.get("high"),
-                prev_night_low=night_ohlc.get("low"),
-                prev_night_close=night_ohlc.get("close"),
-                today_open=today_open,
-                or_range=or_range,
-                prev_day_kbars=agg_day + supp_today,
-                prev_night_kbars=agg_night,
-            ) if not in_night_session else SessionData(
-                prev_day_high=day_ohlc.get("high", 0),
-                prev_day_low=day_ohlc.get("low", 0),
-                prev_day_close=day_ohlc.get("close", 0),
-                prev_night_high=night_ohlc.get("high"),
-                prev_night_low=night_ohlc.get("low"),
-                prev_night_close=night_ohlc.get("close"),
-                today_open=today_open,
-                or_range=or_range,
-                prev_day_kbars=agg_day,
-                prev_night_kbars=agg_night + supp_today,
-            )
-            supplement_intraday_kls(
-                levels, agg_day + agg_night + supp_today, supp_session,
+            if in_night_session:
+                supp_session = SessionData(
+                    prev_day_high=day_ohlc.get("high", 0),
+                    prev_day_low=day_ohlc.get("low", 0),
+                    prev_day_close=day_ohlc.get("close", 0),
+                    today_open=today_open,
+                    or_range=or_range,
+                    prev_day_kbars=agg_day,
+                    prev_night_kbars=list(supp_today),
+                )
+                supp_all_kbars = agg_day + list(supp_today)
+            else:
+                supp_session = SessionData(
+                    prev_night_high=night_ohlc.get("high"),
+                    prev_night_low=night_ohlc.get("low"),
+                    prev_night_close=night_ohlc.get("close"),
+                    today_open=today_open,
+                    or_range=or_range,
+                    prev_day_kbars=list(supp_today),
+                    prev_night_kbars=agg_night,
+                )
+                supp_all_kbars = agg_night + list(supp_today)
+            _added, supp_sig_n = supplement_intraday_kls(
+                levels, supp_all_kbars, supp_session,
+                signal_level_count=signal_level_count,
                 swing_period=swing_period,
                 cluster_tolerance=cluster_tolerance,
                 zone_tolerance=zone_tolerance,
@@ -786,6 +828,7 @@ def calculate_key_levels_from_kbars(
         today_night_kbars=today_night,
         agg_day_kbars=agg_day,
         agg_night_kbars=agg_night,
+        supp_signal_count=supp_sig_n if supplemented else 0,
         supplemented=supplemented,
     )
 
@@ -833,29 +876,36 @@ def has_coverage_gap(
     return False
 
 
+_SUPP_SIGNAL_COUNT = 3
+
+
 def supplement_intraday_kls(
     levels: list[KeyLevel],
     all_kbars: list[KBar],
     session_data: SessionData,
     *,
+    signal_level_count: int = 7,
     swing_period: int = 10,
     cluster_tolerance: int = 50,
     zone_tolerance: int = 50,
     recency_pool: int = 20,
-) -> list[KeyLevel]:
-    """Re-detect KLs from history+today kbars and merge into *levels*.
+) -> tuple[list[KeyLevel], int]:
+    """Detect KLs from prev-session + today 2h and add top 3 as SIGNAL.
 
-    Uses the full ``find_confluence_levels`` pipeline so that scores are
-    comparable with the base 15.  Merge logic:
+    Uses ``find_confluence_levels`` on a narrower data scope (only the
+    immediately preceding session + today's first ~2 hours).
 
-    - Overlapping zone (within ``zone_tolerance``) → update score to max
-    - Brand-new zone → append to ``levels``
-    - Existing levels are never removed
+    Top ``_SUPP_SIGNAL_COUNT`` supplement results are added as SIGNAL KLs:
+    - If a supplement result overlaps an existing base TRAIL → promote to
+      SIGNAL (move it into the signal portion of the list).
+    - If it's brand-new → append to levels as a new SIGNAL.
+    - Existing base SIGNAL levels are never removed.
 
-    Modifies ``levels`` in-place.  Returns the list of *newly added* zones.
+    Modifies ``levels`` in-place.
+    Returns (newly_added_zones, promoted_or_added_count).
     """
     if not all_kbars:
-        return []
+        return [], 0
 
     new_pool = find_confluence_levels(
         session_data,
@@ -867,22 +917,31 @@ def supplement_intraday_kls(
     )
 
     added: list[KeyLevel] = []
+    promoted_or_added = 0
+
     for nz in new_pool:
-        matched = False
+        if promoted_or_added >= _SUPP_SIGNAL_COUNT:
+            break
+
+        matched_existing = None
         for existing in levels:
             if abs(nz.price - existing.price) <= zone_tolerance:
-                if nz.score > existing.score:
-                    existing.score = nz.score
-                    existing.num_methods = max(existing.num_methods, nz.num_methods)
-                    existing.touch_count = max(existing.touch_count, nz.touch_count)
-                    for src in nz.sources:
-                        if src not in existing.sources:
-                            existing.sources.append(src)
-                matched = True
+                matched_existing = existing
                 break
-        if not matched:
+
+        if matched_existing is not None:
+            if nz.score > matched_existing.score:
+                matched_existing.score = nz.score
+            matched_existing.num_methods = max(matched_existing.num_methods, nz.num_methods)
+            matched_existing.touch_count = max(matched_existing.touch_count, nz.touch_count)
+            for src in nz.sources:
+                if src not in matched_existing.sources:
+                    matched_existing.sources.append(src)
+            promoted_or_added += 1
+        else:
             levels.append(nz)
             added.append(nz)
+            promoted_or_added += 1
 
     levels.sort(key=lambda z: z.score, reverse=True)
-    return added
+    return added, promoted_or_added

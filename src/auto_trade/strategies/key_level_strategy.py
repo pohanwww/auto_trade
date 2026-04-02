@@ -98,6 +98,8 @@ class KeyLevelStrategy(BaseStrategy):
         # --- Trend filter ---
         trend_filter: str = "or",  # "or", "ema", "none"
         trend_filter_ema_period: int = 200,
+        # --- Pivot mode ---
+        pivot_mode: str = "combined",  # "combined", "same", "cross"
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -124,6 +126,7 @@ class KeyLevelStrategy(BaseStrategy):
         self.cluster_tolerance = cluster_tolerance
         self.zone_tolerance = zone_tolerance
         self.signal_level_count = signal_level_count
+        self.pivot_mode = pivot_mode
 
         # Signal detection
         self.breakout_buffer = breakout_buffer
@@ -171,7 +174,7 @@ class KeyLevelStrategy(BaseStrategy):
             "=== KeyLevelStrategy initialized ===\n"
             "  mode=%s | timeframe=%s | session_lookback=%d\n"
             "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
-            "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
+            "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d, pivot=%s\n"
             "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
@@ -179,7 +182,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  Entry types: breakout=%s, bounce=%s",
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
             use_or, or_bars, or_start_time, entry_end_time, session_end_time,
-            swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
+            swing_period, cluster_tolerance, zone_tolerance, signal_level_count, pivot_mode,
             breakout_buffer, bounce_buffer, instant_threshold, atr_period,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
@@ -245,6 +248,7 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Intraday KL supplement state
         self._supplement_done: bool = False
+        self._supp_signal_count: int = 0
         self._kl_updated: bool = False
 
     # ──────────────────────────────────────────────
@@ -373,6 +377,7 @@ class KeyLevelStrategy(BaseStrategy):
                 ],
                 "levels_calculated": True,
                 "supplement_done": self._supplement_done,
+                "supp_signal_count": self._supp_signal_count,
             }
             if self.use_or and self._or_calculated:
                 state["or_high"] = self._or_high
@@ -442,13 +447,14 @@ class KeyLevelStrategy(BaseStrategy):
                     sources=d.get("sources", []),
                 ))
             self._key_levels = restored
-            n = self.signal_level_count
+            self._supplement_done = bool(state.get("supplement_done", False))
+            self._supp_signal_count = int(state.get("supp_signal_count", 0))
+            n = self.signal_level_count + self._supp_signal_count
             self._signal_levels = self._key_levels[:n]
             self._trailing_levels = sorted(
                 [kl.price for kl in self._key_levels[n:]],
             )
             self._levels_calculated = True
-            self._supplement_done = bool(state.get("supplement_done", False))
             _log(
                 "Restored key_levels=%d (signal=%d, trailing=%d), "
                 "supplement_done=%s",
@@ -571,6 +577,7 @@ class KeyLevelStrategy(BaseStrategy):
             or_high=self._or_high,
             or_low=self._or_low,
             atr=int(self._atr) if self._atr > 0 else None,
+            pivot_mode=self.pivot_mode,
         )
 
         levels = result.levels
@@ -591,16 +598,16 @@ class KeyLevelStrategy(BaseStrategy):
         )
 
         self._key_levels = levels
-        n = self.signal_level_count
+        if result.supplemented:
+            self._supp_signal_count = result.supp_signal_count
+            self._supplement_done = True
+            self._kl_updated = True
+        n = self.signal_level_count + self._supp_signal_count
         self._signal_levels = self._key_levels[:n]
         self._trailing_levels = sorted(
             [kl.price for kl in self._key_levels[n:]],
         )
         self._levels_calculated = True
-
-        if result.supplemented:
-            self._supplement_done = True
-            self._kl_updated = True
 
         _log("  Total levels found: %d (signal=%d, trailing=%d)",
                  len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
@@ -625,6 +632,12 @@ class KeyLevelStrategy(BaseStrategy):
         the base levels haven't been computed yet.
         """
         if self._supplement_done or not self._levels_calculated:
+            return
+        in_night = (
+            self._current_date is not None
+            and self._current_date.time() >= self._EXCHANGE_NIGHT_START
+        )
+        if not in_night:
             return
         self._calculate_key_levels(kbar_list, include_intraday="auto")
 
@@ -798,6 +811,7 @@ class KeyLevelStrategy(BaseStrategy):
         self._instant_target_long = None
         self._instant_target_short = None
         self._supplement_done = False
+        self._supp_signal_count = 0
         self._kl_updated = False
 
     def _get_trading_day(self, bar_time: datetime):

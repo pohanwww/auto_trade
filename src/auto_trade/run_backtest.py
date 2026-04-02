@@ -181,6 +181,7 @@ def build_trading_units_from_config(
             "instant_threshold_long", "instant_threshold_short",
             "bounce_buffer_long", "bounce_buffer_short",
             "bounce_ignore_or",
+            "pivot_mode",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 
