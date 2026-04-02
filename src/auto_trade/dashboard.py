@@ -145,7 +145,7 @@ def _generate_chart(
         or_range=or_range,
         session_lookback=session_lookback,
         signal_level_count=signal_level_count,
-        include_intraday=True,
+        include_intraday=False,
     )
 
     levels = kl.levels

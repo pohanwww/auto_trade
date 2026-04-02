@@ -304,8 +304,8 @@ class KeyLevelStrategy(BaseStrategy):
             return self._hold(symbol, current_price, "ATR unavailable")
         self._atr = atr
 
-        # Hourly intraday KL supplement (before target computation)
-        self._try_supplement_intraday_kls(kbar_list, bar_time)
+        # Intraday KL supplement — disabled pending redesign
+        # self._try_supplement_intraday_kls(kbar_list, bar_time)
 
         # Compute targets from kbar data (always fresh, no stale state)
         self._compute_active_targets(kbar_list)
