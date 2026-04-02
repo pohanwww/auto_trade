@@ -519,7 +519,7 @@ def parse_args():
         "--grid",
         choices=["trailing", "instant_buf", "instant_buf_fine"],
         default=None,
-        help="Parameter grid. instant_buf = coarse sweep, instant_buf_fine = fine grid around bb=0.30/ib=0.30.",
+        help="Parameter grid to use for sweep.",
     )
     parser.add_argument(
         "--max-combos",

@@ -742,6 +742,7 @@ def calculate_key_levels_from_kbars(
                 )
 
         if run_supplement:
+            supp_today = today_session[:min_today_kbars]
             supp_session = SessionData(
                 prev_day_high=day_ohlc.get("high", 0),
                 prev_day_low=day_ohlc.get("low", 0),
@@ -751,7 +752,7 @@ def calculate_key_levels_from_kbars(
                 prev_night_close=night_ohlc.get("close"),
                 today_open=today_open,
                 or_range=or_range,
-                prev_day_kbars=agg_day + today_session,
+                prev_day_kbars=agg_day + supp_today,
                 prev_night_kbars=agg_night,
             ) if not in_night_session else SessionData(
                 prev_day_high=day_ohlc.get("high", 0),
@@ -763,10 +764,10 @@ def calculate_key_levels_from_kbars(
                 today_open=today_open,
                 or_range=or_range,
                 prev_day_kbars=agg_day,
-                prev_night_kbars=agg_night + today_session,
+                prev_night_kbars=agg_night + supp_today,
             )
             supplement_intraday_kls(
-                levels, agg_day + agg_night + today_session, supp_session,
+                levels, agg_day + agg_night + supp_today, supp_session,
                 swing_period=swing_period,
                 cluster_tolerance=cluster_tolerance,
                 zone_tolerance=zone_tolerance,
