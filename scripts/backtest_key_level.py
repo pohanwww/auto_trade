@@ -130,6 +130,9 @@ def make_unit(
         trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
         pivot_mode=params.get("pivot_mode", "combined"),
+        supplement_enabled=params.get("supplement_enabled", True),
+        max_gap_atr=params.get("max_gap_atr", 3.0),
+        supp_count=params.get("supp_count", 3),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -187,10 +190,22 @@ def make_unit(
         max_tag = f"max{params['max_trades_per_day']}/d"
     pvt = params.get("pivot_mode", "combined")
     pvt_tag = f" pvt={pvt}" if pvt != "combined" else ""
+    supp_tag = "" if params.get("supplement_enabled", True) else " nosupp"
+    mga = params.get("max_gap_atr", 3.0)
+    sc = params.get("supp_count", 3)
+    supp_extra = ""
+    if params.get("supplement_enabled", True):
+        parts = []
+        if mga != 3.0:
+            parts.append(f"atr={mga}")
+        if sc != 3:
+            parts.append(f"sc={sc}")
+        if parts:
+            supp_extra = " " + " ".join(parts)
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}{pvt_tag}"
+        f"{max_tag} n={sig_n}{pvt_tag}{supp_tag}{supp_extra}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -491,6 +506,21 @@ NO_PVT_SUPP_PARAMS = [
     {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "pivot_mode": "none"},
 ]
 
+# New trailing anchor test: 4 strategies × supplement ON/OFF = 8 configs
+_BASE_TRAIL = {"pivot_mode": "none"}
+TRAIL_ANCHOR_PARAMS = [
+    # WITH supplement
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": True},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": True},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": True},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": True},
+    # WITHOUT supplement
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": False},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": False},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": False},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": False},
+]
+
 
 def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
     """Helper for instant buffer sweep: build param dict with specific bb/ib."""
@@ -509,6 +539,11 @@ def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
         "signal_level_count": 7,
         "trend_filter": trend_filter,
     }
+
+
+def _pbn(use_or, session, direction, bb, ib, trend_filter="or"):
+    """Like _pb but with pivot_mode=none."""
+    return {**_pb(use_or, session, direction, bb, ib, trend_filter), "pivot_mode": "none"}
 
 
 def _make_instant_buf_params(fine: bool = False) -> list[dict]:
@@ -542,6 +577,41 @@ def _make_instant_buf_params(fine: bool = False) -> list[dict]:
 INSTANT_BUF_PARAMS = _make_instant_buf_params()
 INSTANT_BUF_FINE_PARAMS = _make_instant_buf_params(fine=True)
 
+
+def _make_nopvt_sweep() -> list[dict]:
+    """Comprehensive sweep with pivot=none.
+
+    Grid: bb × ib combinations (symmetric + asymmetric where ib >= bb)
+    × 4 strategy configs (L/B × D/N).
+    """
+    combos = [
+        # symmetric
+        (0.15, 0.15),
+        (0.20, 0.20),
+        (0.30, 0.30),  # baseline
+        (0.40, 0.40),
+        # ib > bb (instant is looser = more selective)
+        (0.15, 0.30),
+        (0.20, 0.30),
+        (0.20, 0.40),
+        (0.30, 0.40),
+        (0.30, 0.50),
+        # bb > ib (instant is tighter = more aggressive)
+        (0.30, 0.15),
+        (0.30, 0.20),
+        (0.40, 0.20),
+    ]
+    params = []
+    for bb, ib in combos:
+        params.append(_pbn(True, "day_only",   "long_only", bb, ib))
+        params.append(_pbn(True, "night_only", "long_only", bb, ib, trend_filter="or"))
+        params.append(_pbn(True, "day_only",   "both",      bb, ib))
+        params.append(_pbn(True, "night_only", "both",      bb, ib, trend_filter="or"))
+    return params
+
+
+NOPVT_SWEEP_PARAMS = _make_nopvt_sweep()
+
 # 2-config subset for multi-timeframe testing (Pure L + OR B)
 MTF_PARAMS = [
     _p(False, "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # Pure L
@@ -559,7 +629,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "pivot_same", "pivot_cross", "pivot_none", "pivot_cmp", "no_pvt_supp"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "pivot_same", "pivot_cross", "pivot_none", "pivot_cmp", "no_pvt_supp", "nopvt_sweep", "trail_anchor"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -635,6 +705,10 @@ def main():
         sweep_params = PIVOT_CMP_PARAMS
     elif args.grid == "no_pvt_supp":
         sweep_params = NO_PVT_SUPP_PARAMS
+    elif args.grid == "nopvt_sweep":
+        sweep_params = NOPVT_SWEEP_PARAMS
+    elif args.grid == "trail_anchor":
+        sweep_params = TRAIL_ANCHOR_PARAMS
     else:
         sweep_params = TOP10_PARAMS
 

@@ -100,6 +100,10 @@ class KeyLevelStrategy(BaseStrategy):
         trend_filter_ema_period: int = 200,
         # --- Pivot mode ---
         pivot_mode: str = "combined",  # "combined", "same", "cross"
+        # --- Supplement ---
+        supplement_enabled: bool = True,
+        max_gap_atr: float = 3.0,
+        supp_count: int = 3,
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -127,6 +131,9 @@ class KeyLevelStrategy(BaseStrategy):
         self.zone_tolerance = zone_tolerance
         self.signal_level_count = signal_level_count
         self.pivot_mode = pivot_mode
+        self.supplement_enabled = supplement_enabled
+        self.max_gap_atr = max_gap_atr
+        self.supp_count = supp_count
 
         # Signal detection
         self.breakout_buffer = breakout_buffer
@@ -557,9 +564,10 @@ class KeyLevelStrategy(BaseStrategy):
         if self._current_trading_day is None:
             return
 
+        last_t = kbar_list.kbars[-1].time.time() if kbar_list.kbars else None
         in_night = (
-            self._current_date is not None
-            and self._current_date.time() >= self._EXCHANGE_NIGHT_START
+            last_t is not None
+            and (last_t >= self._EXCHANGE_NIGHT_START or last_t < self._EXCHANGE_NIGHT_END)
         )
 
         result = calculate_key_levels_from_kbars(
@@ -578,6 +586,8 @@ class KeyLevelStrategy(BaseStrategy):
             or_low=self._or_low,
             atr=int(self._atr) if self._atr > 0 else None,
             pivot_mode=self.pivot_mode,
+            max_gap_atr=self.max_gap_atr,
+            supp_count=self.supp_count,
         )
 
         levels = result.levels
@@ -625,20 +635,26 @@ class KeyLevelStrategy(BaseStrategy):
     # Intraday KL supplement (coverage-gap triggered)
     # ──────────────────────────────────────────────
 
-    def _try_supplement_intraday(self, kbar_list: KBarList) -> None:
-        """Re-run KL calculation with ``include_intraday="auto"``.
+    _SUPPLEMENT_DELAY_HOURS = 2
 
-        Skipped if supplement was already performed this session or if
-        the base levels haven't been computed yet.
+    def _try_supplement_intraday(self, kbar_list: KBarList) -> None:
+        """Run supplement KL detection 2 hours after session open.
+
+        Triggers once per session based on wall-clock time, not bar count.
+        Uses coverage-gap check to decide whether extra KLs are needed.
         """
+        if not self.supplement_enabled:
+            return
         if self._supplement_done or not self._levels_calculated:
             return
-        in_night = (
-            self._current_date is not None
-            and self._current_date.time() >= self._EXCHANGE_NIGHT_START
-        )
-        if not in_night:
+
+        bar_time = kbar_list.kbars[-1].time
+        trigger_dt = datetime.combine(
+            self._current_date.date(), self.or_start_time,
+        ) + timedelta(hours=self._SUPPLEMENT_DELAY_HOURS)
+        if bar_time < trigger_dt:
             return
+        self._supplement_done = True
         self._calculate_key_levels(kbar_list, include_intraday="auto")
 
     # ──────────────────────────────────────────────
@@ -737,16 +753,27 @@ class KeyLevelStrategy(BaseStrategy):
                 )
             meta["override_take_profit_price"] = tp_price
 
-        # Key levels for PM ladder trailing stop — use ALL key levels, not just trailing-only
+        # Key levels for PM ladder trailing stop — use ALL key levels.
+        # Include one KL on the loss-side of entry as anchor so that
+        # "previous" trail mode uses KL-buffer (not entry) after the
+        # first profit-side KL is broken.
         all_kl_prices = sorted(set(kl.price for kl in self._key_levels))
         if all_kl_prices:
             if is_long:
-                levels = [p for p in all_kl_prices if p > entry_price]
+                below = [p for p in all_kl_prices if p <= entry_price]
+                above = [p for p in all_kl_prices if p > entry_price]
+                anchor = [below[-1]] if below else []
+                levels = anchor + above
             else:
-                levels = sorted(
+                above = sorted(
+                    [p for p in all_kl_prices if p >= entry_price],
+                )
+                below = sorted(
                     [p for p in all_kl_prices if p < entry_price],
                     reverse=True,
                 )
+                anchor = [above[0]] if above else []
+                levels = anchor + below
             if levels:
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = int(atr * self.key_level_buffer)

@@ -1062,15 +1062,18 @@ class PositionManager:
         is_long: bool,
         buffer: int,
     ) -> int | None:
-        """Find previous key level for trailing stop, or fall back to entry."""
-        entry = self.position.entry_price
+        """Find previous key level for trailing stop.
+
+        Returns None when there is no previous KL, letting the caller
+        fall back to the default fixed trailing stop logic.
+        """
         candidates = list(range(idx - 1, -1, -1))
 
         for ci in candidates:
             level = key_levels[ci]
             return level - buffer if is_long else level + buffer
 
-        return entry
+        return None
 
     def _update_trailing_stops(self, current_price: int) -> None:
         """更新所有 Legs 的移動停損（方向感知）

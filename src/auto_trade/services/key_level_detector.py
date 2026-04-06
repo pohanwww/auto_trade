@@ -680,6 +680,8 @@ def calculate_key_levels_from_kbars(
     atr: int | None = None,
     min_today_kbars: int = 21,
     pivot_mode: str = "combined",
+    max_gap_atr: float = 3.0,
+    supp_count: int = 3,
 ) -> KLCalcResult:
     """Full KL calculation pipeline — shared by strategy and dashboard.
 
@@ -773,15 +775,15 @@ def calculate_key_levels_from_kbars(
     if include_intraday != "never" and today_session:
         run_supplement = False
         if include_intraday == "always":
-            run_supplement = len(today_session) >= min_today_kbars
+            run_supplement = True
         elif include_intraday == "auto":
-            if len(today_session) >= min_today_kbars:
-                current_price = int(today_session[-1].close)
-                eff_atr = atr if atr and atr > 0 else 100
-                run_supplement = has_coverage_gap(
-                    levels, current_price, signal_level_count,
-                    or_high=or_high, or_low=or_low, atr=eff_atr,
-                )
+            current_price = int(today_session[-1].close)
+            eff_atr = atr if atr and atr > 0 else 100
+            run_supplement = has_coverage_gap(
+                levels, current_price, signal_level_count,
+                or_high=or_high, or_low=or_low, atr=eff_atr,
+                max_gap_atr=max_gap_atr,
+            )
 
         if run_supplement:
             supp_today = today_session[:min_today_kbars]
@@ -814,6 +816,7 @@ def calculate_key_levels_from_kbars(
                 cluster_tolerance=cluster_tolerance,
                 zone_tolerance=zone_tolerance,
                 recency_pool=recency_pool,
+                supp_count=supp_count,
             )
             supplemented = True
 
@@ -845,14 +848,11 @@ def has_coverage_gap(
 ) -> bool:
     """Check whether signal KLs have coverage gaps near current_price.
 
-    A gap exists when:
-    - No usable signal above or below current_price
-    - Nearest usable signal is farther than ``max_gap_atr * atr``
-
+    Uses ``distance_both`` logic: both above and below the current price
+    must exceed ``max_gap_atr × ATR`` to trigger supplement.
     Signals inside the OR range are excluded (can't trigger breakout).
     """
     sig_prices = [kl.price for kl in levels[:signal_level_count]]
-
     if or_high is not None and or_low is not None:
         usable = [p for p in sig_prices if p > or_high or p < or_low]
     else:
@@ -863,17 +863,11 @@ def has_coverage_gap(
 
     above = [p for p in usable if p > current_price]
     below = [p for p in usable if p < current_price]
-
-    if not above or not below:
-        return True
-
     max_gap = atr * max_gap_atr
-    if min(above) - current_price > max_gap:
-        return True
-    if current_price - max(below) > max_gap:
-        return True
 
-    return False
+    far_above = above and (min(above) - current_price > max_gap)
+    far_below = below and (current_price - max(below) > max_gap)
+    return far_above and far_below
 
 
 _SUPP_SIGNAL_COUNT = 3
@@ -889,17 +883,11 @@ def supplement_intraday_kls(
     cluster_tolerance: int = 50,
     zone_tolerance: int = 50,
     recency_pool: int = 20,
+    supp_count: int = _SUPP_SIGNAL_COUNT,
 ) -> tuple[list[KeyLevel], int]:
-    """Detect KLs from prev-session + today 2h and add top 3 as SIGNAL.
+    """Detect KLs from prev-session + today 2h and add as SIGNAL.
 
-    Uses ``find_confluence_levels`` on a narrower data scope (only the
-    immediately preceding session + today's first ~2 hours).
-
-    Top ``_SUPP_SIGNAL_COUNT`` supplement results are added as SIGNAL KLs:
-    - If a supplement result overlaps an existing base TRAIL → promote to
-      SIGNAL (move it into the signal portion of the list).
-    - If it's brand-new → append to levels as a new SIGNAL.
-    - Existing base SIGNAL levels are never removed.
+    ``supp_count`` controls how many supplement KLs to add (default 3).
 
     Modifies ``levels`` in-place.
     Returns (newly_added_zones, promoted_or_added_count).
@@ -920,7 +908,7 @@ def supplement_intraday_kls(
     promoted_or_added = 0
 
     for nz in new_pool:
-        if promoted_or_added >= _SUPP_SIGNAL_COUNT:
+        if promoted_or_added >= supp_count:
             break
 
         matched_existing = None
