@@ -65,48 +65,102 @@ def _get_kl_market_service():
 
 
 OR_BARS = 3
+_SUB_MAP = {"MXF": "MXFR1", "TXF": "TXFR1"}
+
+
+class _PosLevel:
+    """Lightweight level object matching the interface the chart drawing expects."""
+    __slots__ = ("price", "score", "touch_count", "sources", "first_seen")
+
+    def __init__(self, price, score, touch_count, sources, first_seen=None):
+        self.price = price
+        self.score = score
+        self.touch_count = touch_count
+        self.sources = sources
+        self.first_seen = first_seen
+
+
+def _find_position_data(symbol: str, session: str) -> dict | None:
+    """Scan data/state/*/position.json and return the one matching symbol + session."""
+    if not STATE_DIR.exists():
+        return None
+    for strategy_dir in STATE_DIR.iterdir():
+        if not strategy_dir.is_dir():
+            continue
+        pos_path = strategy_dir / "position.json"
+        if not pos_path.exists():
+            continue
+        try:
+            data = json.loads(pos_path.read_text())
+        except Exception:
+            continue
+        live = data.get("_live")
+        if not live or not live.get("strategy_state"):
+            continue
+        if live.get("symbol") != symbol:
+            continue
+        config_file = live.get("config_file", "")
+        strategy_name = live.get("strategy", "")
+        is_night = "night" in config_file or "night" in strategy_name
+        if session == "night" and is_night:
+            return data
+        if session == "day" and not is_night:
+            return data
+    return None
 
 
 def _generate_chart(
-    target_date_str: str,
     timeframe: str,
-    symbol: str = "MXF",
-    sub_symbol: str = "MXFR1",
-    session: str = "day",
-    lookback: int = 1,
+    symbol: str = "TXF",
+    session: str = "night",
 ) -> dict:
-    """Fetch data, compute levels, generate PNG.
+    """Read KL data from position.json, fetch kbars for display, generate PNG.
 
-    Key level calculation matches key_level_strategy.py exactly:
-    - OHLC from latest prev session only
-    - Swing/volume kbars aggregated from N recent sessions (N based on tf)
-    - or_range from today's first OR_BARS bars (not prev_day range)
-    - max_levels=20
-    - today's kbars shown on chart but NOT used in calculation
+    KL levels are taken directly from the live strategy's position.json,
+    eliminating calculation discrepancies between dashboard and engine.
     """
     import matplotlib.pyplot as plt
     import pandas as pd
     from matplotlib.lines import Line2D
     from matplotlib.patches import FancyBboxPatch
 
-    from auto_trade.services.key_level_detector import (
-        calculate_key_levels_from_kbars,
-        split_sessions,
-    )
+    from auto_trade.services.key_level_detector import split_sessions
+
+    # ── 1. Read KL data from position.json ────────────────
+    pos_data = _find_position_data(symbol, session)
+    if not pos_data:
+        return {"ok": False, "error": f"No position.json found for {symbol}/{session}"}
+
+    live = pos_data["_live"]
+    ss = live["strategy_state"]
+    if not ss.get("levels_calculated"):
+        return {"ok": False, "error": "Strategy has not calculated levels yet"}
+
+    trading_day_str = ss["trading_day"]
+    target_date = datetime.strptime(trading_day_str, "%Y-%m-%d")
+    in_night = session == "night"
+    signal_level_count = 7
+
+    signal_prices = set(lv["price"] for lv in ss.get("signal_levels", []))
+    levels = [
+        _PosLevel(
+            price=lv["price"],
+            score=lv.get("score", 0),
+            touch_count=lv.get("touch_count", 0),
+            sources=lv.get("sources", []),
+        )
+        for lv in ss.get("key_levels", [])
+    ]
+    or_high = ss.get("or_high")
+    or_low = ss.get("or_low")
+    or_mid = ss.get("or_mid")
+    or_range = ss.get("or_range", 1)
+
+    # ── 2. Fetch K-bars for chart display ─────────────────
+    sub_symbol = _SUB_MAP.get(symbol, symbol + "R1")
+    lookback_days = 7
 
     ms = _get_kl_market_service()
-    target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
-
-    tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
-    tf_min = tf_minutes.get(timeframe, 5)
-    session_lookback = max(lookback, tf_min // 5)
-    lookback_days = max(5, session_lookback * 3 + 2)
-
-    # Primary: use tick-cache (same data source as live strategy)
-    # days=30 to fetch ALL cached data — split_sessions + session_lookback
-    # will select the correct sessions.  Using a smaller value risks cutting
-    # sessions mid-way because the cutoff is based on datetime.now(), not
-    # the target_date.
     kbar_list = None
     try:
         cache_key = (symbol, sub_symbol)
@@ -118,68 +172,42 @@ def _generate_chart(
     except Exception as e:
         print(f"⚠️  KL chart: tick-cache unavailable ({e}), using API fallback")
 
-    # Fallback: direct API fetch
     if kbar_list is None or len(kbar_list) == 0:
         start_date = target_date - timedelta(days=lookback_days)
         end_date = target_date + timedelta(days=2)
         kbar_list = ms.get_futures_kbars_by_date_range(
-            symbol=symbol,
-            sub_symbol=sub_symbol,
-            start_date=start_date,
-            end_date=end_date,
+            symbol=symbol, sub_symbol=sub_symbol,
+            start_date=start_date, end_date=end_date,
             timeframe=timeframe,
         )
 
     if len(kbar_list) == 0:
-        return {"ok": False, "error": "No data fetched"}
+        return {"ok": False, "error": "No kbar data fetched"}
 
-    in_night = session == "night"
-    signal_level_count = 7
-
-    # --- OR calculation (before KL calc, same as strategy) ---
-    # Need today_session_kbars for OR, so run split_sessions first
-    _, _, today_kbars, today_night_kbars = split_sessions(
+    # ── 3. Split sessions for display ─────────────────────
+    day_sessions, night_sessions, today_kbars, today_night_kbars = split_sessions(
         kbar_list.kbars, target_date.date(), in_night_session=in_night,
     )
-    today_session_kbars = today_night_kbars if in_night else today_kbars
 
-    or_high: int | None = None
-    or_low: int | None = None
-    or_mid: int | None = None
-    or_range = 1
+    session_lookback = 1
+    if day_sessions:
+        latest_day = max(day_sessions.keys())
+        agg_day_kbars = sorted(day_sessions[latest_day], key=lambda k: k.time)
+    else:
+        agg_day_kbars = []
+    if night_sessions:
+        latest_night = max(night_sessions.keys())
+        agg_night_kbars = sorted(night_sessions[latest_night], key=lambda k: k.time)
+    else:
+        agg_night_kbars = []
+
     or_kbars_for_chart: list = []
+    today_session_kbars = today_night_kbars if in_night else today_kbars
     if today_session_kbars and len(today_session_kbars) >= OR_BARS:
-        or_kbars = today_session_kbars[:OR_BARS]
-        or_high = int(max(k.high for k in or_kbars))
-        or_low = int(min(k.low for k in or_kbars))
-        or_mid = (or_high + or_low) // 2
-        or_range = max(or_high - or_low, 1)
-        or_kbars_for_chart = or_kbars
+        or_kbars_for_chart = today_session_kbars[:OR_BARS]
 
-    # --- Shared KL calculation (identical to strategy) ---
-    kl = calculate_key_levels_from_kbars(
-        kbar_list.kbars,
-        target_date.date(),
-        in_night_session=in_night,
-        or_range=or_range,
-        session_lookback=session_lookback,
-        signal_level_count=signal_level_count,
-    )
+    signal_levels = signal_prices
 
-    levels = kl.levels
-    day_ohlc = kl.day_ohlc
-    night_ohlc = kl.night_ohlc
-    today_open = kl.today_open
-    day_sessions = kl.day_sessions
-    night_sessions = kl.night_sessions
-    today_kbars = kl.today_day_kbars
-    today_night_kbars = kl.today_night_kbars
-    agg_day_kbars = kl.agg_day_kbars
-    agg_night_kbars = kl.agg_night_kbars
-
-    signal_levels = set(lv.price for lv in levels[:signal_level_count])
-
-    # Build chart kbars — always sorted chronologically
     if in_night:
         all_kbars = agg_night_kbars + agg_day_kbars + today_night_kbars
     elif session == "day":
@@ -408,9 +436,8 @@ def _generate_chart(
         session_label = {"day": "Day", "night": "Night", "both": "Day+Night"}.get(
             session, "Day"
         )
-        lb_tag = f" | lookback={session_lookback}" if session_lookback > 1 else ""
         ax_c.set_title(
-            f"Key Level — {symbol} {timeframe} — {target_date_str} ({session_label}{lb_tag})",
+            f"Key Level — {symbol} {timeframe} — {trading_day_str} ({session_label})",
             fontsize=14,
             fontweight="bold",
         )
@@ -457,20 +484,18 @@ def _generate_chart(
         ax_v.set_xlim(-1, n_bars + n_bars * 0.08)
 
         plt.tight_layout()
-        sess_tag = f"_{session}" if session != "day" else ""
-        lb_tag = f"_lb{session_lookback}" if session_lookback > 1 else ""
-        fname = f"kl_{symbol}_{timeframe}_{target_date_str}{sess_tag}{lb_tag}.png"
+        fname = f"kl_{symbol}_{timeframe}_{trading_day_str}_{session}.png"
         out_path = PNG_DIR / fname
         plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
 
         levels_data = [
             {
-                "price": kl.price,
-                "score": kl.score,
-                "touches": kl.touch_count,
-                "sources": kl.sources,
+                "price": lv.price,
+                "score": lv.score,
+                "touches": lv.touch_count,
+                "sources": lv.sources,
             }
-            for kl in levels
+            for lv in levels
         ]
 
         return {
@@ -729,13 +754,14 @@ _kl_gen_lock = threading.Lock()
 
 @app.get("/api/kl/generate")
 def api_kl_generate(
-    date: str = Query(..., description="YYYY-MM-DD"),
     timeframe: str = Query("5m"),
-    symbol: str = Query("MXF"),
-    sub_symbol: str = Query("MXFR1"),
-    session: str = Query("day", description="day / night / both"),
-    lookback: int = Query(1, ge=1, le=10, description="KL lookback sessions (1=default)"),
+    symbol: str = Query("TXF"),
+    session: str = Query("night", description="day / night"),
     token: str | None = Query(None),
+    # legacy params kept for backwards compat (ignored)
+    date: str | None = Query(None),
+    sub_symbol: str | None = Query(None),
+    lookback: int | None = Query(None),
 ):
     if not _check_token(token):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -744,7 +770,7 @@ def api_kl_generate(
             {"ok": False, "error": "Another chart is being generated, please wait"}
         )
     try:
-        result = _generate_chart(date, timeframe, symbol, sub_symbol, session=session, lookback=lookback)
+        result = _generate_chart(timeframe=timeframe, symbol=symbol, session=session)
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -1751,7 +1777,6 @@ loadFileList();
 
 
 def _build_key_levels_html(token_param: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
     return f"""<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -1927,8 +1952,6 @@ def _build_key_levels_html(token_param: str) -> str:
 </nav>
 
 <div class="toolbar">
-  <label>Date</label>
-  <input type="date" id="inp-date" value="{today}">
   <label>Timeframe</label>
   <select id="inp-tf">
     <option value="1m">1m</option>
@@ -1947,15 +1970,6 @@ def _build_key_levels_html(token_param: str) -> str:
     <option value="MXF">MXF (小台)</option>
     <option value="TXF">TXF (大台)</option>
   </select>
-  <label>Lookback</label>
-  <select id="inp-lb">
-    <option value="1" selected>1 (預設)</option>
-    <option value="2">2 sessions</option>
-    <option value="3">3 sessions</option>
-    <option value="5">5 sessions</option>
-    <option value="7">7 sessions</option>
-    <option value="10">10 sessions</option>
-  </select>
   <button class="btn" id="btn-gen" onclick="generate()">Generate</button>
 </div>
 
@@ -1973,7 +1987,6 @@ def _build_key_levels_html(token_param: str) -> str:
 
 <script>
 const TOKEN_PARAM = "{token_param}";
-const SUB_MAP = {{"MXF":"MXFR1", "TXF":"TXFR1"}};
 let activeFile = null;
 
 async function loadList() {{
@@ -2014,16 +2027,13 @@ async function deleteFile(name) {{
 
 async function generate() {{
   const btn = document.getElementById('btn-gen');
-  const date = document.getElementById('inp-date').value;
   const tf = document.getElementById('inp-tf').value;
   const sess = document.getElementById('inp-session').value;
   const sym = document.getElementById('inp-sym').value;
-  const lb = document.getElementById('inp-lb').value;
-  const subSym = SUB_MAP[sym] || sym + 'R1';
   btn.disabled = true; btn.textContent = 'Generating...';
-  showToast('Fetching data & computing levels...');
+  showToast('Reading position.json & generating chart...');
   try {{
-    const res = await fetch(`/api/kl/generate?date=${{date}}&timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&sub_symbol=${{subSym}}&lookback=${{lb}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
+    const res = await fetch(`/api/kl/generate?timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
     const data = await res.json();
     if (data.ok) {{
       showToast(`Generated: ${{data.filename}} (${{data.bars}} bars, ${{data.levels?.length || 0}} levels)`);
