@@ -1,16 +1,15 @@
 """Confluence Key Level Detection System.
 
-Combines 5 independent methods to find support/resistance levels,
+Combines 4 independent methods to find support/resistance levels,
 merges nearby levels into zones, and scores them by confluence
 (how many methods agree) and touch count (how many times the market
 actually tested the level).
 
 Methods:
 1. Swing Cluster   – swing high/low reversal points, clustered
-2. Pivot Points    – classic pivot from previous session OHLC
-3. Volume Profile  – high-volume price nodes
-4. Gap Analysis    – session gap boundaries
-5. Round Numbers   – psychological price levels (x00, x500, x000)
+2. Volume Profile  – high-volume price nodes
+3. Gap Analysis    – session gap boundaries
+4. Round Numbers   – psychological price levels (x00, x500, x000)
 """
 
 from __future__ import annotations
@@ -123,36 +122,8 @@ def detect_swing_clusters(
 # 2. Pivot Points Detector
 # ──────────────────────────────────────────────
 
-def detect_pivot_points(
-    prev_high: int,
-    prev_low: int,
-    prev_close: int,
-) -> list[RawKeyLevel]:
-    """Classic pivot points from previous session OHLC.
-
-    PP  = (H + L + C) / 3
-    R1  = 2*PP - L,  S1 = 2*PP - H
-    R2  = PP + (H-L), S2 = PP - (H-L)
-    """
-    pp = (prev_high + prev_low + prev_close) // 3
-    r1 = 2 * pp - prev_low
-    s1 = 2 * pp - prev_high
-    r2 = pp + (prev_high - prev_low)
-    s2 = pp - (prev_high - prev_low)
-
-    levels = [
-        (pp, "PP"),
-        (r1, "R1"), (s1, "S1"),
-        (r2, "R2"), (s2, "S2"),
-    ]
-    return [
-        RawKeyLevel(price=price, weight=1.0, method="pivot", label=f"pivot({tag})")
-        for price, tag in levels
-    ]
-
-
 # ──────────────────────────────────────────────
-# 3. Volume Profile Detector
+# 2. Volume Profile Detector
 # ──────────────────────────────────────────────
 
 def detect_volume_nodes(
@@ -208,7 +179,7 @@ def detect_volume_nodes(
 
 
 # ──────────────────────────────────────────────
-# 4. Gap Analysis Detector
+# 3. Gap Analysis Detector
 # ──────────────────────────────────────────────
 
 def detect_gap_levels(
@@ -254,7 +225,7 @@ def detect_gap_levels(
 
 
 # ──────────────────────────────────────────────
-# 5. Round Numbers Detector
+# 4. Round Numbers Detector
 # ──────────────────────────────────────────────
 
 def detect_round_numbers(
@@ -289,7 +260,7 @@ def detect_round_numbers(
 
 
 # ──────────────────────────────────────────────
-# 6. Session OHLC Detector
+# 5. Session OHLC Detector
 # ──────────────────────────────────────────────
 
 def detect_session_ohlc(
@@ -482,7 +453,6 @@ def find_confluence_levels(
     touch_weight: float = 1.0,
     max_levels: int = 10,
     recency_pool: int = 20,
-    pivot_mode: str = "combined",
     in_night_session: bool = False,
 ) -> list[KeyLevel]:
     """Run all detectors, merge into zones, count touches, and score.
@@ -501,59 +471,20 @@ def find_confluence_levels(
             all_kbars, period=swing_period, cluster_tolerance=cluster_tolerance,
         ))
 
-    # 2. Pivot Points
-    pivot_h = pivot_l = pivot_c = 0
-    if pivot_mode == "same":
-        # Day → prev_day OHLC; Night → prev_night OHLC
-        if in_night_session:
-            pivot_h = session.prev_night_high or 0
-            pivot_l = session.prev_night_low or 0
-            pivot_c = session.prev_night_close or 0
-        else:
-            pivot_h = session.prev_day_high or 0
-            pivot_l = session.prev_day_low or 0
-            pivot_c = session.prev_day_close or 0
-    elif pivot_mode == "cross":
-        # Day → prev_night OHLC; Night → prev_day OHLC (= today's day)
-        if in_night_session:
-            pivot_h = session.prev_day_high or 0
-            pivot_l = session.prev_day_low or 0
-            pivot_c = session.prev_day_close or 0
-        else:
-            pivot_h = session.prev_night_high or 0
-            pivot_l = session.prev_night_low or 0
-            pivot_c = session.prev_night_close or 0
-    else:  # "combined" — merge day+night into one
-        pivot_h = session.prev_day_high or 0
-        pivot_l = session.prev_day_low or 0
-        pivot_c = session.prev_day_close or 0
-        if session.prev_night_high:
-            pivot_h = max(pivot_h, session.prev_night_high)
-        if session.prev_night_low and session.prev_night_low > 0:
-            pivot_l = min(pivot_l, session.prev_night_low) if pivot_l > 0 else session.prev_night_low
-        day_last = session.prev_day_kbars[-1].time if session.prev_day_kbars else None
-        night_last = session.prev_night_kbars[-1].time if session.prev_night_kbars else None
-        if day_last and night_last:
-            pivot_c = session.prev_day_close if day_last > night_last else (session.prev_night_close or pivot_c)
-        elif night_last and session.prev_night_close:
-            pivot_c = session.prev_night_close
-    if pivot_mode != "none" and pivot_h and pivot_l:
-        raw.extend(detect_pivot_points(pivot_h, pivot_l, pivot_c))
-
-    # 3. Volume Profile
+    # 2. Volume Profile
     if all_kbars:
         raw.extend(detect_volume_nodes(
             all_kbars, bucket_size=volume_bucket_size,
         ))
 
-    # 4. Round Numbers
+    # 3. Round Numbers
     open_price = session.today_open or session.prev_day_close
     if open_price:
         raw.extend(detect_round_numbers(
             open_price, scan_range=round_scan_range,
         ))
 
-    # 6. Session OHLC
+    # 4. Session OHLC
     raw.extend(detect_session_ohlc(
         prev_day_high=session.prev_day_high,
         prev_day_low=session.prev_day_low,
@@ -679,14 +610,13 @@ def calculate_key_levels_from_kbars(
     or_low: int | None = None,
     atr: int | None = None,
     min_today_kbars: int = 21,
-    pivot_mode: str = "combined",
     max_gap_atr: float = 3.0,
     supp_count: int = 3,
 ) -> KLCalcResult:
     """Full KL calculation pipeline — shared by strategy and dashboard.
 
     1. Split kbars into day/night sessions
-    2. Extract OHLC from latest session (for pivot points)
+    2. Extract OHLC from latest session
     3. Aggregate N sessions of kbars for swing/volume detection
     4. Run find_confluence_levels → score sort → top 15
     5. Optionally run intraday supplement (``include_intraday``):
@@ -761,7 +691,6 @@ def calculate_key_levels_from_kbars(
         zone_tolerance=zone_tolerance,
         max_levels=recency_pool,
         recency_pool=recency_pool,
-        pivot_mode=pivot_mode,
         in_night_session=in_night_session,
     )
     pool.sort(key=lambda z: z.score, reverse=True)

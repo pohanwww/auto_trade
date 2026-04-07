@@ -78,7 +78,7 @@ def _generate_chart(
     """Fetch data, compute levels, generate PNG.
 
     Key level calculation matches key_level_strategy.py exactly:
-    - OHLC/pivot from latest prev session only
+    - OHLC from latest prev session only
     - Swing/volume kbars aggregated from N recent sessions (N based on tf)
     - or_range from today's first OR_BARS bars (not prev_day range)
     - max_levels=20
@@ -1977,6 +1977,7 @@ async function loadList() {{
   const files = await res.json();
   const el = document.getElementById('file-list');
   if (!files.length) {{ el.innerHTML = '<div class="file-meta" style="padding:8px;">No charts yet</div>'; return; }}
+  if (!activeFile && files.length) {{ selectFile(files[0].name); }}
   el.innerHTML = files.map(f => `
     <div class="file-item ${{f.name === activeFile ? 'active' : ''}}"
          onclick="selectFile('${{f.name}}')">

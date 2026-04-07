@@ -98,12 +98,12 @@ class KeyLevelStrategy(BaseStrategy):
         # --- Trend filter ---
         trend_filter: str = "or",  # "or", "ema", "none"
         trend_filter_ema_period: int = 200,
-        # --- Pivot mode ---
-        pivot_mode: str = "combined",  # "combined", "same", "cross"
         # --- Supplement ---
         supplement_enabled: bool = True,
         max_gap_atr: float = 3.0,
         supp_count: int = 3,
+        # --- Auto-promote ---
+        promote_trail: str = "off",  # "off", "nearest", "best_score"
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -130,10 +130,10 @@ class KeyLevelStrategy(BaseStrategy):
         self.cluster_tolerance = cluster_tolerance
         self.zone_tolerance = zone_tolerance
         self.signal_level_count = signal_level_count
-        self.pivot_mode = pivot_mode
         self.supplement_enabled = supplement_enabled
         self.max_gap_atr = max_gap_atr
         self.supp_count = supp_count
+        self.promote_trail = promote_trail  # "off", "nearest", "best_score"
 
         # Signal detection
         self.breakout_buffer = breakout_buffer
@@ -181,7 +181,7 @@ class KeyLevelStrategy(BaseStrategy):
             "=== KeyLevelStrategy initialized ===\n"
             "  mode=%s | timeframe=%s | session_lookback=%d\n"
             "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
-            "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d, pivot=%s\n"
+            "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
             "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
@@ -189,7 +189,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  Entry types: breakout=%s, bounce=%s",
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
             use_or, or_bars, or_start_time, entry_end_time, session_end_time,
-            swing_period, cluster_tolerance, zone_tolerance, signal_level_count, pivot_mode,
+            swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
             breakout_buffer, bounce_buffer, instant_threshold, atr_period,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
@@ -585,7 +585,6 @@ class KeyLevelStrategy(BaseStrategy):
             or_high=self._or_high,
             or_low=self._or_low,
             atr=int(self._atr) if self._atr > 0 else None,
-            pivot_mode=self.pivot_mode,
             max_gap_atr=self.max_gap_atr,
             supp_count=self.supp_count,
         )
@@ -617,12 +616,17 @@ class KeyLevelStrategy(BaseStrategy):
         self._trailing_levels = sorted(
             [kl.price for kl in self._key_levels[n:]],
         )
+
+        if self.promote_trail != "off" and self._or_calculated:
+            self._promote_trail_for_or_coverage(n)
+
         self._levels_calculated = True
 
         _log("  Total levels found: %d (signal=%d, trailing=%d)",
                  len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
         for i, kl in enumerate(self._key_levels):
-            role = "SIGNAL" if i < n else "TRAIL"
+            is_sig = kl in self._signal_levels
+            role = "SIGNAL" if is_sig else "TRAIL"
             _log(
                 "  [%s] #%d: price=%d | score=%.1f | touches=%d | sources=%s",
                 role, i + 1, kl.price, kl.score, kl.touch_count,
@@ -630,6 +634,57 @@ class KeyLevelStrategy(BaseStrategy):
             )
         if self._trailing_levels:
             _log("  Trailing ladder: %s", self._trailing_levels)
+
+    # ──────────────────────────────────────────────
+    # Auto-promote TRAIL → SIGNAL for OR coverage
+    # ──────────────────────────────────────────────
+
+    def _promote_trail_for_or_coverage(self, n: int) -> None:
+        """Promote a TRAIL KL to SIGNAL when a side of OR has no signal.
+
+        Mode (``self.promote_trail``):
+          - ``"nearest"``:    pick the TRAIL KL closest to OR on the gap side
+          - ``"best_score"``: pick the highest-scored TRAIL KL on the gap side
+
+        Only promotes from the top-15 TRAIL KLs (``_key_levels[n:]``).
+        """
+        or_high = self._or_high
+        or_low = self._or_low
+        if or_high is None or or_low is None:
+            return
+
+        mode = self.promote_trail
+        trail_kls = self._key_levels[n:]
+        sig_above = any(kl.price > or_high for kl in self._signal_levels)
+        sig_below = any(kl.price < or_low for kl in self._signal_levels)
+
+        promoted = []
+        if not sig_above:
+            candidates = [kl for kl in trail_kls if kl.price > or_high]
+            if candidates:
+                if mode == "nearest":
+                    best = min(candidates, key=lambda kl: kl.price)
+                else:
+                    best = max(candidates, key=lambda kl: kl.score)
+                promoted.append(best)
+                _log("  [PROMOTE %s] TRAIL→SIGNAL above OR: price=%d score=%.1f",
+                     mode, best.price, best.score)
+
+        if not sig_below:
+            candidates = [kl for kl in trail_kls if kl.price < or_low]
+            if candidates:
+                if mode == "nearest":
+                    best = max(candidates, key=lambda kl: kl.price)
+                else:
+                    best = max(candidates, key=lambda kl: kl.score)
+                promoted.append(best)
+                _log("  [PROMOTE %s] TRAIL→SIGNAL below OR: price=%d score=%.1f",
+                     mode, best.price, best.score)
+
+        for kl in promoted:
+            self._signal_levels.append(kl)
+            if kl.price in self._trailing_levels:
+                self._trailing_levels.remove(kl.price)
 
     # ──────────────────────────────────────────────
     # Intraday KL supplement (coverage-gap triggered)

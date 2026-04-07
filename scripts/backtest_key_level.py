@@ -129,10 +129,10 @@ def make_unit(
         trend_filter=params.get("trend_filter", "or"),
         trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
-        pivot_mode=params.get("pivot_mode", "combined"),
         supplement_enabled=params.get("supplement_enabled", True),
         max_gap_atr=params.get("max_gap_atr", 3.0),
         supp_count=params.get("supp_count", 3),
+        promote_trail=params.get("promote_trail", "off"),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -188,8 +188,6 @@ def make_unit(
         max_tag = f"day{max_day}/night{max_night}"
     else:
         max_tag = f"max{params['max_trades_per_day']}/d"
-    pvt = params.get("pivot_mode", "combined")
-    pvt_tag = f" pvt={pvt}" if pvt != "combined" else ""
     supp_tag = "" if params.get("supplement_enabled", True) else " nosupp"
     mga = params.get("max_gap_atr", 3.0)
     sc = params.get("supp_count", 3)
@@ -202,10 +200,12 @@ def make_unit(
             parts.append(f"sc={sc}")
         if parts:
             supp_extra = " " + " ".join(parts)
+    _pt = params.get("promote_trail", "off")
+    promo_tag = f" promo={_pt}" if _pt != "off" else ""
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}{pvt_tag}{supp_tag}{supp_extra}"
+        f"{max_tag} n={sig_n}{supp_tag}{supp_extra}{promo_tag}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -472,53 +472,17 @@ SUPP_TEST_PARAMS = [
     _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
 ]
 
-PIVOT_SAME_PARAMS = [
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "same"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "same"},
-]
-
-PIVOT_CROSS_PARAMS = [
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "cross"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "cross"},
-]
-
-PIVOT_NONE_PARAMS = [
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
-]
-
-PIVOT_CMP_PARAMS = [
-    # OR B D BK × 3 pivot modes
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "none"},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "same"},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "combined"},
-    # OR B N BK × 3 pivot modes
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "none"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "same"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"), "pivot_mode": "combined"},
-]
-
-NO_PVT_SUPP_PARAMS = [
-    # pivot=none + supplement enabled: OR L BK D/N + OR B BK D/N
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "pivot_mode": "none"},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "pivot_mode": "none"},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "pivot_mode": "none"},
-]
-
-# New trailing anchor test: 4 strategies × supplement ON/OFF = 8 configs
-_BASE_TRAIL = {"pivot_mode": "none"}
 TRAIL_ANCHOR_PARAMS = [
     # WITH supplement
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": True},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": True},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": True},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": True},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": True},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": True},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": True},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": True},
     # WITHOUT supplement
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": False},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": False},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      **_BASE_TRAIL, "supplement_enabled": False},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), **_BASE_TRAIL, "supplement_enabled": False},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": False},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": False},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": False},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": False},
 ]
 
 
@@ -540,10 +504,6 @@ def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
         "trend_filter": trend_filter,
     }
 
-
-def _pbn(use_or, session, direction, bb, ib, trend_filter="or"):
-    """Like _pb but with pivot_mode=none."""
-    return {**_pb(use_or, session, direction, bb, ib, trend_filter), "pivot_mode": "none"}
 
 
 def _make_instant_buf_params(fine: bool = False) -> list[dict]:
@@ -579,7 +539,7 @@ INSTANT_BUF_FINE_PARAMS = _make_instant_buf_params(fine=True)
 
 
 def _make_nopvt_sweep() -> list[dict]:
-    """Comprehensive sweep with pivot=none.
+    """Comprehensive buffer sweep.
 
     Grid: bb × ib combinations (symmetric + asymmetric where ib >= bb)
     × 4 strategy configs (L/B × D/N).
@@ -603,14 +563,25 @@ def _make_nopvt_sweep() -> list[dict]:
     ]
     params = []
     for bb, ib in combos:
-        params.append(_pbn(True, "day_only",   "long_only", bb, ib))
-        params.append(_pbn(True, "night_only", "long_only", bb, ib, trend_filter="or"))
-        params.append(_pbn(True, "day_only",   "both",      bb, ib))
-        params.append(_pbn(True, "night_only", "both",      bb, ib, trend_filter="or"))
+        params.append(_pb(True, "day_only",   "long_only", bb, ib))
+        params.append(_pb(True, "night_only", "long_only", bb, ib, trend_filter="or"))
+        params.append(_pb(True, "day_only",   "both",      bb, ib))
+        params.append(_pb(True, "night_only", "both",      bb, ib, trend_filter="or"))
     return params
 
 
 NOPVT_SWEEP_PARAMS = _make_nopvt_sweep()
+
+# promote_trail: auto-promote TRAIL → SIGNAL when a side of OR has no signal
+_PROMO_BASE = {"supplement_enabled": False}
+PROMOTE_TRAIL_PARAMS = []
+for _pm in ("off", "nearest", "best_score"):
+    for _sess, _dir in [("day_only", "both"), ("day_only", "long_only"),
+                         ("night_only", "both"), ("night_only", "long_only")]:
+        PROMOTE_TRAIL_PARAMS.append(
+            {**_p(True, _sess, "breakout_only", "previous", 0.15, 2, 7, _dir),
+             **_PROMO_BASE, "promote_trail": _pm}
+        )
 
 # 2-config subset for multi-timeframe testing (Pure L + OR B)
 MTF_PARAMS = [
@@ -629,7 +600,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "pivot_same", "pivot_cross", "pivot_none", "pivot_cmp", "no_pvt_supp", "nopvt_sweep", "trail_anchor"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "nopvt_sweep", "trail_anchor", "promote_trail"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -695,20 +666,12 @@ def main():
         sweep_params = INSTANT_BUF_FINE_PARAMS
     elif args.grid == "supp_test":
         sweep_params = SUPP_TEST_PARAMS
-    elif args.grid == "pivot_same":
-        sweep_params = PIVOT_SAME_PARAMS
-    elif args.grid == "pivot_cross":
-        sweep_params = PIVOT_CROSS_PARAMS
-    elif args.grid == "pivot_none":
-        sweep_params = PIVOT_NONE_PARAMS
-    elif args.grid == "pivot_cmp":
-        sweep_params = PIVOT_CMP_PARAMS
-    elif args.grid == "no_pvt_supp":
-        sweep_params = NO_PVT_SUPP_PARAMS
     elif args.grid == "nopvt_sweep":
         sweep_params = NOPVT_SWEEP_PARAMS
     elif args.grid == "trail_anchor":
         sweep_params = TRAIL_ANCHOR_PARAMS
+    elif args.grid == "promote_trail":
+        sweep_params = PROMOTE_TRAIL_PARAMS
     else:
         sweep_params = TOP10_PARAMS
 
