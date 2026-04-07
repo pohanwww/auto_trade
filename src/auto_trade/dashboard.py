@@ -96,21 +96,36 @@ def _generate_chart(
 
     ms = _get_kl_market_service()
     target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
-    end_date = target_date + timedelta(days=2)
 
     tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
     tf_min = tf_minutes.get(timeframe, 5)
     session_lookback = max(lookback, tf_min // 5)
     lookback_days = max(5, session_lookback * 3 + 2)
-    start_date = target_date - timedelta(days=lookback_days)
 
-    kbar_list = ms.get_futures_kbars_by_date_range(
-        symbol=symbol,
-        sub_symbol=sub_symbol,
-        start_date=start_date,
-        end_date=end_date,
-        timeframe=timeframe,
-    )
+    # Primary: use tick-cache (same data source as live strategy)
+    kbar_list = None
+    try:
+        cache_key = (symbol, sub_symbol)
+        if cache_key not in ms._symbol_cache:
+            ms.subscribe_symbol(symbol, sub_symbol, init_days=30)
+        kbar_list = ms.get_futures_kbars_with_timeframe(
+            symbol, sub_symbol, timeframe, days=lookback_days,
+        )
+    except Exception as e:
+        print(f"⚠️  KL chart: tick-cache unavailable ({e}), using API fallback")
+
+    # Fallback: direct API fetch
+    if kbar_list is None or len(kbar_list) == 0:
+        start_date = target_date - timedelta(days=lookback_days)
+        end_date = target_date + timedelta(days=2)
+        kbar_list = ms.get_futures_kbars_by_date_range(
+            symbol=symbol,
+            sub_symbol=sub_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe,
+        )
+
     if len(kbar_list) == 0:
         return {"ok": False, "error": "No data fetched"}
 
