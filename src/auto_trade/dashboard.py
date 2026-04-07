@@ -189,11 +189,11 @@ def _generate_chart(
     rows = [
         {
             "Date": k.time,
-            "Open": k.open,
-            "High": k.high,
-            "Low": k.low,
-            "Close": k.close,
-            "Volume": k.volume,
+            "Open": float(k.open),
+            "High": float(k.high),
+            "Low": float(k.low),
+            "Close": float(k.close),
+            "Volume": float(k.volume) if k.volume else 0.0,
         }
         for k in all_kbars
     ]
