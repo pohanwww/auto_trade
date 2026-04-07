@@ -103,13 +103,17 @@ def _generate_chart(
     lookback_days = max(5, session_lookback * 3 + 2)
 
     # Primary: use tick-cache (same data source as live strategy)
+    # days=30 to fetch ALL cached data — split_sessions + session_lookback
+    # will select the correct sessions.  Using a smaller value risks cutting
+    # sessions mid-way because the cutoff is based on datetime.now(), not
+    # the target_date.
     kbar_list = None
     try:
         cache_key = (symbol, sub_symbol)
         if cache_key not in ms._symbol_cache:
             ms.subscribe_symbol(symbol, sub_symbol, init_days=30)
         kbar_list = ms.get_futures_kbars_with_timeframe(
-            symbol, sub_symbol, timeframe, days=lookback_days,
+            symbol, sub_symbol, timeframe, days=30,
         )
     except Exception as e:
         print(f"⚠️  KL chart: tick-cache unavailable ({e}), using API fallback")
