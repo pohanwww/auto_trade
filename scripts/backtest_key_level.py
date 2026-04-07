@@ -132,7 +132,6 @@ def make_unit(
         supplement_enabled=params.get("supplement_enabled", True),
         max_gap_atr=params.get("max_gap_atr", 3.0),
         supp_count=params.get("supp_count", 3),
-        promote_trail=params.get("promote_trail", "off"),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -200,12 +199,10 @@ def make_unit(
             parts.append(f"sc={sc}")
         if parts:
             supp_extra = " " + " ".join(parts)
-    _pt = params.get("promote_trail", "off")
-    promo_tag = f" promo={_pt}" if _pt != "off" else ""
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}{supp_tag}{supp_extra}{promo_tag}"
+        f"{max_tag} n={sig_n}{supp_tag}{supp_extra}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -572,17 +569,6 @@ def _make_nopvt_sweep() -> list[dict]:
 
 NOPVT_SWEEP_PARAMS = _make_nopvt_sweep()
 
-# promote_trail: auto-promote TRAIL → SIGNAL when a side of OR has no signal
-_PROMO_BASE = {"supplement_enabled": False}
-PROMOTE_TRAIL_PARAMS = []
-for _pm in ("off", "nearest", "best_score"):
-    for _sess, _dir in [("day_only", "both"), ("day_only", "long_only"),
-                         ("night_only", "both"), ("night_only", "long_only")]:
-        PROMOTE_TRAIL_PARAMS.append(
-            {**_p(True, _sess, "breakout_only", "previous", 0.15, 2, 7, _dir),
-             **_PROMO_BASE, "promote_trail": _pm}
-        )
-
 # 2-config subset for multi-timeframe testing (Pure L + OR B)
 MTF_PARAMS = [
     _p(False, "day_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),   # Pure L
@@ -600,7 +586,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "nopvt_sweep", "trail_anchor", "promote_trail"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "nopvt_sweep", "trail_anchor"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -670,8 +656,6 @@ def main():
         sweep_params = NOPVT_SWEEP_PARAMS
     elif args.grid == "trail_anchor":
         sweep_params = TRAIL_ANCHOR_PARAMS
-    elif args.grid == "promote_trail":
-        sweep_params = PROMOTE_TRAIL_PARAMS
     else:
         sweep_params = TOP10_PARAMS
 

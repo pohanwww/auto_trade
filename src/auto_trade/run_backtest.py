@@ -185,7 +185,7 @@ def build_trading_units_from_config(
             "supplement_enabled",
             "max_gap_atr",
             "supp_count",
-            "promote_trail",
+
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 
