@@ -98,10 +98,6 @@ class KeyLevelStrategy(BaseStrategy):
         # --- Trend filter ---
         trend_filter: str = "or",  # "or", "ema", "none"
         trend_filter_ema_period: int = 200,
-        # --- Supplement ---
-        supplement_enabled: bool = True,
-        max_gap_atr: float = 3.0,
-        supp_count: int = 3,
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -128,10 +124,6 @@ class KeyLevelStrategy(BaseStrategy):
         self.cluster_tolerance = cluster_tolerance
         self.zone_tolerance = zone_tolerance
         self.signal_level_count = signal_level_count
-        self.supplement_enabled = supplement_enabled
-        self.max_gap_atr = max_gap_atr
-        self.supp_count = supp_count
-
         # Signal detection
         self.breakout_buffer = breakout_buffer
         self.bounce_buffer = bounce_buffer
@@ -250,9 +242,6 @@ class KeyLevelStrategy(BaseStrategy):
         self._instant_target_long: KeyLevel | None = None
         self._instant_target_short: KeyLevel | None = None
 
-        # Intraday KL supplement state
-        self._supplement_done: bool = False
-        self._supp_signal_count: int = 0
         self._kl_updated: bool = False
 
     # ──────────────────────────────────────────────
@@ -308,9 +297,6 @@ class KeyLevelStrategy(BaseStrategy):
         if atr is None or atr <= 0:
             return self._hold(symbol, current_price, "ATR unavailable")
         self._atr = atr
-
-        # Intraday KL supplement (coverage-gap triggered, runs at most once)
-        self._try_supplement_intraday(kbar_list)
 
         # Compute targets from kbar data (always fresh, no stale state)
         self._compute_active_targets(kbar_list)
@@ -380,8 +366,6 @@ class KeyLevelStrategy(BaseStrategy):
                     for kl in self._key_levels
                 ],
                 "levels_calculated": True,
-                "supplement_done": self._supplement_done,
-                "supp_signal_count": self._supp_signal_count,
             }
             if self.use_or and self._or_calculated:
                 state["or_high"] = self._or_high
@@ -438,7 +422,7 @@ class KeyLevelStrategy(BaseStrategy):
             self._trades_night_session = int(night_trades)
             _log("Restored trades_night_session=%d", self._trades_night_session)
 
-        # Restore full key_levels list (avoids re-supplement producing different results)
+        # Restore full key_levels list
         kl_data = state.get("key_levels")
         if kl_data and state.get("levels_calculated"):
             restored: list[KeyLevel] = []
@@ -451,19 +435,16 @@ class KeyLevelStrategy(BaseStrategy):
                     sources=d.get("sources", []),
                 ))
             self._key_levels = restored
-            self._supplement_done = bool(state.get("supplement_done", False))
-            self._supp_signal_count = int(state.get("supp_signal_count", 0))
-            n = self.signal_level_count + self._supp_signal_count
+            n = self.signal_level_count
             self._signal_levels = self._key_levels[:n]
             self._trailing_levels = sorted(
                 [kl.price for kl in self._key_levels[n:]],
             )
             self._levels_calculated = True
             _log(
-                "Restored key_levels=%d (signal=%d, trailing=%d), "
-                "supplement_done=%s",
+                "Restored key_levels=%d (signal=%d, trailing=%d)",
                 len(self._key_levels), len(self._signal_levels),
-                len(self._trailing_levels), self._supplement_done,
+                len(self._trailing_levels),
             )
 
         # Restore OR state
@@ -554,9 +535,7 @@ class KeyLevelStrategy(BaseStrategy):
 
     _BASE_RECENCY_POOL = 20
 
-    def _calculate_key_levels(
-        self, kbar_list: KBarList, *, include_intraday: str = "never",
-    ) -> None:
+    def _calculate_key_levels(self, kbar_list: KBarList) -> None:
         """Build SessionData and run confluence detection via shared function."""
         if self._current_trading_day is None:
             return
@@ -578,12 +557,6 @@ class KeyLevelStrategy(BaseStrategy):
             signal_level_count=self.signal_level_count,
             recency_pool=self._BASE_RECENCY_POOL,
             session_lookback=self._session_lookback,
-            include_intraday=include_intraday,
-            or_high=self._or_high,
-            or_low=self._or_low,
-            atr=int(self._atr) if self._atr > 0 else None,
-            max_gap_atr=self.max_gap_atr,
-            supp_count=self.supp_count,
         )
 
         levels = result.levels
@@ -591,12 +564,11 @@ class KeyLevelStrategy(BaseStrategy):
         night_ohlc = result.night_ohlc
 
         _log(
-            "=== Key Level Calculation [%s] (intraday=%s, supplemented=%s) ===\n"
+            "=== Key Level Calculation [%s] ===\n"
             "  Session data: prev_day H/L/C=%s/%s/%s | prev_night H/L/C=%s/%s/%s\n"
             "  today_open=%s | or_range=%s | lookback=%d sessions\n"
             "  Kbar counts: day=%d, night=%d",
             self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
-            include_intraday, result.supplemented,
             day_ohlc.get("high"), day_ohlc.get("low"), day_ohlc.get("close"),
             night_ohlc.get("high"), night_ohlc.get("low"), night_ohlc.get("close"),
             result.today_open, self._or_range, self._session_lookback,
@@ -604,11 +576,7 @@ class KeyLevelStrategy(BaseStrategy):
         )
 
         self._key_levels = levels
-        if result.supplemented:
-            self._supp_signal_count = result.supp_signal_count
-            self._supplement_done = True
-            self._kl_updated = True
-        n = self.signal_level_count + self._supp_signal_count
+        n = self.signal_level_count
         self._signal_levels = self._key_levels[:n]
         self._trailing_levels = sorted(
             [kl.price for kl in self._key_levels[n:]],
@@ -627,32 +595,6 @@ class KeyLevelStrategy(BaseStrategy):
             )
         if self._trailing_levels:
             _log("  Trailing ladder: %s", self._trailing_levels)
-
-    # ──────────────────────────────────────────────
-    # Intraday KL supplement (coverage-gap triggered)
-    # ──────────────────────────────────────────────
-
-    _SUPPLEMENT_DELAY_HOURS = 2
-
-    def _try_supplement_intraday(self, kbar_list: KBarList) -> None:
-        """Run supplement KL detection 2 hours after session open.
-
-        Triggers once per session based on wall-clock time, not bar count.
-        Uses coverage-gap check to decide whether extra KLs are needed.
-        """
-        if not self.supplement_enabled:
-            return
-        if self._supplement_done or not self._levels_calculated:
-            return
-
-        bar_time = kbar_list.kbars[-1].time
-        trigger_dt = datetime.combine(
-            self._current_date.date(), self.or_start_time,
-        ) + timedelta(hours=self._SUPPLEMENT_DELAY_HOURS)
-        if bar_time < trigger_dt:
-            return
-        self._supplement_done = True
-        self._calculate_key_levels(kbar_list, include_intraday="auto")
 
     # ──────────────────────────────────────────────
     # OR calculation
@@ -834,8 +776,6 @@ class KeyLevelStrategy(BaseStrategy):
         self._target_short = None
         self._instant_target_long = None
         self._instant_target_short = None
-        self._supplement_done = False
-        self._supp_signal_count = 0
         self._kl_updated = False
 
     def _get_trading_day(self, bar_time: datetime):

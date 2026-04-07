@@ -1,0 +1,727 @@
+// This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// Key Level Strategy — Pine Script v5
+// Detection: Swing Cluster + Volume Profile + Round Numbers + Session OHLC
+// Trading:   OR filter → Breakout entry → KL trailing stop (previous mode)
+
+//@version=5
+strategy("Key Level Strategy", overlay=true, margin_long=100, margin_short=100,
+         default_qty_type=strategy.fixed, default_qty_value=1,
+         initial_capital=1000000, currency=currency.NONE,
+         max_bars_back=500, calc_on_every_tick=false)
+
+// ═══════════════════════════════════════════════════════
+//  Inputs
+// ═══════════════════════════════════════════════════════
+
+GRP_KL  = "Key Level Detection"
+i_swingPeriod    = input.int(10,    "Swing Period",            minval=2,  group=GRP_KL)
+i_clusterTol     = input.int(50,    "Cluster Tolerance",       minval=5,  group=GRP_KL)
+i_zoneTol        = input.int(50,    "Zone Tolerance",          minval=5,  group=GRP_KL)
+i_volBucket      = input.int(10,    "Volume Bucket Size",      minval=1,  group=GRP_KL)
+i_roundScan      = input.int(500,   "Round Number Scan Range", minval=100,group=GRP_KL)
+i_signalCount    = input.int(7,     "Signal Level Count",      minval=1,  maxval=14, group=GRP_KL)
+i_recencyPool    = input.int(20,    "Recency Pool Size",       minval=5,  group=GRP_KL)
+i_maxLevels      = input.int(15,    "Max Levels to Keep",      minval=5,  group=GRP_KL)
+i_touchWeight    = input.float(1.0, "Touch Weight",            minval=0,  group=GRP_KL)
+
+GRP_OR  = "Opening Range"
+i_orBars         = input.int(3,     "OR Bars",                 minval=1,  group=GRP_OR)
+
+GRP_ENTRY = "Entry & Exit"
+i_brkBuf         = input.float(0.3,  "Breakout Buffer (×ATR)",  step=0.05, group=GRP_ENTRY)
+i_klBuffer       = input.float(0.15, "KL Buffer (×ATR)",        step=0.05, group=GRP_ENTRY)
+i_atrPeriod      = input.int(14,     "ATR Period",              minval=1,  group=GRP_ENTRY)
+i_slAtrMult      = input.float(1.0,  "SL ATR Fallback Mult",   step=0.1,  group=GRP_ENTRY)
+i_maxTrades      = input.int(2,      "Max Trades Per Session",  minval=1,  group=GRP_ENTRY)
+
+GRP_SESSION = "Session"
+i_daySession     = input.session("0845-1345", "Day Session",   group=GRP_SESSION)
+i_nightSession   = input.session("1500-0500", "Night Session",  group=GRP_SESSION)
+i_sessionMode    = input.string("day", "Session Mode", options=["day","night"], group=GRP_SESSION)
+
+GRP_VIS = "Visualization"
+i_showKL         = input.bool(true,  "Show Key Levels",   group=GRP_VIS)
+i_showOR         = input.bool(true,  "Show OR Range",     group=GRP_VIS)
+i_showLabels     = input.bool(true,  "Show KL Labels",    group=GRP_VIS)
+
+// ═══════════════════════════════════════════════════════
+//  UDTs
+// ═══════════════════════════════════════════════════════
+
+type KLevel
+    float price
+    float score
+    int   lastBar   // bar_index of most recent touch / first seen
+
+// ═══════════════════════════════════════════════════════
+//  Session Detection
+// ═══════════════════════════════════════════════════════
+
+isDay       = not na(time(timeframe.period, i_daySession))
+isNight     = not na(time(timeframe.period, i_nightSession))
+inSession   = i_sessionMode == "day" ? isDay : isNight
+isOther     = i_sessionMode == "day" ? isNight : isDay
+
+var bool prevInSess  = false
+bool sessStart       = inSession and not prevInSess
+prevInSess          := inSession
+
+// Track current + previous session OHLC manually
+var float pSessH  = na
+var float pSessL  = na
+var float pSessC  = na
+var float cSessH  = na
+var float cSessL  = na
+var float cSessC  = na
+
+if sessStart
+    pSessH := cSessH
+    pSessL := cSessL
+    pSessC := cSessC
+    cSessH := high
+    cSessL := low
+    cSessC := close
+else if inSession
+    cSessH := math.max(nz(cSessH, high), high)
+    cSessL := math.min(nz(cSessL, low),  low)
+    cSessC := close
+
+// Opposite session OHLC
+var bool prevInOther = false
+bool otherStart      = isOther and not prevInOther
+prevInOther         := isOther
+
+var float pOthH  = na
+var float pOthL  = na
+var float pOthC  = na
+var float cOthH  = na
+var float cOthL  = na
+
+if otherStart
+    pOthH := cOthH
+    pOthL := cOthL
+    pOthC := close[1]
+    cOthH := high
+    cOthL := low
+else if isOther
+    cOthH := math.max(nz(cOthH, high), high)
+    cOthL := math.min(nz(cOthL, low),  low)
+    pOthC := close
+
+// ═══════════════════════════════════════════════════════
+//  Opening Range
+// ═══════════════════════════════════════════════════════
+
+var int   orCount  = 0
+var float orHigh   = na
+var float orLow    = na
+var float orMid    = na
+var bool  orDone   = false
+
+if sessStart
+    orCount := 0
+    orHigh  := na
+    orLow   := na
+    orMid   := na
+    orDone  := false
+
+if inSession and not orDone
+    orCount += 1
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow,  low)
+    if orCount >= i_orBars
+        orMid  := math.avg(orHigh, orLow)
+        orDone := true
+
+// ═══════════════════════════════════════════════════════
+//  ATR
+// ═══════════════════════════════════════════════════════
+
+atrVal = ta.atr(i_atrPeriod)
+
+// ═══════════════════════════════════════════════════════
+//  Persistent KL storage (var arrays survive across bars)
+// ═══════════════════════════════════════════════════════
+
+var array<float> sigPrices  = array.new_float()
+var array<float> sigScores  = array.new_float()
+var array<float> trlPrices  = array.new_float()
+var array<float> trlScores  = array.new_float()
+var array<float> ladder     = array.new_float()   // all KL sorted ascending
+var array<float> savedSwP   = array.new_float()   // swing prices for touch counting
+var bool         klReady    = false
+
+if sessStart
+    klReady := false
+    array.clear(sigPrices)
+    array.clear(sigScores)
+    array.clear(trlPrices)
+    array.clear(trlScores)
+    array.clear(ladder)
+    array.clear(savedSwP)
+
+// ═══════════════════════════════════════════════════════
+//  Key Level Calculation — fires once when OR completes
+// ═══════════════════════════════════════════════════════
+
+if orDone and not klReady and inSession
+    klReady := true
+
+    // ── Raw level collectors ──
+    array<float> rawP = array.new_float()
+    array<float> rawW = array.new_float()
+    array<int>   rawB = array.new_int()
+
+    // ────────────────────────
+    //  1. Swing Cluster
+    // ────────────────────────
+    int lb = 250
+    if bar_index >= lb
+        array<float> swP = array.new_float()
+        array<int>   swB = array.new_int()
+        for i = i_swingPeriod to lb - i_swingPeriod
+            float h  = high[i]
+            float lo = low[i]
+            bool isH = true
+            bool isL = true
+            for j = 1 to i_swingPeriod
+                if high[i - j] > h
+                    isH := false
+                if high[i + j] > h
+                    isH := false
+                if low[i - j] < lo
+                    isL := false
+                if low[i + j] < lo
+                    isL := false
+            if isH
+                array.push(swP, h)
+                array.push(swB, bar_index - i)
+            if isL
+                array.push(swP, lo)
+                array.push(swB, bar_index - i)
+
+        int swSz = array.size(swP)
+        if swSz > 0
+            // Bubble sort by price
+            for i = 0 to swSz - 2
+                for j = 0 to swSz - i - 2
+                    if array.get(swP, j) > array.get(swP, j + 1)
+                        float t1 = array.get(swP, j)
+                        int   t2 = array.get(swB, j)
+                        array.set(swP, j, array.get(swP, j + 1))
+                        array.set(swB, j, array.get(swB, j + 1))
+                        array.set(swP, j + 1, t1)
+                        array.set(swB, j + 1, t2)
+
+            // Cluster by first-price distance (matches Python)
+            array<int> cS = array.new_int()
+            array<int> cE = array.new_int()
+            array.push(cS, 0)
+            for i = 1 to swSz - 1
+                float firstP = array.get(swP, array.get(cS, array.size(cS) - 1))
+                if array.get(swP, i) - firstP > i_clusterTol
+                    array.push(cE, i - 1)
+                    array.push(cS, i)
+            array.push(cE, swSz - 1)
+
+            for c = 0 to array.size(cS) - 1
+                int s = array.get(cS, c)
+                int e = array.get(cE, c)
+                int cnt = e - s + 1
+                float sumP = 0.0
+                int   latB = 0
+                for k = s to e
+                    sumP += array.get(swP, k)
+                    latB := math.max(latB, array.get(swB, k))
+                array.push(rawP, math.round(sumP / cnt))
+                array.push(rawW, 3.0 * cnt)
+                array.push(rawB, latB)
+
+        // Save swing prices for touch counting after merge
+        for i = 0 to array.size(swP) - 1
+            array.push(savedSwP, array.get(swP, i))
+
+    // ────────────────────────
+    //  2. Volume Profile
+    // ────────────────────────
+    if bar_index >= 200
+        array<float> bktP = array.new_float()
+        array<float> bktV = array.new_float()
+        float totVol = 0.0
+        for i = 1 to 200
+            totVol += nz(volume[i])
+        if totVol > 0
+            for i = 1 to 200
+                float vl = nz(volume[i])
+                if vl > 0 and high[i] > low[i]
+                    float loBk = math.floor(low[i] / i_volBucket) * i_volBucket
+                    float hiBk = math.floor(high[i] / i_volBucket) * i_volBucket
+                    int nBk = math.max(1, int((hiBk - loBk) / i_volBucket + 1))
+                    float per = vl / nBk
+                    float b = loBk
+                    while b <= hiBk
+                        int found = -1
+                        for bi = 0 to array.size(bktP) - 1
+                            if array.get(bktP, bi) == b
+                                found := bi
+                                break
+                        if found >= 0
+                            array.set(bktV, found, array.get(bktV, found) + per)
+                        else
+                            array.push(bktP, b)
+                            array.push(bktV, per)
+                        b += i_volBucket
+
+            int bSz = array.size(bktV)
+            if bSz >= 3
+                float sumV = 0.0
+                float maxV = 0.0
+                for i = 0 to bSz - 1
+                    float v = array.get(bktV, i)
+                    sumV += v
+                    maxV := math.max(maxV, v)
+                float meanV = sumV / bSz
+                float varV  = 0.0
+                for i = 0 to bSz - 1
+                    varV += math.pow(array.get(bktV, i) - meanV, 2)
+                float stdV   = math.sqrt(varV / math.max(1, bSz - 1))
+                float thresh = meanV + stdV
+                for i = 0 to bSz - 1
+                    if array.get(bktV, i) >= thresh
+                        float center = array.get(bktP, i) + i_volBucket / 2.0
+                        float wt = maxV > 0 ? (array.get(bktV, i) / maxV) * 0.5 : 0.25
+                        array.push(rawP, center)
+                        array.push(rawW, wt)
+                        array.push(rawB, bar_index - 100)
+
+    // ────────────────────────
+    //  3. Round Numbers
+    // ────────────────────────
+    float rnRef  = nz(close)
+    float rnLo   = rnRef - i_roundScan
+    float rnHi   = rnRef + i_roundScan
+    float rnBase = math.floor(rnLo / 500) * 500
+    float rn     = rnBase
+    while rn <= rnHi
+        if rn >= rnLo
+            if rn % 1000 == 0
+                array.push(rawP, rn)
+                array.push(rawW, 2.0)
+                array.push(rawB, bar_index)
+            else if rn % 500 == 0
+                array.push(rawP, rn)
+                array.push(rawW, 1.5)
+                array.push(rawB, bar_index)
+        rn += 500
+
+    // ────────────────────────
+    //  4. Session OHLC
+    // ────────────────────────
+    if not na(pSessH)
+        array.push(rawP, pSessH)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+    if not na(pSessL)
+        array.push(rawP, pSessL)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+    if not na(pSessC)
+        array.push(rawP, pSessC)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+    if not na(pOthH)
+        array.push(rawP, pOthH)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+    if not na(pOthL)
+        array.push(rawP, pOthL)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+    if not na(pOthC)
+        array.push(rawP, pOthC)
+        array.push(rawW, 2.0)
+        array.push(rawB, bar_index)
+
+    // ══════════════════════
+    //  Zone Merging
+    // ══════════════════════
+    int rSz = array.size(rawP)
+    if rSz > 0
+        // Sort raw by price (bubble sort)
+        for i = 0 to rSz - 2
+            for j = 0 to rSz - i - 2
+                if array.get(rawP, j) > array.get(rawP, j + 1)
+                    float tp = array.get(rawP, j)
+                    float tw = array.get(rawW, j)
+                    int   tb = array.get(rawB, j)
+                    array.set(rawP, j, array.get(rawP, j + 1))
+                    array.set(rawW, j, array.get(rawW, j + 1))
+                    array.set(rawB, j, array.get(rawB, j + 1))
+                    array.set(rawP, j + 1, tp)
+                    array.set(rawW, j + 1, tw)
+                    array.set(rawB, j + 1, tb)
+
+        // Greedy centroid-based clustering
+        array<float> zP = array.new_float()
+        array<float> zS = array.new_float()
+        array<int>   zB = array.new_int()
+
+        // Working cluster accumulators
+        array<float> ccP = array.new_float()
+        array<float> ccW = array.new_float()
+        array<int>   ccB = array.new_int()
+        array.push(ccP, array.get(rawP, 0))
+        array.push(ccW, array.get(rawW, 0))
+        array.push(ccB, array.get(rawB, 0))
+
+        for i = 1 to rSz - 1
+            float centroid = 0.0
+            int   ccSz    = array.size(ccP)
+            for k = 0 to ccSz - 1
+                centroid += array.get(ccP, k)
+            centroid := centroid / ccSz
+
+            if math.abs(array.get(rawP, i) - centroid) <= i_zoneTol
+                array.push(ccP, array.get(rawP, i))
+                array.push(ccW, array.get(rawW, i))
+                array.push(ccB, array.get(rawB, i))
+            else
+                // Flush cluster: pick price of highest-weight member
+                float bestP = array.get(ccP, 0)
+                float bestW = array.get(ccW, 0)
+                float totW  = 0.0
+                int   maxB  = 0
+                for k = 0 to array.size(ccP) - 1
+                    float w = array.get(ccW, k)
+                    totW += w
+                    if w > bestW
+                        bestW := w
+                        bestP := array.get(ccP, k)
+                    maxB := math.max(maxB, array.get(ccB, k))
+                array.push(zP, bestP)
+                array.push(zS, totW)
+                array.push(zB, maxB)
+                // Reset cluster
+                array.clear(ccP)
+                array.clear(ccW)
+                array.clear(ccB)
+                array.push(ccP, array.get(rawP, i))
+                array.push(ccW, array.get(rawW, i))
+                array.push(ccB, array.get(rawB, i))
+
+        // Flush final cluster
+        if array.size(ccP) > 0
+            float bestP = array.get(ccP, 0)
+            float bestW = array.get(ccW, 0)
+            float totW  = 0.0
+            int   maxB  = 0
+            for k = 0 to array.size(ccP) - 1
+                float w = array.get(ccW, k)
+                totW += w
+                if w > bestW
+                    bestW := w
+                    bestP := array.get(ccP, k)
+                maxB := math.max(maxB, array.get(ccB, k))
+            array.push(zP, bestP)
+            array.push(zS, totW)
+            array.push(zB, maxB)
+
+        // ══════════════════════
+        //  Touch Counting
+        // ══════════════════════
+        int zSz = array.size(zP)
+        int swLen = array.size(savedSwP)
+        if zSz > 0 and swLen > 0
+            for zi = 0 to zSz - 1
+                float zPrice = array.get(zP, zi)
+                int   tch    = 0
+                for si = 0 to swLen - 1
+                    if math.abs(array.get(savedSwP, si) - zPrice) <= i_zoneTol
+                        tch += 1
+                array.set(zS, zi, array.get(zS, zi) + i_touchWeight * tch)
+
+        // ══════════════════════
+        //  Selection
+        // ══════════════════════
+        // Step 1: sort by recency (lastBar desc)
+        for i = 0 to zSz - 2
+            for j = 0 to zSz - i - 2
+                if array.get(zB, j) < array.get(zB, j + 1)
+                    float tp2 = array.get(zP, j)
+                    float ts2 = array.get(zS, j)
+                    int   tb2 = array.get(zB, j)
+                    array.set(zP, j, array.get(zP, j + 1))
+                    array.set(zS, j, array.get(zS, j + 1))
+                    array.set(zB, j, array.get(zB, j + 1))
+                    array.set(zP, j + 1, tp2)
+                    array.set(zS, j + 1, ts2)
+                    array.set(zB, j + 1, tb2)
+
+        // Trim to recency pool
+        while array.size(zP) > i_recencyPool
+            array.pop(zP)
+            array.pop(zS)
+            array.pop(zB)
+
+        // Step 2: sort by score desc
+        int pSz = array.size(zP)
+        for i = 0 to pSz - 2
+            for j = 0 to pSz - i - 2
+                if array.get(zS, j) < array.get(zS, j + 1)
+                    float tp3 = array.get(zP, j)
+                    float ts3 = array.get(zS, j)
+                    int   tb3 = array.get(zB, j)
+                    array.set(zP, j, array.get(zP, j + 1))
+                    array.set(zS, j, array.get(zS, j + 1))
+                    array.set(zB, j, array.get(zB, j + 1))
+                    array.set(zP, j + 1, tp3)
+                    array.set(zS, j + 1, ts3)
+                    array.set(zB, j + 1, tb3)
+
+        // Trim to max levels
+        while array.size(zP) > i_maxLevels
+            array.pop(zP)
+            array.pop(zS)
+            array.pop(zB)
+
+        // Split into SIGNAL and TRAIL
+        array.clear(sigPrices)
+        array.clear(sigScores)
+        array.clear(trlPrices)
+        array.clear(trlScores)
+        array.clear(ladder)
+        int fSz = array.size(zP)
+        for i = 0 to fSz - 1
+            float p = array.get(zP, i)
+            float s = array.get(zS, i)
+            array.push(ladder, p)
+            if i < i_signalCount
+                array.push(sigPrices, p)
+                array.push(sigScores, s)
+            else
+                array.push(trlPrices, p)
+                array.push(trlScores, s)
+
+        // Sort ladder ascending for trailing stop
+        int lSz = array.size(ladder)
+        for i = 0 to lSz - 2
+            for j = 0 to lSz - i - 2
+                if array.get(ladder, j) > array.get(ladder, j + 1)
+                    float tmp = array.get(ladder, j)
+                    array.set(ladder, j, array.get(ladder, j + 1))
+                    array.set(ladder, j + 1, tmp)
+
+// ═══════════════════════════════════════════════════════
+//  Direction Filter
+// ═══════════════════════════════════════════════════════
+
+bool allowLong  = orDone and close >= orHigh
+bool allowShort = orDone and close <= orLow
+
+// ═══════════════════════════════════════════════════════
+//  Breakout Detection
+// ═══════════════════════════════════════════════════════
+
+var int tradesToday = 0
+if sessStart
+    tradesToday := 0
+
+float bbuf = nz(atrVal) * i_brkBuf
+
+// Find breakout targets from SIGNAL levels
+float tgtLongP  = na
+float tgtShortP = na
+
+if klReady and array.size(sigPrices) > 0
+    float ref = close[1]
+    for i = 0 to array.size(sigPrices) - 1
+        float kp = array.get(sigPrices, i)
+        if ref <= kp + bbuf
+            if na(tgtLongP) or kp < tgtLongP
+                tgtLongP := kp
+    for i = 0 to array.size(sigPrices) - 1
+        float kp = array.get(sigPrices, i)
+        if ref >= kp - bbuf
+            if na(tgtShortP) or kp > tgtShortP
+                tgtShortP := kp
+
+bool canTrade  = inSession and tradesToday < i_maxTrades and strategy.position_size == 0
+bool longBrk   = canTrade and allowLong  and not na(tgtLongP)  and close > tgtLongP + bbuf  and close[1] <= tgtLongP + bbuf
+bool shortBrk  = canTrade and allowShort and not na(tgtShortP) and close < tgtShortP - bbuf and close[1] >= tgtShortP - bbuf
+
+// ═══════════════════════════════════════════════════════
+//  Stop Loss — next KL on loss side, minus buffer
+// ═══════════════════════════════════════════════════════
+
+findSL(bool isLong, float sigPrice) =>
+    float sl     = na
+    float bufPts = nz(atrVal) * i_klBuffer
+    int   sz     = array.size(ladder)
+    if sz > 0
+        if isLong
+            for i = sz - 1 to 0
+                if array.get(ladder, i) < sigPrice
+                    sl := array.get(ladder, i) - bufPts
+                    break
+        else
+            for i = 0 to sz - 1
+                if array.get(ladder, i) > sigPrice
+                    sl := array.get(ladder, i) + bufPts
+                    break
+    if na(sl)
+        sl := isLong ? sigPrice - nz(atrVal) * i_slAtrMult : sigPrice + nz(atrVal) * i_slAtrMult
+    sl
+
+// ═══════════════════════════════════════════════════════
+//  Key Level Trailing Stop (previous mode)
+// ═══════════════════════════════════════════════════════
+
+var float trailSL    = na
+var int   trailIdx   = -1
+var bool  isLongPos  = false
+
+if strategy.position_size != 0
+    float bufPts = nz(atrVal) * i_klBuffer
+    int sz = array.size(ladder)
+    if sz > 0 and trailIdx >= 0
+        if isLongPos
+            // Walk the ladder upward; when price breaks above KL[i], stop = KL[i-1] - buffer
+            bool cont = true
+            int  idx  = trailIdx
+            while idx < sz and cont
+                float lvl = array.get(ladder, idx)
+                if close > lvl
+                    int prevI = math.max(0, idx - 1)
+                    float candidate = array.get(ladder, prevI) - bufPts
+                    if na(trailSL) or candidate > trailSL
+                        trailSL := candidate
+                    idx += 1
+                else
+                    cont := false
+            trailIdx := idx
+        else
+            bool cont = true
+            int  idx  = trailIdx
+            while idx >= 0 and cont
+                float lvl = array.get(ladder, idx)
+                if close < lvl
+                    int nextI = math.min(sz - 1, idx + 1)
+                    float candidate = array.get(ladder, nextI) + bufPts
+                    if na(trailSL) or candidate < trailSL
+                        trailSL := candidate
+                    idx -= 1
+                else
+                    cont := false
+            trailIdx := idx
+
+    // Apply trailing stop
+    if not na(trailSL)
+        if isLongPos
+            strategy.exit("Trail", "Long", stop=trailSL)
+        else
+            strategy.exit("Trail", "Short", stop=trailSL)
+
+// ═══════════════════════════════════════════════════════
+//  Order Execution
+// ═══════════════════════════════════════════════════════
+
+if longBrk
+    float sl = findSL(true, tgtLongP)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long SL", "Long", stop=sl)
+    tradesToday += 1
+    isLongPos  := true
+    trailSL    := sl
+    // Initial trail index: first ladder level above entry
+    trailIdx   := array.size(ladder) - 1
+    for i = 0 to array.size(ladder) - 1
+        if array.get(ladder, i) > close
+            trailIdx := i
+            break
+
+if shortBrk
+    float sl = findSL(false, tgtShortP)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short SL", "Short", stop=sl)
+    tradesToday += 1
+    isLongPos  := false
+    trailSL    := sl
+    // Initial trail index: first ladder level below entry
+    trailIdx   := 0
+    for i = array.size(ladder) - 1 to 0
+        if array.get(ladder, i) < close
+            trailIdx := i
+            break
+
+// Session end — close all
+if not inSession and strategy.position_size != 0
+    strategy.close_all("Session End")
+    trailSL  := na
+    trailIdx := -1
+
+// ═══════════════════════════════════════════════════════
+//  Visualization
+// ═══════════════════════════════════════════════════════
+
+// OR box
+var box orBox = na
+if i_showOR and orDone and sessStart == false and orCount == i_orBars
+    if not na(orBox)
+        box.delete(orBox)
+    orBox := box.new(bar_index - i_orBars, orHigh, bar_index + 50, orLow,
+                     border_color=color.new(color.blue, 60),
+                     bgcolor=color.new(color.blue, 92))
+
+// KL lines and labels — drawn on last bar only
+var array<line>  klLines  = array.new_line()
+var array<label> klLabels = array.new_label()
+
+if barstate.islast and klReady and i_showKL
+    // Clear old drawings
+    for i = 0 to array.size(klLines) - 1
+        line.delete(array.get(klLines, i))
+    array.clear(klLines)
+    for i = 0 to array.size(klLabels) - 1
+        label.delete(array.get(klLabels, i))
+    array.clear(klLabels)
+
+    // SIGNAL levels (green, solid, width=2)
+    for i = 0 to array.size(sigPrices) - 1
+        float p = array.get(sigPrices, i)
+        float s = array.get(sigScores, i)
+        line ln = line.new(bar_index - 60, p, bar_index + 20, p,
+                           color=color.new(color.green, 20), width=2)
+        array.push(klLines, ln)
+        if i_showLabels
+            label lb = label.new(bar_index + 22, p,
+                                 "SIG " + str.tostring(p, "#") + "  s=" + str.tostring(s, "#.#"),
+                                 style=label.style_none, textcolor=color.green, size=size.tiny)
+            array.push(klLabels, lb)
+
+    // TRAIL levels (gray, dashed, width=1)
+    for i = 0 to array.size(trlPrices) - 1
+        float p = array.get(trlPrices, i)
+        float s = array.get(trlScores, i)
+        line ln = line.new(bar_index - 60, p, bar_index + 20, p,
+                           color=color.new(color.gray, 40), width=1, style=line.style_dashed)
+        array.push(klLines, ln)
+        if i_showLabels
+            label lb = label.new(bar_index + 22, p,
+                                 "TRL " + str.tostring(p, "#") + "  s=" + str.tostring(s, "#.#"),
+                                 style=label.style_none, textcolor=color.gray, size=size.tiny)
+            array.push(klLabels, lb)
+
+// Plots
+plot(strategy.position_size != 0 and not na(trailSL) ? trailSL : na,
+     "Trail Stop", color=color.orange, style=plot.style_stepline_diamond, linewidth=1)
+
+plot(orDone ? orHigh : na, "OR High", color=color.new(color.blue, 50), style=plot.style_stepline)
+plot(orDone ? orLow  : na, "OR Low",  color=color.new(color.red, 50),  style=plot.style_stepline)
+plot(orDone ? orMid  : na, "OR Mid",  color=color.new(color.gray, 70), style=plot.style_stepline)
+
+bgcolor(inSession ? color.new(color.blue, 96) : na, title="Session BG")
+
+// Entry markers
+plotshape(longBrk,  "Long Entry",  shape.triangleup,   location.belowbar, color.green, size=size.small)
+plotshape(shortBrk, "Short Entry", shape.triangledown,  location.abovebar, color.red,   size=size.small)

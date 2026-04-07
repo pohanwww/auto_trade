@@ -539,8 +539,6 @@ class KLCalcResult:
     today_night_kbars: list
     agg_day_kbars: list
     agg_night_kbars: list
-    supplemented: bool = False
-    supp_signal_count: int = 0
 
 
 def split_sessions(
@@ -558,7 +556,7 @@ def split_sessions(
         day_sessions:  dict[date, list[KBar]] — historical (+ today's day for night mode)
         night_sessions: dict[date, list[KBar]] — historical night sessions
         today_day_kbars:  list[KBar] — today's day session (chart display)
-        today_night_kbars: list[KBar] — tonight's session (chart + intraday supplement)
+        today_night_kbars: list[KBar] — tonight's session (chart display)
     """
     day_sessions: dict[date, list] = {}
     night_sessions: dict[date, list] = {}
@@ -605,13 +603,6 @@ def calculate_key_levels_from_kbars(
     signal_level_count: int = 7,
     recency_pool: int = 20,
     session_lookback: int = 1,
-    include_intraday: str = "never",
-    or_high: int | None = None,
-    or_low: int | None = None,
-    atr: int | None = None,
-    min_today_kbars: int = 21,
-    max_gap_atr: float = 3.0,
-    supp_count: int = 3,
 ) -> KLCalcResult:
     """Full KL calculation pipeline — shared by strategy and dashboard.
 
@@ -619,10 +610,6 @@ def calculate_key_levels_from_kbars(
     2. Extract OHLC from latest session
     3. Aggregate N sessions of kbars for swing/volume detection
     4. Run find_confluence_levels → score sort → top 15
-    5. Optionally run intraday supplement (``include_intraday``):
-       - ``"never"``  : skip supplement
-       - ``"auto"``   : supplement only when coverage gap detected
-       - ``"always"`` : always supplement (for testing)
     """
     # 1. Session split
     day_sessions, night_sessions, today_day, today_night = split_sessions(
@@ -696,59 +683,6 @@ def calculate_key_levels_from_kbars(
     pool.sort(key=lambda z: z.score, reverse=True)
     levels = pool[:15]
 
-    # 5. Intraday supplement
-    #    Uses only the previous single session + today's first 2h kbars.
-    #    Top 3 results become SIGNAL KLs (or promote existing TRAIL).
-    supplemented = False
-    supp_sig_n = 0
-    if include_intraday != "never" and today_session:
-        run_supplement = False
-        if include_intraday == "always":
-            run_supplement = True
-        elif include_intraday == "auto":
-            current_price = int(today_session[-1].close)
-            eff_atr = atr if atr and atr > 0 else 100
-            run_supplement = has_coverage_gap(
-                levels, current_price, signal_level_count,
-                or_high=or_high, or_low=or_low, atr=eff_atr,
-                max_gap_atr=max_gap_atr,
-            )
-
-        if run_supplement:
-            supp_today = today_session[:min_today_kbars]
-            if in_night_session:
-                supp_session = SessionData(
-                    prev_day_high=day_ohlc.get("high", 0),
-                    prev_day_low=day_ohlc.get("low", 0),
-                    prev_day_close=day_ohlc.get("close", 0),
-                    today_open=today_open,
-                    or_range=or_range,
-                    prev_day_kbars=agg_day,
-                    prev_night_kbars=list(supp_today),
-                )
-                supp_all_kbars = agg_day + list(supp_today)
-            else:
-                supp_session = SessionData(
-                    prev_night_high=night_ohlc.get("high"),
-                    prev_night_low=night_ohlc.get("low"),
-                    prev_night_close=night_ohlc.get("close"),
-                    today_open=today_open,
-                    or_range=or_range,
-                    prev_day_kbars=list(supp_today),
-                    prev_night_kbars=agg_night,
-                )
-                supp_all_kbars = agg_night + list(supp_today)
-            _added, supp_sig_n = supplement_intraday_kls(
-                levels, supp_all_kbars, supp_session,
-                signal_level_count=signal_level_count,
-                swing_period=swing_period,
-                cluster_tolerance=cluster_tolerance,
-                zone_tolerance=zone_tolerance,
-                recency_pool=recency_pool,
-                supp_count=supp_count,
-            )
-            supplemented = True
-
     return KLCalcResult(
         levels=levels,
         day_ohlc=day_ohlc,
@@ -760,105 +694,4 @@ def calculate_key_levels_from_kbars(
         today_night_kbars=today_night,
         agg_day_kbars=agg_day,
         agg_night_kbars=agg_night,
-        supp_signal_count=supp_sig_n if supplemented else 0,
-        supplemented=supplemented,
     )
-
-
-def has_coverage_gap(
-    levels: list[KeyLevel],
-    current_price: int,
-    signal_level_count: int = 7,
-    *,
-    or_high: int | None = None,
-    or_low: int | None = None,
-    atr: int = 100,
-    max_gap_atr: float = 3.0,
-) -> bool:
-    """Check whether signal KLs have coverage gaps near current_price.
-
-    Uses ``distance_both`` logic: both above and below the current price
-    must exceed ``max_gap_atr × ATR`` to trigger supplement.
-    Signals inside the OR range are excluded (can't trigger breakout).
-    """
-    sig_prices = [kl.price for kl in levels[:signal_level_count]]
-    if or_high is not None and or_low is not None:
-        usable = [p for p in sig_prices if p > or_high or p < or_low]
-    else:
-        usable = sig_prices
-
-    if not usable:
-        return True
-
-    above = [p for p in usable if p > current_price]
-    below = [p for p in usable if p < current_price]
-    max_gap = atr * max_gap_atr
-
-    far_above = above and (min(above) - current_price > max_gap)
-    far_below = below and (current_price - max(below) > max_gap)
-    return far_above and far_below
-
-
-_SUPP_SIGNAL_COUNT = 3
-
-
-def supplement_intraday_kls(
-    levels: list[KeyLevel],
-    all_kbars: list[KBar],
-    session_data: SessionData,
-    *,
-    signal_level_count: int = 7,
-    swing_period: int = 10,
-    cluster_tolerance: int = 50,
-    zone_tolerance: int = 50,
-    recency_pool: int = 20,
-    supp_count: int = _SUPP_SIGNAL_COUNT,
-) -> tuple[list[KeyLevel], int]:
-    """Detect KLs from prev-session + today 2h and add as SIGNAL.
-
-    ``supp_count`` controls how many supplement KLs to add (default 3).
-
-    Modifies ``levels`` in-place.
-    Returns (newly_added_zones, promoted_or_added_count).
-    """
-    if not all_kbars:
-        return [], 0
-
-    new_pool = find_confluence_levels(
-        session_data,
-        swing_period=swing_period,
-        cluster_tolerance=cluster_tolerance,
-        zone_tolerance=zone_tolerance,
-        max_levels=recency_pool,
-        recency_pool=recency_pool,
-    )
-
-    added: list[KeyLevel] = []
-    promoted_or_added = 0
-
-    for nz in new_pool:
-        if promoted_or_added >= supp_count:
-            break
-
-        matched_existing = None
-        for existing in levels:
-            if abs(nz.price - existing.price) <= zone_tolerance:
-                matched_existing = existing
-                break
-
-        if matched_existing is not None:
-            if nz.score > matched_existing.score:
-                matched_existing.score = nz.score
-            matched_existing.num_methods = max(matched_existing.num_methods, nz.num_methods)
-            matched_existing.touch_count = max(matched_existing.touch_count, nz.touch_count)
-            for src in nz.sources:
-                if src not in matched_existing.sources:
-                    matched_existing.sources.append(src)
-            promoted_or_added += 1
-        else:
-            levels.append(nz)
-            added.append(nz)
-            promoted_or_added += 1
-
-    levels.sort(key=lambda z: z.score, reverse=True)
-    return added, promoted_or_added

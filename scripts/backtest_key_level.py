@@ -129,9 +129,6 @@ def make_unit(
         trend_filter=params.get("trend_filter", "or"),
         trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
-        supplement_enabled=params.get("supplement_enabled", True),
-        max_gap_atr=params.get("max_gap_atr", 3.0),
-        supp_count=params.get("supp_count", 3),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -187,22 +184,10 @@ def make_unit(
         max_tag = f"day{max_day}/night{max_night}"
     else:
         max_tag = f"max{params['max_trades_per_day']}/d"
-    supp_tag = "" if params.get("supplement_enabled", True) else " nosupp"
-    mga = params.get("max_gap_atr", 3.0)
-    sc = params.get("supp_count", 3)
-    supp_extra = ""
-    if params.get("supplement_enabled", True):
-        parts = []
-        if mga != 3.0:
-            parts.append(f"atr={mga}")
-        if sc != 3:
-            parts.append(f"sc={sc}")
-        if parts:
-            supp_extra = " " + " ".join(parts)
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}{supp_tag}{supp_extra}"
+        f"{max_tag} n={sig_n}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -464,22 +449,11 @@ TOP_PARAMS = [
 
 TOP10_PARAMS = TOP_PARAMS
 
-SUPP_TEST_PARAMS = [
-    _p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"),
-    _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
-]
-
 TRAIL_ANCHOR_PARAMS = [
-    # WITH supplement
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": True},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": True},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": True},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": True},
-    # WITHOUT supplement
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": False},
-    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": False},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),      "supplement_enabled": False},
-    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"), "supplement_enabled": False},
+    _p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),
+    _p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+    _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),
+    _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
 ]
 
 
@@ -586,7 +560,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "supp_test", "nopvt_sweep", "trail_anchor"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -650,8 +624,6 @@ def main():
         sweep_params = INSTANT_BUF_PARAMS
     elif args.grid == "instant_buf_fine":
         sweep_params = INSTANT_BUF_FINE_PARAMS
-    elif args.grid == "supp_test":
-        sweep_params = SUPP_TEST_PARAMS
     elif args.grid == "nopvt_sweep":
         sweep_params = NOPVT_SWEEP_PARAMS
     elif args.grid == "trail_anchor":

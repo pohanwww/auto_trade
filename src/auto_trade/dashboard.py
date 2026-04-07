@@ -137,16 +137,6 @@ def _generate_chart(
         or_range = max(or_high - or_low, 1)
         or_kbars_for_chart = or_kbars
 
-    # --- Estimate ATR for coverage-gap check ---
-    atr_est: int | None = None
-    if len(kbar_list.kbars) >= 14:
-        recent = kbar_list.kbars[-14:]
-        trs = [max(int(k.high) - int(k.low),
-                   abs(int(k.high) - int(recent[i - 1].close)) if i > 0 else 0,
-                   abs(int(k.low) - int(recent[i - 1].close)) if i > 0 else 0)
-               for i, k in enumerate(recent)]
-        atr_est = int(sum(trs) / len(trs)) if trs else None
-
     # --- Shared KL calculation (identical to strategy) ---
     kl = calculate_key_levels_from_kbars(
         kbar_list.kbars,
@@ -155,10 +145,6 @@ def _generate_chart(
         or_range=or_range,
         session_lookback=session_lookback,
         signal_level_count=signal_level_count,
-        include_intraday="auto",
-        or_high=or_high,
-        or_low=or_low,
-        atr=atr_est,
     )
 
     levels = kl.levels
@@ -172,8 +158,7 @@ def _generate_chart(
     agg_day_kbars = kl.agg_day_kbars
     agg_night_kbars = kl.agg_night_kbars
 
-    effective_signal_count = signal_level_count + kl.supp_signal_count
-    signal_levels = set(lv.price for lv in levels[:effective_signal_count])
+    signal_levels = set(lv.price for lv in levels[:signal_level_count])
 
     # Build chart kbars — always sorted chronologically
     if in_night:
@@ -424,7 +409,7 @@ def _generate_chart(
                 [0],
                 color="#FF8800",
                 lw=1,
-                label=f"Signal Level (top {effective_signal_count})",
+                label=f"Signal Level (top {signal_level_count})",
             ),
             Line2D(
                 [0], [0], color="#AAAAAA", lw=1, linestyle="--", label="Trailing Level"

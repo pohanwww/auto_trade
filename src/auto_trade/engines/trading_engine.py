@@ -132,7 +132,7 @@ class TradingEngine:
         # kbar 快取就緒後，用歷史 K 棒校正 highest/lowest price 及移停狀態
         self._reconcile_position_from_history()
 
-        # kbar 資料就緒 → 立即計算 KL（含 supplement），確保重啟後狀態完整
+        # kbar 資料就緒 → 立即計算 KL，確保重啟後狀態完整
         self._initialize_strategy_levels()
 
         # 發送啟動通知
@@ -748,7 +748,7 @@ class TradingEngine:
 
         如果 restore_state 已恢復 key_levels → evaluate 跳過重算，
         只初始化 ATR 等 runtime state。
-        如果尚未計算（首次啟動）→ evaluate 會觸發 base + supplement。
+        如果尚未計算（首次啟動）→ evaluate 會觸發 KL 計算。
         丟棄信號結果。若有持倉且產生新 KL，同步到 PM。
         """
         try:
@@ -772,23 +772,18 @@ class TradingEngine:
 
             # evaluate 內部：
             #   - _levels_calculated=True (已恢復) → 跳過 _calculate_key_levels
-            #   - _supplement_done=True (已恢復)  → 跳過 supplement
             #   - ATR 等 runtime state 正常初始化
             self.trading_unit.strategy.evaluate(
                 kbar_list, current_price, self.sub_symbol,
             )
 
-            # 首次啟動且 supplement 產出新 KL → 同步到 PM
+            # 首次啟動且產出新 KL → 同步到 PM
             if not already_restored and current_price > 0:
                 self._try_sync_kl_to_position(current_price)
 
             n_levels = len(getattr(strategy, "_key_levels", []))
-            done = getattr(strategy, "_supplement_done", False)
             src = "restored" if already_restored else "calculated"
-            print(
-                f"📋 KL 初始化完成 ({src}): {n_levels} levels, "
-                f"supplement_done={done}"
-            )
+            print(f"📋 KL 初始化完成 ({src}): {n_levels} levels")
         except Exception as e:
             print(f"⚠️ KL 初始化失敗（不影響主循環）: {e}")
 
