@@ -456,6 +456,17 @@ TRAIL_ANCHOR_PARAMS = [
     _p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
 ]
 
+KL_BUF_PARAMS = [
+    cfg
+    for buf in [0.15, 0.20, 0.25, 0.30]
+    for cfg in [
+        _p(True,  "day_only",   "breakout_only", "previous", buf, 2, 7, "long_only"),
+        _p(True,  "day_only",   "breakout_only", "previous", buf, 2, 7, "both"),
+        _p(True,  "night_only", "breakout_only", "previous", buf, 2, 7, "long_only"),
+        _p(True,  "night_only", "breakout_only", "previous", buf, 2, 7, "both"),
+    ]
+]
+
 
 def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
     """Helper for instant buffer sweep: build param dict with specific bb/ib."""
@@ -560,7 +571,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor", "kl_buf"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -628,6 +639,8 @@ def main():
         sweep_params = NOPVT_SWEEP_PARAMS
     elif args.grid == "trail_anchor":
         sweep_params = TRAIL_ANCHOR_PARAMS
+    elif args.grid == "kl_buf":
+        sweep_params = KL_BUF_PARAMS
     else:
         sweep_params = TOP10_PARAMS
 

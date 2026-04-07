@@ -26,10 +26,6 @@ from auto_trade.services.line_bot_service import LineBotService
 from auto_trade.services.market_service import MarketService
 from auto_trade.services.position_manager import PositionManager
 from auto_trade.services.record_service import RecordService
-from auto_trade.utils import (
-    calculate_and_wait_to_next_execution,
-    wait_seconds,
-)
 
 
 class TradingEngine:
@@ -140,6 +136,9 @@ class TradingEngine:
 
         # 主循環
         print_flag = False
+        _KBAR_REFRESH_INTERVAL = 3  # seconds – throttle K-bar resample
+        _last_kbar_fetch: float = 0
+        _cached_kbar_list = None
         while True:
             try:
                 current_time = datetime.now()
@@ -154,7 +153,7 @@ class TradingEngine:
                 current_price = quote.price
 
                 if self.position_manager.has_position:
-                    # === 有倉位：高頻監控 ===
+                    # === 有倉位：tick-driven 高頻監控 ===
 
                     # 0. 時間強制平倉（日內策略用，如 ORB 13:30 收盤）
                     actions = self.position_manager.check_time_exit(
@@ -162,16 +161,19 @@ class TradingEngine:
                     )
 
                     if not actions:
-                        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
-                            self.symbol,
-                            self.sub_symbol,
-                            self.trading_unit.pm_config.timeframe,
-                            days=5,
-                        )
+                        _now_mono = _time.monotonic()
+                        if _cached_kbar_list is None or (_now_mono - _last_kbar_fetch) > _KBAR_REFRESH_INTERVAL:
+                            _cached_kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                                self.symbol,
+                                self.sub_symbol,
+                                self.trading_unit.pm_config.timeframe,
+                                days=5,
+                            )
+                            _last_kbar_fetch = _now_mono
 
                         # 讓 PM 處理價格更新
                         actions = self.position_manager.on_price_update(
-                            current_price, kbar_list
+                            current_price, _cached_kbar_list
                         )
 
                     # 執行 PM 產生的指令
@@ -186,6 +188,12 @@ class TradingEngine:
                         and not self._addon_checked_this_interval
                     ):
                         self._addon_checked_this_interval = True
+                        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                            self.symbol,
+                            self.sub_symbol,
+                            self.trading_unit.pm_config.timeframe,
+                            days=5,
+                        )
                         signal = self.trading_unit.strategy.evaluate(
                             kbar_list, current_price, self.sub_symbol
                         )
@@ -213,7 +221,7 @@ class TradingEngine:
                     elif current_time.minute % 5 != 0:
                         print_flag = False
 
-                    wait_seconds(self.position_check_interval)
+                    self.market_service.wait_for_tick(timeout=self.position_check_interval)
 
                 else:
                     # === 無倉位：低頻檢測信號 ===
@@ -308,7 +316,11 @@ class TradingEngine:
 
         if long_target is None and short_target is None:
             print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
-            calculate_and_wait_to_next_execution(self.signal_check_interval, True)
+            while datetime.now() < next_time:
+                remaining = (next_time - datetime.now()).total_seconds()
+                if remaining <= 0:
+                    break
+                self.market_service.wait_for_tick(timeout=min(remaining, 5.0))
             return
 
         print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
@@ -333,7 +345,7 @@ class TradingEngine:
                     self.symbol, self.sub_symbol
                 )
                 if not quote:
-                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
 
                 price = quote.price
@@ -341,7 +353,7 @@ class TradingEngine:
 
                 # Check suppress
                 if now_ts < suppress_until:
-                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
 
                 triggered = (
@@ -383,10 +395,10 @@ class TradingEngine:
                     # Rejected — suppress for 30s, keep monitoring
                     suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
                     print(f"⚡ Trigger rejected, suppress {self._INSTANT_SUPPRESS_SECONDS}s")
-                    _time.sleep(self._INSTANT_POLL_NORMAL)
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
 
-                # Adaptive polling
+                # Wait for next tick (fallback timeout keeps adaptive ceiling)
                 distances = []
                 if long_target is not None:
                     distances.append(abs(price - long_target))
@@ -398,10 +410,10 @@ class TradingEngine:
                     if min_dist <= self._INSTANT_PROXIMITY
                     else self._INSTANT_POLL_NORMAL
                 )
-                _time.sleep(poll)
+                self.market_service.wait_for_tick(timeout=poll)
 
             except Exception:
-                _time.sleep(self._INSTANT_POLL_NORMAL)
+                self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
 
     def _execute_action(self, action: OrderAction) -> int | None:
         """執行下單指令並處理成交

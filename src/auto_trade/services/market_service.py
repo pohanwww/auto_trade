@@ -1,5 +1,6 @@
 """Market service for managing market data operations."""
 
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -48,6 +49,9 @@ class MarketService:
 
         # 合約代碼反向映射: contract_code -> (symbol, sub_symbol), 用於 callback 快速查找
         self._contract_mapping: dict[str, tuple[str, str]] = {}
+
+        # Tick event: set() on every incoming tick so consumers can wake immediately
+        self._tick_event = threading.Event()
 
     @staticmethod
     def is_trading_time():
@@ -119,6 +123,20 @@ class MarketService:
 
         # 從 tick 更新 K 線緩存
         self._update_kbar_from_tick(tick)
+
+        # Wake up any thread waiting in wait_for_tick()
+        self._tick_event.set()
+
+    # ── Tick event helpers ────────────────────────────────────
+
+    def wait_for_tick(self, timeout: float | None = None) -> bool:
+        """Block until the next tick arrives or *timeout* seconds elapse.
+
+        Returns True if a tick woke us up, False on timeout.
+        """
+        triggered = self._tick_event.wait(timeout=timeout)
+        self._tick_event.clear()
+        return triggered
 
     def _update_kbar_from_tick(self, tick):
         """從 tick 數據實時更新 K 線緩存
