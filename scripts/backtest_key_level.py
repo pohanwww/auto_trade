@@ -154,10 +154,8 @@ def make_unit(
         force_exit_time=force_exit_time,
         enable_profit_lock=params.get("enable_profit_lock", False),
         profit_lock_long_only=params.get("profit_lock_long_only", False),
-        profit_lock_phase1_minutes=params.get("profit_lock_phase1_minutes", 30),
-        profit_lock_phase1_ratio=params.get("profit_lock_phase1_ratio", 0.4),
-        profit_lock_phase2_minutes=params.get("profit_lock_phase2_minutes", 60),
-        profit_lock_phase2_ratio=params.get("profit_lock_phase2_ratio", 0.6),
+        profit_lock_minutes=params.get("profit_lock_minutes", 30),
+        profit_lock_ratio=params.get("profit_lock_ratio", 0.4),
         kl_exhausted_atr_multiplier=params.get("kl_exhausted_atr_multiplier", 0.5),
     )
 
@@ -199,12 +197,10 @@ def make_unit(
         or_kl_tag = ""
     pl_tag = ""
     if params.get("enable_profit_lock"):
-        p1m = params.get("profit_lock_phase1_minutes", 30)
-        p1r = params.get("profit_lock_phase1_ratio", 0.4)
-        p2m = params.get("profit_lock_phase2_minutes", 60)
-        p2r = params.get("profit_lock_phase2_ratio", 0.6)
+        plm = params.get("profit_lock_minutes", 30)
+        plr = params.get("profit_lock_ratio", 0.4)
         lo_suffix = "L" if params.get("profit_lock_long_only") else ""
-        pl_tag = f" PL{lo_suffix}({p1m}m/{p1r:.0%},{p2m}m/{p2r:.0%})"
+        pl_tag = f" PL{lo_suffix}({plm}m/{plr:.0%})"
     atr_fb_tag = ""
     atr_mult = params.get("kl_exhausted_atr_multiplier", 0.5)
     if atr_mult != 0.5:
@@ -512,11 +508,7 @@ OR_SL_PARAMS = [
 ]
 
 def _make_profit_lock_params() -> list[dict]:
-    """Profit Lock sweep: phase1_minutes × phase1_ratio coarse grid.
-
-    phase2 = phase1 + 30min, ratio2 = ratio1 + 0.2 (capped at 0.8).
-    ATR fallback multiplier fixed at 0.5.
-    """
+    """Profit Lock sweep: minutes × ratio coarse grid."""
     configs = [
         (True, "day_only",   "long_only", "or"),
         (True, "day_only",   "both",      "or"),
@@ -530,35 +522,24 @@ def _make_profit_lock_params() -> list[dict]:
             "trend_filter": tf,
             "kl_exhausted_atr_multiplier": 0.5,
         }
-        # Baseline: no profit lock
         params.append({**base, "enable_profit_lock": False})
-        # Coarse grid: phase1_minutes × phase1_ratio
-        for p1m in [20, 30, 45]:
-            for p1r in [0.3, 0.4, 0.5]:
-                p2m = p1m + 30
-                p2r = round(min(p1r + 0.2, 0.8), 2)
+        for m in [20, 30, 45]:
+            for r in [0.3, 0.4, 0.5]:
                 params.append({
                     **base,
                     "enable_profit_lock": True,
-                    "profit_lock_phase1_minutes": p1m,
-                    "profit_lock_phase1_ratio": p1r,
-                    "profit_lock_phase2_minutes": p2m,
-                    "profit_lock_phase2_ratio": p2r,
+                    "profit_lock_minutes": m,
+                    "profit_lock_ratio": r,
                 })
-        # Long-only PL for "both" direction configs
         if direction == "both":
-            for p1m in [20, 30, 45]:
-                for p1r in [0.3, 0.4, 0.5]:
-                    p2m = p1m + 30
-                    p2r = round(min(p1r + 0.2, 0.8), 2)
+            for m in [20, 30, 45]:
+                for r in [0.3, 0.4, 0.5]:
                     params.append({
                         **base,
                         "enable_profit_lock": True,
                         "profit_lock_long_only": True,
-                        "profit_lock_phase1_minutes": p1m,
-                        "profit_lock_phase1_ratio": p1r,
-                        "profit_lock_phase2_minutes": p2m,
-                        "profit_lock_phase2_ratio": p2r,
+                        "profit_lock_minutes": m,
+                        "profit_lock_ratio": r,
                     })
     return params
 
@@ -566,102 +547,8 @@ def _make_profit_lock_params() -> list[dict]:
 PROFIT_LOCK_PARAMS = _make_profit_lock_params()
 
 
-def _make_pl_focused_params() -> list[dict]:
-    """Focused PL validation: 4 scenarios × (baseline + 4 PL + 4 PLL for both)."""
-    pl_variants = [
-        (20, 0.50, 50, 0.70),
-        (30, 0.50, 60, 0.70),
-        (20, 0.30, 50, 0.50),
-        (30, 0.30, 60, 0.50),
-    ]
-    configs = [
-        (True, "day_only",   "long_only", "or"),
-        (True, "day_only",   "both",      "or"),
-        (True, "night_only", "long_only", "or"),
-        (True, "night_only", "both",      "or"),
-    ]
-    params = []
-    for use_or, session, direction, tf in configs:
-        base = {
-            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
-            "trend_filter": tf,
-            "kl_exhausted_atr_multiplier": 0.5,
-        }
-        params.append({**base, "enable_profit_lock": False})
-        for p1m, p1r, p2m, p2r in pl_variants:
-            params.append({
-                **base,
-                "enable_profit_lock": True,
-                "profit_lock_phase1_minutes": p1m,
-                "profit_lock_phase1_ratio": p1r,
-                "profit_lock_phase2_minutes": p2m,
-                "profit_lock_phase2_ratio": p2r,
-            })
-        if direction == "both":
-            for p1m, p1r, p2m, p2r in pl_variants:
-                params.append({
-                    **base,
-                    "enable_profit_lock": True,
-                    "profit_lock_long_only": True,
-                    "profit_lock_phase1_minutes": p1m,
-                    "profit_lock_phase1_ratio": p1r,
-                    "profit_lock_phase2_minutes": p2m,
-                    "profit_lock_phase2_ratio": p2r,
-                })
-    return params
-
-
-PL_FOCUSED_PARAMS = _make_pl_focused_params()
-
-
-def _make_pl_1stage_params() -> list[dict]:
-    """Single-stage PL: phase2_ratio == phase1_ratio (no escalation)."""
-    ratios = [0.30, 0.40, 0.50]
-    minutes = [20, 30, 45]
-    configs = [
-        (True, "day_only",   "long_only", "or"),
-        (True, "day_only",   "both",      "or"),
-        (True, "night_only", "long_only", "or"),
-        (True, "night_only", "both",      "or"),
-    ]
-    params = []
-    for use_or, session, direction, tf in configs:
-        base = {
-            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
-            "trend_filter": tf,
-            "kl_exhausted_atr_multiplier": 0.5,
-        }
-        params.append({**base, "enable_profit_lock": False})
-        for m in minutes:
-            for r in ratios:
-                params.append({
-                    **base,
-                    "enable_profit_lock": True,
-                    "profit_lock_phase1_minutes": m,
-                    "profit_lock_phase1_ratio": r,
-                    "profit_lock_phase2_minutes": 9999,
-                    "profit_lock_phase2_ratio": r,
-                })
-        if direction == "both":
-            for m in minutes:
-                for r in ratios:
-                    params.append({
-                        **base,
-                        "enable_profit_lock": True,
-                        "profit_lock_long_only": True,
-                        "profit_lock_phase1_minutes": m,
-                        "profit_lock_phase1_ratio": r,
-                        "profit_lock_phase2_minutes": 9999,
-                        "profit_lock_phase2_ratio": r,
-                    })
-    return params
-
-
-PL_1STAGE_PARAMS = _make_pl_1stage_params()
-
-
 def _make_maxtrade_params() -> list[dict]:
-    """Test max_trades 2/3/4 with best 1-stage PL configs per scenario."""
+    """Test max_trades 2/3/4 with best PL configs per scenario."""
     best_pl = {
         "long_only": [(20, 0.30), (20, 0.40)],
         "both_pl":   [(20, 0.30), (20, 0.40)],
@@ -686,10 +573,8 @@ def _make_maxtrade_params() -> list[dict]:
                 params.append({
                     **base,
                     "enable_profit_lock": True,
-                    "profit_lock_phase1_minutes": m,
-                    "profit_lock_phase1_ratio": r,
-                    "profit_lock_phase2_minutes": 9999,
-                    "profit_lock_phase2_ratio": r,
+                    "profit_lock_minutes": m,
+                    "profit_lock_ratio": r,
                 })
             if direction == "both":
                 for m, r in best_pl["both_pll"]:
@@ -697,10 +582,8 @@ def _make_maxtrade_params() -> list[dict]:
                         **base,
                         "enable_profit_lock": True,
                         "profit_lock_long_only": True,
-                        "profit_lock_phase1_minutes": m,
-                        "profit_lock_phase1_ratio": r,
-                        "profit_lock_phase2_minutes": 9999,
-                        "profit_lock_phase2_ratio": r,
+                        "profit_lock_minutes": m,
+                        "profit_lock_ratio": r,
                     })
     return params
 
@@ -834,7 +717,7 @@ def parse_args():
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor", "kl_buf", "or_sl", "profit_lock", "pl_focused", "pl_1stage", "maxtrade", "or_kl"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor", "kl_buf", "or_sl", "profit_lock", "maxtrade", "or_kl"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -917,10 +800,6 @@ def main():
         sweep_params = OR_SL_PARAMS
     elif args.grid == "profit_lock":
         sweep_params = PROFIT_LOCK_PARAMS
-    elif args.grid == "pl_focused":
-        sweep_params = PL_FOCUSED_PARAMS
-    elif args.grid == "pl_1stage":
-        sweep_params = PL_1STAGE_PARAMS
     elif args.grid == "maxtrade":
         sweep_params = MAXTRADE_PARAMS
     elif args.grid == "or_kl":

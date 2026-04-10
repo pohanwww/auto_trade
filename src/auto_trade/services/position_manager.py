@@ -73,10 +73,8 @@ class PositionManagerConfig:
         # 利潤鎖定（Profit Lock）
         enable_profit_lock: bool = False,
         profit_lock_long_only: bool = False,
-        profit_lock_phase1_minutes: int = 30,
-        profit_lock_phase1_ratio: float = 0.4,
-        profit_lock_phase2_minutes: int = 60,
-        profit_lock_phase2_ratio: float = 0.6,
+        profit_lock_minutes: int = 30,
+        profit_lock_ratio: float = 0.4,
         # KL 耗盡後 ATR-based trailing
         kl_exhausted_atr_multiplier: float = 0.5,
     ):
@@ -116,10 +114,8 @@ class PositionManagerConfig:
         # 利潤鎖定
         self.enable_profit_lock = enable_profit_lock
         self.profit_lock_long_only = profit_lock_long_only
-        self.profit_lock_phase1_minutes = profit_lock_phase1_minutes
-        self.profit_lock_phase1_ratio = profit_lock_phase1_ratio
-        self.profit_lock_phase2_minutes = profit_lock_phase2_minutes
-        self.profit_lock_phase2_ratio = profit_lock_phase2_ratio
+        self.profit_lock_minutes = profit_lock_minutes
+        self.profit_lock_ratio = profit_lock_ratio
         self.kl_exhausted_atr_multiplier = kl_exhausted_atr_multiplier
 
     @classmethod
@@ -175,10 +171,8 @@ class PositionManagerConfig:
             # 利潤鎖定
             enable_profit_lock=trading.get("enable_profit_lock", False),
             profit_lock_long_only=trading.get("profit_lock_long_only", False),
-            profit_lock_phase1_minutes=trading.get("profit_lock_phase1_minutes", 30),
-            profit_lock_phase1_ratio=trading.get("profit_lock_phase1_ratio", 0.4),
-            profit_lock_phase2_minutes=trading.get("profit_lock_phase2_minutes", 60),
-            profit_lock_phase2_ratio=trading.get("profit_lock_phase2_ratio", 0.6),
+            profit_lock_minutes=trading.get("profit_lock_minutes", 30),
+            profit_lock_ratio=trading.get("profit_lock_ratio", 0.4),
             # KL 耗盡後 ATR-based trailing
             kl_exhausted_atr_multiplier=trading.get("kl_exhausted_atr_multiplier", 0.5),
         )
@@ -1368,12 +1362,9 @@ class PositionManager:
         hold_minutes = (now - entry_time).total_seconds() / 60.0
 
         cfg = self.config
-        if hold_minutes >= cfg.profit_lock_phase2_minutes:
-            lock_ratio = cfg.profit_lock_phase2_ratio
-        elif hold_minutes >= cfg.profit_lock_phase1_minutes:
-            lock_ratio = cfg.profit_lock_phase1_ratio
-        else:
+        if hold_minutes < cfg.profit_lock_minutes:
             return
+        lock_ratio = cfg.profit_lock_ratio
 
         if is_long:
             lock_stop = entry_price + int(peak_profit * lock_ratio)
