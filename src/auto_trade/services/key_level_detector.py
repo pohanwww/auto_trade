@@ -438,6 +438,9 @@ class SessionData:
     prev_night_close: int | None = None
     today_open: int | None = None
     or_range: int = 1
+    or_high: int | None = None
+    or_low: int | None = None
+    or_kl_weight: float = 2.0
     prev_day_kbars: list[KBar] = field(default_factory=list)
     prev_night_kbars: list[KBar] = field(default_factory=list)
 
@@ -493,6 +496,18 @@ def find_confluence_levels(
         prev_night_low=session.prev_night_low,
         prev_night_close=session.prev_night_close,
     ))
+
+    # 5. OR High / Low
+    if session.or_high is not None:
+        raw.append(RawKeyLevel(
+            price=session.or_high, weight=session.or_kl_weight,
+            method="session", label="OR_H",
+        ))
+    if session.or_low is not None:
+        raw.append(RawKeyLevel(
+            price=session.or_low, weight=session.or_kl_weight,
+            method="session", label="OR_L",
+        ))
 
     # Merge into zones
     zones = merge_to_zones(raw, zone_tolerance=zone_tolerance)
@@ -597,6 +612,9 @@ def calculate_key_levels_from_kbars(
     in_night_session: bool = False,
     *,
     or_range: int = 1,
+    or_high: int | None = None,
+    or_low: int | None = None,
+    or_kl_weight: float = 2.0,
     swing_period: int = 10,
     cluster_tolerance: int = 50,
     zone_tolerance: int = 50,
@@ -666,6 +684,9 @@ def calculate_key_levels_from_kbars(
         prev_night_close=night_ohlc.get("close"),
         today_open=today_open,
         or_range=or_range,
+        or_high=or_high,
+        or_low=or_low,
+        or_kl_weight=or_kl_weight,
         prev_day_kbars=agg_day,
         prev_night_kbars=agg_night,
     )

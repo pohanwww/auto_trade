@@ -1,23 +1,21 @@
-"""Key Level Breakout / Bounce Strategy.
+"""Key Level Breakout Strategy.
 
 Intraday strategy for Taiwan futures that uses confluence key levels
-detected from previous day + night sessions to generate breakout and
-bounce entry signals.
+detected from previous day + night sessions to generate breakout entry signals.
 
 === Two operating modes ===
 1. **OR mode** (``use_or=True``): Calculate Opening Range first, use it
    as a trend filter (only long above OR_High, only short below OR_Low),
-   then enter on key-level breakout/bounce in the filtered direction.
-2. **Pure mode** (``use_or=False``): Trade any key-level breakout/bounce
+   then enter on key-level breakout in the filtered direction.
+2. **Pure mode** (``use_or=False``): Trade any key-level breakout
    without an OR filter.
 
 === Key level usage ===
-- Top N levels (by score) → signal levels for breakout/bounce entry
+- Top N levels (by score) → signal levels for breakout entry
 - Remaining levels → trailing stop ladder passed to PositionManager
 
 === Entry logic ===
 - Close-based breakout with ATR buffer
-- Bounce: wick touches level but close stays on original side
 - Instant entry: if intra-bar penetration exceeds ATR threshold
 
 === Exit ===
@@ -78,7 +76,6 @@ class KeyLevelStrategy(BaseStrategy):
         signal_level_count: int = 5,
         # --- Signal detection ---
         breakout_buffer: float = 0.2,
-        bounce_buffer: float = 0.3,
         instant_threshold: float = 0.3,
         atr_period: int = 14,
         # --- Direction ---
@@ -94,7 +91,6 @@ class KeyLevelStrategy(BaseStrategy):
         key_level_trail_mode: str = "current",  # "current" or "previous"
         # --- Entry types ---
         use_breakout: bool = True,
-        use_bounce: bool = True,
         # --- Trend filter ---
         trend_filter: str = "or",  # "or", "ema", "none"
         trend_filter_ema_period: int = 200,
@@ -126,7 +122,6 @@ class KeyLevelStrategy(BaseStrategy):
         self.signal_level_count = signal_level_count
         # Signal detection
         self.breakout_buffer = breakout_buffer
-        self.bounce_buffer = bounce_buffer
         self.instant_threshold = instant_threshold
         self.atr_period = atr_period
 
@@ -145,22 +140,19 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Entry types
         self.use_breakout = use_breakout
-        self.use_bounce = use_bounce
 
         # Per-direction overrides (fallback to base value when not set)
         self.use_breakout_long = kwargs.get("use_breakout_long", use_breakout)
         self.use_breakout_short = kwargs.get("use_breakout_short", use_breakout)
-        self.use_bounce_long = kwargs.get("use_bounce_long", use_bounce)
-        self.use_bounce_short = kwargs.get("use_bounce_short", use_bounce)
         self.use_instant_long = kwargs.get("use_instant_long", True)
         self.use_instant_short = kwargs.get("use_instant_short", True)
         self.breakout_buffer_long = kwargs.get("breakout_buffer_long", breakout_buffer)
         self.breakout_buffer_short = kwargs.get("breakout_buffer_short", breakout_buffer)
         self.instant_threshold_long = kwargs.get("instant_threshold_long", instant_threshold)
         self.instant_threshold_short = kwargs.get("instant_threshold_short", instant_threshold)
-        self.bounce_buffer_long = kwargs.get("bounce_buffer_long", bounce_buffer)
-        self.bounce_buffer_short = kwargs.get("bounce_buffer_short", bounce_buffer)
-        self.bounce_ignore_or = kwargs.get("bounce_ignore_or", False)
+        self.or_sl_use_boundary = kwargs.get("or_sl_use_boundary", False)
+        self.or_as_kl = kwargs.get("or_as_kl", False)
+        self.or_kl_weight = kwargs.get("or_kl_weight", 2.0)
 
         # Trend filter
         self.trend_filter = trend_filter
@@ -171,19 +163,19 @@ class KeyLevelStrategy(BaseStrategy):
             "  mode=%s | timeframe=%s | session_lookback=%d\n"
             "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
-            "  Signal: brk_buf=%.2f, bnc_buf=%.2f, instant=%.2f, atr_period=%d\n"
+            "  Signal: brk_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
             "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
-            "  Entry types: breakout=%s, bounce=%s",
+            "  Entry types: breakout=%s",
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
             use_or, or_bars, or_start_time, entry_end_time, session_end_time,
             swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
-            breakout_buffer, bounce_buffer, instant_threshold, atr_period,
+            breakout_buffer, instant_threshold, atr_period,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
-            use_breakout, use_bounce,
+            use_breakout,
         )
 
         # Log per-direction overrides (only when different from base)
@@ -192,10 +184,6 @@ class KeyLevelStrategy(BaseStrategy):
             overrides.append(f"breakout_long={self.use_breakout_long}")
         if self.use_breakout_short != use_breakout:
             overrides.append(f"breakout_short={self.use_breakout_short}")
-        if self.use_bounce_long != use_bounce:
-            overrides.append(f"bounce_long={self.use_bounce_long}")
-        if self.use_bounce_short != use_bounce:
-            overrides.append(f"bounce_short={self.use_bounce_short}")
         if not self.use_instant_long:
             overrides.append("instant_long=False")
         if not self.use_instant_short:
@@ -208,12 +196,8 @@ class KeyLevelStrategy(BaseStrategy):
             overrides.append(f"ib_long={self.instant_threshold_long:.2f}")
         if self.instant_threshold_short != instant_threshold:
             overrides.append(f"ib_short={self.instant_threshold_short:.2f}")
-        if self.bounce_buffer_long != bounce_buffer:
-            overrides.append(f"bnc_long={self.bounce_buffer_long:.2f}")
-        if self.bounce_buffer_short != bounce_buffer:
-            overrides.append(f"bnc_short={self.bounce_buffer_short:.2f}")
-        if self.bounce_ignore_or:
-            overrides.append("bounce_ignore_or=True")
+        if self.or_sl_use_boundary:
+            overrides.append("or_sl_use_boundary=True")
         if overrides:
             _log("  Per-direction: %s", ", ".join(overrides))
 
@@ -327,22 +311,10 @@ class KeyLevelStrategy(BaseStrategy):
         signal = self._check_breakout_target(
             current_price, kbar, prev_kbar,
             allow_long, allow_short, bar_close, symbol,
+            kbar_list=kbar_list,
         )
         if signal:
             return signal
-
-        # === Bounce check (bar close only, scans all signal levels) ===
-        if bar_close:
-            if self.bounce_ignore_or:
-                bounce_long = not self.short_only
-                bounce_short = not self.long_only
-            else:
-                bounce_long, bounce_short = allow_long, allow_short
-            signal = self._check_bounce(
-                kbar, prev_kbar, bounce_long, bounce_short, symbol,
-            )
-            if signal:
-                return signal
 
         return self._hold(symbol, current_price, "no signal")
 
@@ -519,9 +491,9 @@ class KeyLevelStrategy(BaseStrategy):
             triggers.append((short_p, "below"))
         return triggers
 
-    def on_position_closed(self, exit_price: int | None = None) -> None:
+    def on_position_closed(self, exit_price: int | None = None, bar_time: datetime | None = None) -> None:
         tf_min = self._TF_MINUTES.get(self.timeframe, 5)
-        now = datetime.now()
+        now = bar_time if bar_time is not None else datetime.now()
         mins_past = now.minute % tf_min
         next_bar = now.replace(second=0, microsecond=0) + timedelta(
             minutes=tf_min - mins_past,
@@ -551,6 +523,9 @@ class KeyLevelStrategy(BaseStrategy):
             self._current_trading_day,
             in_night_session=in_night,
             or_range=self._or_range or 1,
+            or_high=self._or_high if self.or_as_kl else None,
+            or_low=self._or_low if self.or_as_kl else None,
+            or_kl_weight=self.or_kl_weight,
             swing_period=self.swing_period,
             cluster_tolerance=self.cluster_tolerance,
             zone_tolerance=self.zone_tolerance,
@@ -641,6 +616,7 @@ class KeyLevelStrategy(BaseStrategy):
         entry_price: int,
         sig,
         kbar: KBar,
+        prev_kbar=None,
     ) -> dict:
         atr = self._atr
         meta: dict = {
@@ -655,22 +631,25 @@ class KeyLevelStrategy(BaseStrategy):
             meta["or_mid"] = self._or_mid
             meta["or_range"] = self._or_range
 
-        # Stop loss — depends on signal type
-        is_bounce = "bounce" in sig.signal_type
-        if is_bounce:
-            # Bounce: SL at the bar's extreme (the wick that touched the level)
-            sl_price = int(kbar.low) if is_long else int(kbar.high)
-        else:
-            # Breakout: SL at the key level BELOW the signal level (not entry)
-            signal_level = sig.key_level.price
-            sl_price = self._find_sl_level(is_long, signal_level)
-            if sl_price is not None:
-                buf_pts = int(atr * self.key_level_buffer)
-                sl_price = (
-                    sl_price - buf_pts
-                    if is_long
-                    else sl_price + buf_pts
-                )
+        # Stop loss — SL at key level below/above the signal level
+        buf_pts = int(atr * self.key_level_buffer)
+        signal_level = sig.key_level.price
+        sl_price = self._find_sl_level(is_long, signal_level)
+        if (sl_price is not None and self.or_sl_use_boundary
+                and self.use_or and self._or_calculated
+                and self._or_low is not None and self._or_high is not None
+                and self._or_low <= sl_price <= self._or_high):
+            replaced = self._or_low if is_long else self._or_high
+            _log("  SL KL %d inside OR [%d-%d] → replaced with OR %s %d",
+                 sl_price, self._or_low, self._or_high,
+                 "Low" if is_long else "High", replaced)
+            sl_price = replaced
+        if sl_price is not None:
+            sl_price = (
+                sl_price - buf_pts
+                if is_long
+                else sl_price + buf_pts
+            )
         # Fallback: ATR-based
         if sl_price is None:
             sl_price = (
@@ -717,13 +696,14 @@ class KeyLevelStrategy(BaseStrategy):
                 meta["key_levels"] = levels
                 meta["key_level_buffer"] = int(atr * self.key_level_buffer)
                 meta["key_level_trail_mode"] = self.key_level_trail_mode
+                meta["atr"] = atr
 
         dir_str = "LONG" if is_long else "SHORT"
         _log(
             "  Entry metadata [%s]: entry=%d | SL=%s (method=%s) | TP=%s\n"
             "    signal_level=%d | trailing_levels=%s | trail_mode=%s",
             dir_str, entry_price,
-            meta.get("override_stop_loss_price"), "bounce_extreme" if "bounce" in sig.signal_type else "next_kl",
+            meta.get("override_stop_loss_price"), "next_kl",
             meta.get("override_take_profit_price", "none(TS only)"),
             sig.key_level.price,
             meta.get("key_levels", []),
@@ -880,6 +860,7 @@ class KeyLevelStrategy(BaseStrategy):
         allow_short: bool,
         bar_close: bool,
         symbol: str,
+        kbar_list=None,
     ) -> StrategySignal | None:
         """Check if price has broken through the active target level.
 
@@ -907,12 +888,14 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         True, kl, int(kl.price + ibuf), True,
                         kbar, session_name, "breakout_long", symbol,
+                        prev_kbar=prev_kbar,
                     )
                 if (int(kbar.close) > kl.price + bbuf
                         and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_long", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
             elif bar_close and self.is_live:
@@ -921,6 +904,7 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         True, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_long", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
             else:
@@ -930,6 +914,7 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         True, kl, int(current_price), True,
                         kbar, session_name, "breakout_long", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
         # --- Short breakout ---
@@ -947,12 +932,14 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         False, kl, int(kl.price - ibuf), True,
                         kbar, session_name, "breakout_short", symbol,
+                        prev_kbar=prev_kbar,
                     )
                 if (int(kbar.close) < kl.price - bbuf
                         and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_short", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
             elif bar_close and self.is_live:
@@ -961,6 +948,7 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         False, kl, int(kbar.close), False,
                         kbar, session_name, "breakout_short", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
             else:
@@ -970,48 +958,11 @@ class KeyLevelStrategy(BaseStrategy):
                     return self._emit_entry(
                         False, kl, int(current_price), True,
                         kbar, session_name, "breakout_short", symbol,
+                        prev_kbar=prev_kbar,
                     )
 
         return None
 
-    def _check_bounce(
-        self,
-        kbar,
-        prev_kbar,
-        allow_long: bool,
-        allow_short: bool,
-        symbol: str,
-    ) -> StrategySignal | None:
-        """Check bounce signals at bar close (scan all signal levels)."""
-        if (not self.use_bounce_long and not self.use_bounce_short) or self._atr <= 0:
-            return None
-
-        buf_long = self._atr * self.bounce_buffer_long
-        buf_short = self._atr * self.bounce_buffer_short
-        close = int(kbar.close)
-        high = int(kbar.high)
-        low = int(kbar.low)
-        ref = int(prev_kbar.close)
-        session_name = self._get_trade_session(kbar.time)
-
-        for kl in self._signal_levels:
-            level = kl.price
-
-            if allow_long and self.use_bounce_long and low <= level + buf_long and close > level:
-                if ref > level:
-                    return self._emit_entry(
-                        True, kl, close, False,
-                        kbar, session_name, "bounce_long", symbol,
-                    )
-
-            if allow_short and self.use_bounce_short and high >= level - buf_short and close < level:
-                if ref < level:
-                    return self._emit_entry(
-                        False, kl, close, False,
-                        kbar, session_name, "bounce_short", symbol,
-                    )
-
-        return None
 
     def _emit_entry(
         self,
@@ -1023,6 +974,7 @@ class KeyLevelStrategy(BaseStrategy):
         session_name: str | None,
         signal_type_str: str,
         symbol: str,
+        prev_kbar=None,
     ) -> StrategySignal:
         """Build and return an entry signal, updating trade counters."""
         self._trades_today += 1
@@ -1038,7 +990,7 @@ class KeyLevelStrategy(BaseStrategy):
             instant=instant,
             score=kl.score,
         )
-        meta = self._build_entry_metadata(is_long, entry_price, sig, kbar)
+        meta = self._build_entry_metadata(is_long, entry_price, sig, kbar, prev_kbar=prev_kbar)
         if instant:
             meta["instant_entry"] = True
 
@@ -1172,16 +1124,11 @@ class KeyLevelStrategy(BaseStrategy):
             parts.append("PureKL")
         parts.append(f"sig={self.signal_level_count}")
         parts.append(f"brk_buf={self.breakout_buffer}")
-        parts.append(f"bnc_buf={self.bounce_buffer}")
         if self.long_only:
             parts.append("LongOnly")
         if self.short_only:
             parts.append("ShortOnly")
         parts.append(f"max{self.max_trades_per_day}x/day")
-        if self.use_breakout and not self.use_bounce:
-            parts.append("BreakoutOnly")
-        elif self.use_bounce and not self.use_breakout:
-            parts.append("BounceOnly")
         return f"KeyLevel({', '.join(parts)})"
 
 

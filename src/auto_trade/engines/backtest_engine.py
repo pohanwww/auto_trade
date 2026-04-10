@@ -326,7 +326,7 @@ class BacktestEngine:
                         pending_entry_price = None
                         pending_entry_time = None
                         pending_direction = None
-                        unit.strategy.on_position_closed()
+                        unit.strategy.on_position_closed(bar_time=current_time)
 
             # ── Step 2.5: 持倉中 + 加碼啟用 → 評估加碼信號 ──
             if (

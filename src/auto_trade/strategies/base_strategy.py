@@ -5,6 +5,7 @@
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from auto_trade.models.market import KBarList
 from auto_trade.models.strategy import StrategySignal
@@ -69,11 +70,12 @@ class BaseStrategy(ABC):
         """Legacy: 回傳 instant breakout 的觸發價位列表。"""
         return []
 
-    def on_position_closed(self, exit_price: int | None = None) -> None:  # noqa: B027
+    def on_position_closed(self, exit_price: int | None = None, bar_time: datetime | None = None) -> None:  # noqa: B027
         """平倉後回呼（可選覆寫）
 
         供需要在平倉後重設內部狀態的策略使用（如冷卻計數器）。
         exit_price: 平倉成交價，用於更新 prev_close 等狀態。
+        bar_time: 回測用 — 模擬的 K 棒時間，None 表示使用 datetime.now()。
         """
 
     def __repr__(self) -> str:

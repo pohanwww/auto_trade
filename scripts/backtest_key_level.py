@@ -40,6 +40,9 @@ PERIODS = {
     "2024": ("2024-01-01", "2024-12-31"),
     "2025": ("2025-01-01", "2025-12-31"),
     # ── 常用驗證期 ──
+    "2024H1": ("2024-01-01", "2024-06-30"),
+    "2024H2": ("2024-07-01", "2024-12-31"),
+    "2025H1": ("2025-01-01", "2025-06-30"),
     "2025H2": ("2025-07-01", "2025-12-31"),
     "2026Q1": ("2026-01-01", "2026-03-20"),
     "202603": ("2026-03-01", "2026-03-20"),
@@ -52,8 +55,7 @@ PARAM_GRID_TRAILING = {
     "direction": ["long_only"],
     "max_trades_per_day": [2, 3],
     "breakout_buffer": [0.3],
-    "bounce_buffer": [0.3],
-    "entry_type": ["breakout_only", "both"],
+    "entry_type": ["breakout_only"],
     "tp_atr_multiplier": [0],
     "signal_level_count": [3, 7],
     "key_level_trail_mode": ["current", "previous"],
@@ -76,7 +78,6 @@ def make_unit(
     long_only = params["direction"] == "long_only"
     short_only = params["direction"] == "short_only"
     use_breakout = params["entry_type"] in ("both", "breakout_only")
-    use_bounce = params["entry_type"] in ("both", "bounce_only")
 
     trail_mode = params.get("key_level_trail_mode", "current")
     session_mode = params.get("session_mode", "day_only")
@@ -112,7 +113,6 @@ def make_unit(
         zone_tolerance=50,
         signal_level_count=params.get("signal_level_count", 5),
         breakout_buffer=params["breakout_buffer"],
-        bounce_buffer=params["bounce_buffer"],
         instant_threshold=params.get("instant_threshold", 0.3),
         atr_period=14,
         long_only=long_only,
@@ -125,10 +125,12 @@ def make_unit(
         key_level_buffer=params.get("key_level_buffer", 0.15),
         key_level_trail_mode=trail_mode,
         use_breakout=use_breakout,
-        use_bounce=use_bounce,
         trend_filter=params.get("trend_filter", "or"),
         trend_filter_ema_period=params.get("trend_filter_ema_period", 200),
         timeframe=timeframe,
+        or_sl_use_boundary=params.get("or_sl_use_boundary", False),
+        or_as_kl=params.get("or_as_kl", False),
+        or_kl_weight=params.get("or_kl_weight", 2.0),
     )
 
     leg_split = params.get("leg_split", "all_ts")
@@ -150,6 +152,13 @@ def make_unit(
         timeframe=timeframe,
         enable_macd_fast_stop=False,
         force_exit_time=force_exit_time,
+        enable_profit_lock=params.get("enable_profit_lock", False),
+        profit_lock_long_only=params.get("profit_lock_long_only", False),
+        profit_lock_phase1_minutes=params.get("profit_lock_phase1_minutes", 30),
+        profit_lock_phase1_ratio=params.get("profit_lock_phase1_ratio", 0.4),
+        profit_lock_phase2_minutes=params.get("profit_lock_phase2_minutes", 60),
+        profit_lock_phase2_ratio=params.get("profit_lock_phase2_ratio", 0.6),
+        kl_exhausted_atr_multiplier=params.get("kl_exhausted_atr_multiplier", 0.5),
     )
 
     tf = params.get("trend_filter", "or")
@@ -163,9 +172,7 @@ def make_unit(
     else:
         or_tag = "Pure"
     dir_tag = {"both": "B", "long_only": "L", "short_only": "S"}[params["direction"]]
-    entry_tag = {"both": "BK+BC", "breakout_only": "BK", "bounce_only": "BC"}[
-        params["entry_type"]
-    ]
+    entry_tag = "BK"
     sig_n = params.get("signal_level_count", 5)
     kl_buf = params.get("key_level_buffer", 0.15)
     trail_tag = "prev" if trail_mode == "previous" else "cur"
@@ -184,10 +191,28 @@ def make_unit(
         max_tag = f"day{max_day}/night{max_night}"
     else:
         max_tag = f"max{params['max_trades_per_day']}/d"
+    or_sl_tag = " orSL" if params.get("or_sl_use_boundary") else ""
+    if params.get("or_as_kl"):
+        okw = params.get("or_kl_weight", 2.0)
+        or_kl_tag = f" orKL(w={okw:.1f})"
+    else:
+        or_kl_tag = ""
+    pl_tag = ""
+    if params.get("enable_profit_lock"):
+        p1m = params.get("profit_lock_phase1_minutes", 30)
+        p1r = params.get("profit_lock_phase1_ratio", 0.4)
+        p2m = params.get("profit_lock_phase2_minutes", 60)
+        p2r = params.get("profit_lock_phase2_ratio", 0.6)
+        lo_suffix = "L" if params.get("profit_lock_long_only") else ""
+        pl_tag = f" PL{lo_suffix}({p1m}m/{p1r:.0%},{p2m}m/{p2r:.0%})"
+    atr_fb_tag = ""
+    atr_mult = params.get("kl_exhausted_atr_multiplier", 0.5)
+    if atr_mult != 0.5:
+        atr_fb_tag = f" atrFB={atr_mult}"
     name = (
         f"#{unit_id:03d} {or_tag} {dir_tag} {sess_tag} "
         f"{entry_tag} {trail_tag} buf={buf_str} {bb_ib_tag} "
-        f"{max_tag} n={sig_n}"
+        f"{max_tag} n={sig_n}{or_sl_tag}{or_kl_tag}{pl_tag}{atr_fb_tag}"
     )
 
     return TradingUnit(name=name, strategy=strategy, pm_config=pm_config)
@@ -416,7 +441,6 @@ def run_sweep(
 
 _FIXED = {
     "breakout_buffer": 0.3,
-    "bounce_buffer": 0.3,
     "tp_atr_multiplier": 0,
     "sl_atr_multiplier": 1.0,
     "leg_split": "all_ts",
@@ -467,13 +491,252 @@ KL_BUF_PARAMS = [
     ]
 ]
 
+OR_SL_PARAMS = [
+    # Baseline (no OR SL boundary) vs new OR SL boundary — day + night × both directions
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),
+     "or_sl_use_boundary": False},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "both"),
+     "or_sl_use_boundary": True},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+     "or_sl_use_boundary": False},
+    {**_p(True, "day_only",   "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+     "or_sl_use_boundary": True},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),
+     "or_sl_use_boundary": False, "trend_filter": "or"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "both"),
+     "or_sl_use_boundary": True, "trend_filter": "or"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+     "or_sl_use_boundary": False, "trend_filter": "or"},
+    {**_p(True, "night_only", "breakout_only", "previous", 0.15, 2, 7, "long_only"),
+     "or_sl_use_boundary": True, "trend_filter": "or"},
+]
+
+def _make_profit_lock_params() -> list[dict]:
+    """Profit Lock sweep: phase1_minutes × phase1_ratio coarse grid.
+
+    phase2 = phase1 + 30min, ratio2 = ratio1 + 0.2 (capped at 0.8).
+    ATR fallback multiplier fixed at 0.5.
+    """
+    configs = [
+        (True, "day_only",   "long_only", "or"),
+        (True, "day_only",   "both",      "or"),
+        (True, "night_only", "long_only", "or"),
+        (True, "night_only", "both",      "or"),
+    ]
+    params = []
+    for use_or, session, direction, tf in configs:
+        base = {
+            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
+            "trend_filter": tf,
+            "kl_exhausted_atr_multiplier": 0.5,
+        }
+        # Baseline: no profit lock
+        params.append({**base, "enable_profit_lock": False})
+        # Coarse grid: phase1_minutes × phase1_ratio
+        for p1m in [20, 30, 45]:
+            for p1r in [0.3, 0.4, 0.5]:
+                p2m = p1m + 30
+                p2r = round(min(p1r + 0.2, 0.8), 2)
+                params.append({
+                    **base,
+                    "enable_profit_lock": True,
+                    "profit_lock_phase1_minutes": p1m,
+                    "profit_lock_phase1_ratio": p1r,
+                    "profit_lock_phase2_minutes": p2m,
+                    "profit_lock_phase2_ratio": p2r,
+                })
+        # Long-only PL for "both" direction configs
+        if direction == "both":
+            for p1m in [20, 30, 45]:
+                for p1r in [0.3, 0.4, 0.5]:
+                    p2m = p1m + 30
+                    p2r = round(min(p1r + 0.2, 0.8), 2)
+                    params.append({
+                        **base,
+                        "enable_profit_lock": True,
+                        "profit_lock_long_only": True,
+                        "profit_lock_phase1_minutes": p1m,
+                        "profit_lock_phase1_ratio": p1r,
+                        "profit_lock_phase2_minutes": p2m,
+                        "profit_lock_phase2_ratio": p2r,
+                    })
+    return params
+
+
+PROFIT_LOCK_PARAMS = _make_profit_lock_params()
+
+
+def _make_pl_focused_params() -> list[dict]:
+    """Focused PL validation: 4 scenarios × (baseline + 4 PL + 4 PLL for both)."""
+    pl_variants = [
+        (20, 0.50, 50, 0.70),
+        (30, 0.50, 60, 0.70),
+        (20, 0.30, 50, 0.50),
+        (30, 0.30, 60, 0.50),
+    ]
+    configs = [
+        (True, "day_only",   "long_only", "or"),
+        (True, "day_only",   "both",      "or"),
+        (True, "night_only", "long_only", "or"),
+        (True, "night_only", "both",      "or"),
+    ]
+    params = []
+    for use_or, session, direction, tf in configs:
+        base = {
+            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
+            "trend_filter": tf,
+            "kl_exhausted_atr_multiplier": 0.5,
+        }
+        params.append({**base, "enable_profit_lock": False})
+        for p1m, p1r, p2m, p2r in pl_variants:
+            params.append({
+                **base,
+                "enable_profit_lock": True,
+                "profit_lock_phase1_minutes": p1m,
+                "profit_lock_phase1_ratio": p1r,
+                "profit_lock_phase2_minutes": p2m,
+                "profit_lock_phase2_ratio": p2r,
+            })
+        if direction == "both":
+            for p1m, p1r, p2m, p2r in pl_variants:
+                params.append({
+                    **base,
+                    "enable_profit_lock": True,
+                    "profit_lock_long_only": True,
+                    "profit_lock_phase1_minutes": p1m,
+                    "profit_lock_phase1_ratio": p1r,
+                    "profit_lock_phase2_minutes": p2m,
+                    "profit_lock_phase2_ratio": p2r,
+                })
+    return params
+
+
+PL_FOCUSED_PARAMS = _make_pl_focused_params()
+
+
+def _make_pl_1stage_params() -> list[dict]:
+    """Single-stage PL: phase2_ratio == phase1_ratio (no escalation)."""
+    ratios = [0.30, 0.40, 0.50]
+    minutes = [20, 30, 45]
+    configs = [
+        (True, "day_only",   "long_only", "or"),
+        (True, "day_only",   "both",      "or"),
+        (True, "night_only", "long_only", "or"),
+        (True, "night_only", "both",      "or"),
+    ]
+    params = []
+    for use_or, session, direction, tf in configs:
+        base = {
+            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
+            "trend_filter": tf,
+            "kl_exhausted_atr_multiplier": 0.5,
+        }
+        params.append({**base, "enable_profit_lock": False})
+        for m in minutes:
+            for r in ratios:
+                params.append({
+                    **base,
+                    "enable_profit_lock": True,
+                    "profit_lock_phase1_minutes": m,
+                    "profit_lock_phase1_ratio": r,
+                    "profit_lock_phase2_minutes": 9999,
+                    "profit_lock_phase2_ratio": r,
+                })
+        if direction == "both":
+            for m in minutes:
+                for r in ratios:
+                    params.append({
+                        **base,
+                        "enable_profit_lock": True,
+                        "profit_lock_long_only": True,
+                        "profit_lock_phase1_minutes": m,
+                        "profit_lock_phase1_ratio": r,
+                        "profit_lock_phase2_minutes": 9999,
+                        "profit_lock_phase2_ratio": r,
+                    })
+    return params
+
+
+PL_1STAGE_PARAMS = _make_pl_1stage_params()
+
+
+def _make_maxtrade_params() -> list[dict]:
+    """Test max_trades 2/3/4 with best 1-stage PL configs per scenario."""
+    best_pl = {
+        "long_only": [(20, 0.30), (20, 0.40)],
+        "both_pl":   [(20, 0.30), (20, 0.40)],
+        "both_pll":  [(20, 0.30), (20, 0.40)],
+    }
+    configs = [
+        (True, "day_only",   "long_only", "or"),
+        (True, "day_only",   "both",      "or"),
+        (True, "night_only", "long_only", "or"),
+        (True, "night_only", "both",      "or"),
+    ]
+    params = []
+    for use_or, session, direction, tf in configs:
+        for maxt in [2, 3, 4]:
+            base = {
+                **_p(use_or, session, "breakout_only", "previous", 0.15, maxt, 7, direction),
+                "trend_filter": tf,
+                "kl_exhausted_atr_multiplier": 0.5,
+            }
+            params.append({**base, "enable_profit_lock": False})
+            for m, r in best_pl["long_only" if direction == "long_only" else "both_pl"]:
+                params.append({
+                    **base,
+                    "enable_profit_lock": True,
+                    "profit_lock_phase1_minutes": m,
+                    "profit_lock_phase1_ratio": r,
+                    "profit_lock_phase2_minutes": 9999,
+                    "profit_lock_phase2_ratio": r,
+                })
+            if direction == "both":
+                for m, r in best_pl["both_pll"]:
+                    params.append({
+                        **base,
+                        "enable_profit_lock": True,
+                        "profit_lock_long_only": True,
+                        "profit_lock_phase1_minutes": m,
+                        "profit_lock_phase1_ratio": r,
+                        "profit_lock_phase2_minutes": 9999,
+                        "profit_lock_phase2_ratio": r,
+                    })
+    return params
+
+
+MAXTRADE_PARAMS = _make_maxtrade_params()
+
+
+def _make_or_kl_params() -> list[dict]:
+    """Compare baseline vs or_as_kl (weight=1/2/3) across all 4 scenarios."""
+    configs = [
+        (True, "day_only",   "long_only", "or"),
+        (True, "day_only",   "both",      "or"),
+        (True, "night_only", "long_only", "or"),
+        (True, "night_only", "both",      "or"),
+    ]
+    params = []
+    for use_or, session, direction, tf in configs:
+        base = {
+            **_p(use_or, session, "breakout_only", "previous", 0.15, 2, 7, direction),
+            "trend_filter": tf,
+            "kl_exhausted_atr_multiplier": 0.5,
+        }
+        params.append({**base, "or_as_kl": False})
+        for w in [1.0, 2.0, 3.0]:
+            params.append({**base, "or_as_kl": True, "or_kl_weight": w})
+    return params
+
+
+OR_KL_PARAMS = _make_or_kl_params()
+
 
 def _pb(use_or, session, direction, bb, ib, trend_filter="or"):
     """Helper for instant buffer sweep: build param dict with specific bb/ib."""
     return {
         **_FIXED,
         "breakout_buffer": bb,
-        "bounce_buffer": 0.3,
         "instant_threshold": ib,
         "direction": direction,
         "use_or": use_or,
@@ -565,13 +828,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Key Level Strategy Sweep")
     parser.add_argument(
         "--period",
-        choices=list(PERIODS.keys()) + ["all_con", "all_bull", "all_bear", "validate"],
+        choices=list(PERIODS.keys()) + ["all_con", "all_bull", "all_bear", "all_test", "pl_validate", "pl_1s_test", "validate"],
         default="con_quiet",
         help="Period to test. all_con/all_bull/all_bear = run all of that type.",
     )
     parser.add_argument(
         "--grid",
-        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor", "kl_buf"],
+        choices=["trailing", "instant_buf", "instant_buf_fine", "nopvt_sweep", "trail_anchor", "kl_buf", "or_sl", "profit_lock", "pl_focused", "pl_1stage", "maxtrade", "or_kl"],
         default=None,
         help="Parameter grid to use for sweep.",
     )
@@ -603,6 +866,12 @@ def parse_args():
         action="store_true",
         help="Run multi-timeframe sweep: 3 periods × 4 TFs × 2 strategies (Pure L + OR B)",
     )
+    parser.add_argument(
+        "--slice",
+        type=str,
+        default=None,
+        help="Slice params, e.g. '0:10' for first 10, '10:20' for next 10.",
+    )
     return parser.parse_args()
 
 
@@ -621,6 +890,9 @@ def main():
         "all_con":  ["con_quiet", "con_wild", "con_recent"],
         "all_bull": ["bull_2024", "bull_super", "bull_2026"],
         "all_bear": ["bear_2022", "bear_2025"],
+        "all_test": ["2025H2", "2026Q1", "202603"],
+        "pl_validate": ["2024H1", "2024H2", "2025H1"],
+        "pl_1s_test": ["2025H2", "2026Q1"],
     }
 
     if args.period in GROUP_MAP:
@@ -641,8 +913,28 @@ def main():
         sweep_params = TRAIL_ANCHOR_PARAMS
     elif args.grid == "kl_buf":
         sweep_params = KL_BUF_PARAMS
+    elif args.grid == "or_sl":
+        sweep_params = OR_SL_PARAMS
+    elif args.grid == "profit_lock":
+        sweep_params = PROFIT_LOCK_PARAMS
+    elif args.grid == "pl_focused":
+        sweep_params = PL_FOCUSED_PARAMS
+    elif args.grid == "pl_1stage":
+        sweep_params = PL_1STAGE_PARAMS
+    elif args.grid == "maxtrade":
+        sweep_params = MAXTRADE_PARAMS
+    elif args.grid == "or_kl":
+        sweep_params = OR_KL_PARAMS
     else:
         sweep_params = TOP10_PARAMS
+
+    if args.slice:
+        parts = args.slice.split(":")
+        s = int(parts[0]) if parts[0] else 0
+        e = int(parts[1]) if len(parts) > 1 and parts[1] else len(sweep_params)
+        total = len(sweep_params)
+        sweep_params = sweep_params[s:e]
+        print(f"📋 Slice [{s}:{e}] of {total} params → {len(sweep_params)} configs")
 
     slip = args.slippage
     tf = args.timeframe

@@ -70,6 +70,15 @@ class PositionManagerConfig:
         enable_addon: bool = False,
         addon_quantity: int = 2,
         max_addon_count: int = 2,
+        # 利潤鎖定（Profit Lock）
+        enable_profit_lock: bool = False,
+        profit_lock_long_only: bool = False,
+        profit_lock_phase1_minutes: int = 30,
+        profit_lock_phase1_ratio: float = 0.4,
+        profit_lock_phase2_minutes: int = 60,
+        profit_lock_phase2_ratio: float = 0.6,
+        # KL 耗盡後 ATR-based trailing
+        kl_exhausted_atr_multiplier: float = 0.5,
     ):
         self.total_quantity = total_quantity
         self.tp_leg_quantity = tp_leg_quantity
@@ -103,6 +112,15 @@ class PositionManagerConfig:
         self.enable_addon = enable_addon
         self.addon_quantity = addon_quantity
         self.max_addon_count = max_addon_count
+
+        # 利潤鎖定
+        self.enable_profit_lock = enable_profit_lock
+        self.profit_lock_long_only = profit_lock_long_only
+        self.profit_lock_phase1_minutes = profit_lock_phase1_minutes
+        self.profit_lock_phase1_ratio = profit_lock_phase1_ratio
+        self.profit_lock_phase2_minutes = profit_lock_phase2_minutes
+        self.profit_lock_phase2_ratio = profit_lock_phase2_ratio
+        self.kl_exhausted_atr_multiplier = kl_exhausted_atr_multiplier
 
     @classmethod
     def from_dict(
@@ -154,6 +172,15 @@ class PositionManagerConfig:
             enable_addon=pos.get("enable_addon", False),
             addon_quantity=pos.get("addon_quantity", 2),
             max_addon_count=pos.get("max_addon_count", 2),
+            # 利潤鎖定
+            enable_profit_lock=trading.get("enable_profit_lock", False),
+            profit_lock_long_only=trading.get("profit_lock_long_only", False),
+            profit_lock_phase1_minutes=trading.get("profit_lock_phase1_minutes", 30),
+            profit_lock_phase1_ratio=trading.get("profit_lock_phase1_ratio", 0.4),
+            profit_lock_phase2_minutes=trading.get("profit_lock_phase2_minutes", 60),
+            profit_lock_phase2_ratio=trading.get("profit_lock_phase2_ratio", 0.6),
+            # KL 耗盡後 ATR-based trailing
+            kl_exhausted_atr_multiplier=trading.get("kl_exhausted_atr_multiplier", 0.5),
         )
 
     @property
@@ -282,8 +309,9 @@ class PositionManager:
                 entry_price,
             )
 
-        # 恢復 highest_price（用於移停計算）
+        # 恢復 highest_price / lowest_price（用於移停和 PL 計算）
         highest = record.highest_price or entry_price
+        lowest = record.lowest_price or entry_price
 
         # 計算當前移停價格（如果移停已啟動）
         trailing_stop_price: int | None = None
@@ -399,7 +427,7 @@ class PositionManager:
             entry_time=record.entry_time,
             legs=legs,
             highest_price=highest,
-            lowest_price=entry_price,
+            lowest_price=lowest,
             addon_count=addon_count,
             metadata=restored_metadata,
         )
@@ -521,6 +549,10 @@ class PositionManager:
 
         # 更新移動停損（所有 Legs）
         self._update_trailing_stops(current_price)
+
+        # 利潤鎖定（覆蓋在 KL trailing 之上，取較嚴格者）
+        if self.config.enable_profit_lock:
+            self._apply_profit_lock(current_price, kbar_list)
 
         return actions
 
@@ -1170,9 +1202,11 @@ class PositionManager:
                 return
 
             if not is_hybrid:
-                # 非混合模式：所有壓力線都已突破 → 用開倉價 × 0.005 作為移停距離
-                entry = self.position.entry_price
-                dynamic_ts = int(entry * 0.005)
+                atr = self.position.metadata.get("atr", 0)
+                if atr > 0:
+                    dynamic_ts = int(atr * self.config.kl_exhausted_atr_multiplier)
+                else:
+                    dynamic_ts = int(self.position.entry_price * 0.005)
                 for leg in self.position.open_legs:
                     er = leg.exit_rule
                     if not er.trailing_stop_active:
@@ -1197,7 +1231,7 @@ class PositionManager:
                         er.trailing_stop_price = new_stop
                         print(
                             f"📊 {leg.leg_id} 壓力線後移停更新: "
-                            f"{new_stop} (距離={dynamic_ts}pts, 0.5%)"
+                            f"{new_stop} (距離={dynamic_ts}pts, ATR×{self.config.kl_exhausted_atr_multiplier})"
                         )
                 return
 
@@ -1298,6 +1332,74 @@ class PositionManager:
                     ):
                         exit_rule.trailing_stop_price = new_stop_price
                         print(f"📊 {leg.leg_id} 移動停損更新: {new_stop_price}")
+
+    def _apply_profit_lock(self, current_price: int, kbar_list) -> None:
+        """利潤鎖定：根據持倉時間，逐步鎖定峰值利潤的百分比作為移停下限。
+
+        做多：lock_stop = entry + peak_profit * ratio，取 max(current_stop, lock_stop)
+        做空：lock_stop = entry - peak_profit * ratio，取 min(current_stop, lock_stop)
+        """
+        if not self.position:
+            return
+
+        pos = self.position
+        is_long = self._is_long
+
+        if self.config.profit_lock_long_only and not is_long:
+            return
+
+        entry_price = pos.entry_price
+        entry_time = pos.entry_time
+
+        peak_profit = (
+            (pos.highest_price - entry_price)
+            if is_long
+            else (entry_price - pos.lowest_price)
+        )
+
+        if peak_profit <= 0:
+            return
+
+        now = (
+            kbar_list.kbars[-1].time
+            if kbar_list and len(kbar_list) > 0
+            else datetime.now()
+        )
+        hold_minutes = (now - entry_time).total_seconds() / 60.0
+
+        cfg = self.config
+        if hold_minutes >= cfg.profit_lock_phase2_minutes:
+            lock_ratio = cfg.profit_lock_phase2_ratio
+        elif hold_minutes >= cfg.profit_lock_phase1_minutes:
+            lock_ratio = cfg.profit_lock_phase1_ratio
+        else:
+            return
+
+        if is_long:
+            lock_stop = entry_price + int(peak_profit * lock_ratio)
+            lock_stop = min(lock_stop, current_price)
+        else:
+            lock_stop = entry_price - int(peak_profit * lock_ratio)
+            lock_stop = max(lock_stop, current_price)
+
+        for leg in pos.open_legs:
+            exit_rule = leg.exit_rule
+            current_stop = exit_rule.trailing_stop_price
+            if current_stop is None:
+                continue
+
+            if is_long and lock_stop > current_stop:
+                exit_rule.trailing_stop_price = lock_stop
+                print(
+                    f"🔒 {leg.leg_id} 利潤鎖定: stop {current_stop}→{lock_stop} "
+                    f"(hold={hold_minutes:.0f}m, ratio={lock_ratio}, peak={peak_profit})"
+                )
+            elif not is_long and lock_stop < current_stop:
+                exit_rule.trailing_stop_price = lock_stop
+                print(
+                    f"🔒 {leg.leg_id} 利潤鎖定: stop {current_stop}→{lock_stop} "
+                    f"(hold={hold_minutes:.0f}m, ratio={lock_ratio}, peak={peak_profit})"
+                )
 
     def _close_all_legs(
         self, current_price: int, exit_reason: ExitReason
@@ -1505,3 +1607,4 @@ class PositionManager:
             return True
 
         return False
+

@@ -1,14 +1,12 @@
-"""Key Level Breakout / Bounce signal detection.
+"""Key Level Breakout signal detection.
 
 Given a K-bar, a list of KeyLevel objects, and current ATR, this module
-decides whether a breakout or bounce has occurred at any key level.
+decides whether a breakout has occurred at any key level.
 
 Signal types
 ------------
 - **breakout_long**  : close > level + atr * breakout_buffer
 - **breakout_short** : close < level - atr * breakout_buffer
-- **bounce_long**    : prev was above level, wick dips into zone, close stays above
-- **bounce_short**   : prev was below level, wick spikes into zone, close stays below
 
 Instant entry
 -------------
@@ -33,7 +31,7 @@ if TYPE_CHECKING:
 class KeyLevelSignal:
     """A single detected signal at a key level."""
 
-    signal_type: str  # breakout_long, breakout_short, bounce_long, bounce_short
+    signal_type: str  # breakout_long, breakout_short
     key_level: KeyLevel
     entry_price: int
     instant: bool = False  # True → can enter intra-bar
@@ -47,11 +45,10 @@ def detect_signals(
     prev_close: float | None = None,
     *,
     breakout_buffer: float = 0.2,
-    bounce_buffer: float = 0.3,
     instant_threshold: float = 0.3,
     current_price: float | None = None,
 ) -> list[KeyLevelSignal]:
-    """Scan *key_levels* for breakout / bounce signals on *kbar*.
+    """Scan *key_levels* for breakout signals on *kbar*.
 
     Parameters
     ----------
@@ -67,8 +64,6 @@ def detect_signals(
         signalling when price has already been above/below for a while).
     breakout_buffer : float
         ATR multiplier for close-based breakout confirmation.
-    bounce_buffer : float
-        ATR multiplier defining the "touch zone" around a level.
     instant_threshold : float
         ATR multiplier – if intra-bar penetration exceeds this, flag
         instant entry.
@@ -88,7 +83,6 @@ def detect_signals(
     for kl in key_levels:
         level = kl.price
         buf_breakout = atr * breakout_buffer
-        buf_bounce = atr * bounce_buffer
         buf_instant = atr * instant_threshold
 
         # --- Instant breakout (uses real-time price when available) ---
@@ -163,30 +157,6 @@ def detect_signals(
                     score=kl.score,
                 ))
                 continue
-
-        # --- Bounce long (support bounce) ---
-        # Requires prev_close was above level (price testing support from above,
-        # NOT a weak breakout from below that didn't clear the buffer).
-        if low <= level + buf_bounce and close > level:
-            if prev_close is not None and prev_close > level:
-                signals.append(KeyLevelSignal(
-                    signal_type="bounce_long",
-                    key_level=kl,
-                    entry_price=close,
-                    score=kl.score,
-                ))
-                continue
-
-        # --- Bounce short (resistance rejection) ---
-        # Requires prev_close was below level (price testing resistance from below).
-        if high >= level - buf_bounce and close < level:
-            if prev_close is not None and prev_close < level:
-                signals.append(KeyLevelSignal(
-                    signal_type="bounce_short",
-                    key_level=kl,
-                    entry_price=close,
-                    score=kl.score,
-                ))
 
     signals.sort(key=lambda s: s.score, reverse=True)
     return signals

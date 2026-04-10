@@ -35,6 +35,7 @@ class PositionRecord:
     take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
     highest_price: int | None = None  # 進場後最高價（用於重啟恢復移停）
+    lowest_price: int | None = None  # 進場後最低價（用於重啟恢復做空PL）
     sheets_row_map: dict | None = None  # leg_id → Google Sheets 行號
     legs_info: dict | None = None  # leg_id → {entry_price, quantity}
     position_metadata: dict | None = None  # key_levels, trail_mode 等策略 metadata
@@ -54,6 +55,7 @@ class PositionRecord:
             "take_profit_price": self.take_profit_price,
             "trailing_stop_active": self.trailing_stop_active,
             "highest_price": self.highest_price,
+            "lowest_price": self.lowest_price,
             "sheets_row_map": self.sheets_row_map,
             "legs_info": self.legs_info,
             "position_metadata": self.position_metadata,
@@ -86,6 +88,9 @@ class PositionRecord:
             trailing_stop_active=data.get("trailing_stop_active", False),
             highest_price=(
                 int(data["highest_price"]) if data.get("highest_price") else None
+            ),
+            lowest_price=(
+                int(data["lowest_price"]) if data.get("lowest_price") else None
             ),
             sheets_row_map=data.get("sheets_row_map"),
             legs_info=data.get("legs_info"),

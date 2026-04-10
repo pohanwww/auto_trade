@@ -850,6 +850,7 @@ class TradingEngine:
                     else False
                 ),
                 highest_price=position.highest_price or fill_price,
+                lowest_price=position.lowest_price or fill_price,
                 sheets_row_map=existing_row_map,
                 legs_info=existing_legs_info,
             )
