@@ -425,6 +425,9 @@ class PositionManager:
             addon_count=addon_count,
             metadata=restored_metadata,
         )
+        self._pl_waiting_logged = False
+        self._pl_activated_logged = False
+        self._pl_last_log_minute = -1
 
         ts_info = ""
         if record.trailing_stop_active:
@@ -822,6 +825,9 @@ class PositionManager:
             lowest_price=entry_price,
             metadata=position_metadata,
         )
+        self._pl_waiting_logged = False
+        self._pl_activated_logged = False
+        self._pl_last_log_minute = -1
 
         dir_str = "📈 做多" if is_long else "📉 做空"
         tighten_info = ""
@@ -1328,7 +1334,7 @@ class PositionManager:
                         print(f"📊 {leg.leg_id} 移動停損更新: {new_stop_price}")
 
     def _apply_profit_lock(self, current_price: int, kbar_list) -> None:
-        """利潤鎖定：根據持倉時間，逐步鎖定峰值利潤的百分比作為移停下限。
+        """利潤鎖定：根據持倉時間，鎖定峰值利潤的百分比作為移停下限。
 
         做多：lock_stop = entry + peak_profit * ratio，取 max(current_stop, lock_stop)
         做空：lock_stop = entry - peak_profit * ratio，取 min(current_stop, lock_stop)
@@ -1338,12 +1344,17 @@ class PositionManager:
 
         pos = self.position
         is_long = self._is_long
+        dir_str = "LONG" if is_long else "SHORT"
 
         if self.config.profit_lock_long_only and not is_long:
             return
 
         entry_price = pos.entry_price
         entry_time = pos.entry_time
+        current_profit = (
+            (current_price - entry_price) if is_long
+            else (entry_price - current_price)
+        )
 
         peak_profit = (
             (pos.highest_price - entry_price)
@@ -1363,15 +1374,38 @@ class PositionManager:
 
         cfg = self.config
         if hold_minutes < cfg.profit_lock_minutes:
+            if not hasattr(self, '_pl_waiting_logged') or not self._pl_waiting_logged:
+                remaining = cfg.profit_lock_minutes - hold_minutes
+                print(
+                    f"🔒 PL [{dir_str}] waiting: "
+                    f"hold={hold_minutes:.0f}m < {cfg.profit_lock_minutes}m "
+                    f"(activate in ~{remaining:.0f}m) | "
+                    f"entry={entry_price} peak={peak_profit}pt "
+                    f"current_pnl={current_profit:+d}pt"
+                )
+                self._pl_waiting_logged = True
             return
         lock_ratio = cfg.profit_lock_ratio
 
+        if not hasattr(self, '_pl_activated_logged') or not self._pl_activated_logged:
+            print(
+                f"🔒 PL [{dir_str}] ACTIVATED: "
+                f"hold={hold_minutes:.0f}m ≥ {cfg.profit_lock_minutes}m | "
+                f"ratio={cfg.profit_lock_ratio:.0%} | "
+                f"entry={entry_price} peak={peak_profit}pt "
+                f"current_pnl={current_profit:+d}pt"
+            )
+            self._pl_activated_logged = True
+
         if is_long:
-            lock_stop = entry_price + int(peak_profit * lock_ratio)
-            lock_stop = min(lock_stop, current_price)
+            raw_lock = entry_price + int(peak_profit * lock_ratio)
+            lock_stop = min(raw_lock, current_price)
         else:
-            lock_stop = entry_price - int(peak_profit * lock_ratio)
-            lock_stop = max(lock_stop, current_price)
+            raw_lock = entry_price - int(peak_profit * lock_ratio)
+            lock_stop = max(raw_lock, current_price)
+
+        capped = lock_stop != raw_lock
+        retraced_pct = (1.0 - current_profit / peak_profit) * 100 if peak_profit else 0
 
         for leg in pos.open_legs:
             exit_rule = leg.exit_rule
@@ -1379,18 +1413,39 @@ class PositionManager:
             if current_stop is None:
                 continue
 
-            if is_long and lock_stop > current_stop:
+            will_update = (
+                (is_long and lock_stop > current_stop)
+                or (not is_long and lock_stop < current_stop)
+            )
+
+            if will_update:
+                gap = abs(current_price - lock_stop)
                 exit_rule.trailing_stop_price = lock_stop
                 print(
-                    f"🔒 {leg.leg_id} 利潤鎖定: stop {current_stop}→{lock_stop} "
-                    f"(hold={hold_minutes:.0f}m, ratio={lock_ratio}, peak={peak_profit})"
+                    f"🔒 PL [{dir_str}] {leg.leg_id}: "
+                    f"stop {current_stop}→{lock_stop} | "
+                    f"price={current_price} gap={gap}pt | "
+                    f"entry={entry_price} peak={peak_profit}pt "
+                    f"current_pnl={current_profit:+d}pt | "
+                    f"hold={hold_minutes:.0f}m lock={lock_ratio:.0%}"
+                    + (f" ⚠️CAPPED(target={raw_lock})" if capped else "")
                 )
-            elif not is_long and lock_stop < current_stop:
-                exit_rule.trailing_stop_price = lock_stop
-                print(
-                    f"🔒 {leg.leg_id} 利潤鎖定: stop {current_stop}→{lock_stop} "
-                    f"(hold={hold_minutes:.0f}m, ratio={lock_ratio}, peak={peak_profit})"
-                )
+            else:
+                if not hasattr(self, '_pl_last_log_minute'):
+                    self._pl_last_log_minute = -1
+                log_minute = int(hold_minutes)
+                if log_minute % 5 == 0 and log_minute != self._pl_last_log_minute:
+                    self._pl_last_log_minute = log_minute
+                    current_stop_val = current_stop
+                    print(
+                        f"🔒 PL [{dir_str}] idle: "
+                        f"lock_target={raw_lock} {'<' if is_long else '>'} "
+                        f"current_stop={current_stop_val} → no change | "
+                        f"price={current_price} peak={peak_profit}pt "
+                        f"retraced={retraced_pct:.0f}% | "
+                        f"hold={hold_minutes:.0f}m"
+                        + (f" ⚠️CAPPED(target={raw_lock}→{lock_stop})" if capped else "")
+                    )
 
     def _close_all_legs(
         self, current_price: int, exit_reason: ExitReason
