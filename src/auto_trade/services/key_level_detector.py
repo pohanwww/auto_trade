@@ -420,10 +420,20 @@ def merge_to_zones(
 
     sorted_levels = sorted(raw_levels, key=lambda lv: lv.price)
 
+    # Hard cap cluster width to avoid chain-merge expansion.
+    MAX_CLUSTER_WIDTH = 100
+
     clusters: list[list[RawKeyLevel]] = [[sorted_levels[0]]]
     for lv in sorted_levels[1:]:
-        centroid = sum(r.price for r in clusters[-1]) // len(clusters[-1])
-        if abs(lv.price - centroid) <= zone_tolerance:
+        cluster = clusters[-1]
+        centroid = sum(r.price for r in cluster) // len(cluster)
+        cur_min = min(r.price for r in cluster)
+        cur_max = max(r.price for r in cluster)
+        next_min = min(cur_min, lv.price)
+        next_max = max(cur_max, lv.price)
+        within_tolerance = abs(lv.price - centroid) <= zone_tolerance
+        within_width_cap = (next_max - next_min) <= MAX_CLUSTER_WIDTH
+        if within_tolerance and within_width_cap:
             clusters[-1].append(lv)
         else:
             clusters.append([lv])
