@@ -124,7 +124,7 @@ def _generate_chart(
     from matplotlib.lines import Line2D
     from matplotlib.patches import FancyBboxPatch
 
-    from auto_trade.services.key_level_detector import split_sessions
+    from auto_trade.services.key_level_detector import detect_swing_clusters, split_sessions
 
     # ── 1. Read KL data from position.json ────────────────
     pos_data = _find_position_data(symbol, session)
@@ -217,6 +217,24 @@ def _generate_chart(
     all_kbars = sorted(all_kbars, key=lambda k: k.time)
     if not all_kbars:
         return {"ok": False, "error": "No bars to plot"}
+
+    # Debug only: print swing detection steps when generating chart.
+    # This does not affect chart KL source (still from position.json).
+    try:
+        swing_period = 10
+        cluster_tolerance = 50
+        print(
+            "[KL CHART] swing debug enabled: "
+            f"bars={len(all_kbars)}, period={swing_period}, cluster_tol={cluster_tolerance}",
+        )
+        detect_swing_clusters(
+            all_kbars,
+            period=swing_period,
+            cluster_tolerance=cluster_tolerance,
+            debug=True,
+        )
+    except Exception as e:
+        print(f"[KL CHART] swing debug failed: {e}")
 
     rows = [
         {

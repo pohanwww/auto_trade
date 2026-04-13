@@ -57,6 +57,7 @@ def detect_swing_clusters(
     kbars: list[KBar],
     period: int = 10,
     cluster_tolerance: int = 50,
+    debug: bool = False,
 ) -> list[RawKeyLevel]:
     """Find swing high/low points and cluster nearby ones.
 
@@ -66,7 +67,16 @@ def detect_swing_clusters(
     grouped; the cluster's weight equals its touch count.
     """
     n = len(kbars)
+    if debug:
+        print(
+            f"[SWING] start: bars={n}, period={period}, "
+            f"cluster_tol={cluster_tolerance}",
+        )
     if n < period * 2 + 1:
+        if debug:
+            print(
+                f"[SWING] skip: bars too few (need >= {period * 2 + 1}, got {n})",
+            )
         return []
 
     raw_swings: list[tuple[int, datetime]] = []  # (price, time)
@@ -83,6 +93,8 @@ def detect_swing_clusters(
         )
         if is_swing_high:
             raw_swings.append((h, t))
+            if debug:
+                print(f"[SWING] high@i={i}: price={h}, time={t}")
 
         is_swing_low = all(
             lo <= int(kbars[j].low) for j in range(i - period, i)
@@ -91,20 +103,28 @@ def detect_swing_clusters(
         )
         if is_swing_low:
             raw_swings.append((lo, t))
+            if debug:
+                print(f"[SWING] low@i={i}: price={lo}, time={t}")
 
     if not raw_swings:
+        if debug:
+            print("[SWING] no raw swings found")
         return []
 
     raw_swings.sort(key=lambda x: x[0])
+    if debug:
+        print(f"[SWING] raw swings total={len(raw_swings)}")
     clusters: list[list[tuple[int, datetime]]] = [[raw_swings[0]]]
     for item in raw_swings[1:]:
         if item[0] - clusters[-1][0][0] <= cluster_tolerance:
             clusters[-1].append(item)
         else:
             clusters.append([item])
+    if debug:
+        print(f"[SWING] clusters formed={len(clusters)}")
 
     results: list[RawKeyLevel] = []
-    for cluster in clusters:
+    for idx, cluster in enumerate(clusters, 1):
         avg_price = sum(p for p, _ in cluster) // len(cluster)
         count = len(cluster)
         earliest = min(t for _, t in cluster)
@@ -115,6 +135,15 @@ def detect_swing_clusters(
             label=f"swing({count})",
             first_seen=earliest,
         ))
+        if debug:
+            lo_p = min(p for p, _ in cluster)
+            hi_p = max(p for p, _ in cluster)
+            print(
+                f"[SWING] cluster#{idx}: n={count}, range=[{lo_p},{hi_p}], "
+                f"avg={avg_price}, weight={3.0 * count:.1f}",
+            )
+    if debug:
+        print(f"[SWING] done: output_levels={len(results)}")
     return results
 
 
