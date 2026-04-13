@@ -14,6 +14,7 @@ Methods:
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -422,21 +423,52 @@ def merge_to_zones(
 
     # Hard cap cluster width to avoid chain-merge expansion.
     MAX_CLUSTER_WIDTH = 100
+    SEED_GROUPS = 5
 
-    clusters: list[list[RawKeyLevel]] = [[sorted_levels[0]]]
-    for lv in sorted_levels[1:]:
-        cluster = clusters[-1]
-        centroid = sum(r.price for r in cluster) // len(cluster)
-        cur_min = min(r.price for r in cluster)
-        cur_max = max(r.price for r in cluster)
-        next_min = min(cur_min, lv.price)
-        next_max = max(cur_max, lv.price)
-        within_tolerance = abs(lv.price - centroid) <= zone_tolerance
-        within_width_cap = (next_max - next_min) <= MAX_CLUSTER_WIDTH
-        if within_tolerance and within_width_cap:
-            clusters[-1].append(lv)
+    # 1) Seed initialization:
+    #    sort by price -> split into 5 equal-size groups -> pick max-weight in each group.
+    n = len(sorted_levels)
+    group_size = max(1, math.ceil(n / SEED_GROUPS))
+    grouped: list[list[RawKeyLevel]] = []
+    for i in range(0, n, group_size):
+        grouped.append(sorted_levels[i:i + group_size])
+
+    seeds: list[RawKeyLevel] = [max(g, key=lambda r: r.weight) for g in grouped if g]
+    if not seeds:
+        return []
+
+    # 2) Assign each raw level to nearest eligible seed cluster.
+    #    Eligibility:
+    #      - distance to seed <= zone_tolerance
+    #      - adding this level keeps cluster width <= MAX_CLUSTER_WIDTH
+    clusters: list[list[RawKeyLevel]] = [[seed] for seed in seeds]
+
+    def _cluster_width_after(cluster: list[RawKeyLevel], lv: RawKeyLevel) -> int:
+        prices = [r.price for r in cluster]
+        return max(max(prices), lv.price) - min(min(prices), lv.price)
+
+    for lv in sorted_levels:
+        best_idx: int | None = None
+        best_dist: int | None = None
+
+        for idx, seed in enumerate(seeds):
+            dist = abs(lv.price - seed.price)
+            if dist > zone_tolerance:
+                continue
+            if _cluster_width_after(clusters[idx], lv) > MAX_CLUSTER_WIDTH:
+                continue
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+
+        if best_idx is not None:
+            # Avoid duplicate append for seed values already in cluster.
+            if lv not in clusters[best_idx]:
+                clusters[best_idx].append(lv)
         else:
+            # Out-of-range point: create a new independent cluster.
             clusters.append([lv])
+            seeds.append(lv)
 
     zones: list[KeyLevel] = []
     for cluster in clusters:
