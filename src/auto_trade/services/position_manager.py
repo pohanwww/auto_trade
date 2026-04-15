@@ -27,6 +27,13 @@ from auto_trade.models.position import (
 from auto_trade.models.position_record import ExitReason, PositionRecord
 from auto_trade.models.strategy import SignalType, StrategySignal
 from auto_trade.services.indicator_service import IndicatorService
+from auto_trade.services.profit_lock_structural import (
+    StructuralProfitLockParams,
+    structural_debug_long,
+    structural_debug_short,
+    structural_gates_long,
+    structural_gates_short,
+)
 from auto_trade.utils import calculate_points
 
 
@@ -70,11 +77,19 @@ class PositionManagerConfig:
         enable_addon: bool = False,
         addon_quantity: int = 2,
         max_addon_count: int = 2,
-        # 利潤鎖定（Profit Lock）
+        # 利潤鎖定（Profit Lock — 結構版：無壓力區 + ATR 分位 + swing）
         enable_profit_lock: bool = False,
         profit_lock_long_only: bool = False,
-        profit_lock_minutes: int = 30,
-        profit_lock_ratio: float = 0.4,
+        profit_lock_lookback_bars: int = 12,
+        profit_lock_atr_period: int = 14,
+        profit_lock_atr_rank_max: int = 3,
+        profit_lock_swing_left: int = 5,
+        profit_lock_swing_right: int = 5,
+        profit_lock_swing_stop_buffer: int = 10,
+        profit_lock_pressure_high_lookback: int = 20,
+        profit_lock_def3_price_pct: float = 0.005,
+        profit_lock_pressure_mode: str = "any",
+        profit_lock_debug: bool = False,
         # KL 耗盡後 ATR-based trailing
         kl_exhausted_atr_multiplier: float = 0.5,
     ):
@@ -111,11 +126,19 @@ class PositionManagerConfig:
         self.addon_quantity = addon_quantity
         self.max_addon_count = max_addon_count
 
-        # 利潤鎖定
+        # 利潤鎖定（結構版）
         self.enable_profit_lock = enable_profit_lock
         self.profit_lock_long_only = profit_lock_long_only
-        self.profit_lock_minutes = profit_lock_minutes
-        self.profit_lock_ratio = profit_lock_ratio
+        self.profit_lock_lookback_bars = profit_lock_lookback_bars
+        self.profit_lock_atr_period = profit_lock_atr_period
+        self.profit_lock_atr_rank_max = profit_lock_atr_rank_max
+        self.profit_lock_swing_left = profit_lock_swing_left
+        self.profit_lock_swing_right = profit_lock_swing_right
+        self.profit_lock_swing_stop_buffer = profit_lock_swing_stop_buffer
+        self.profit_lock_pressure_high_lookback = profit_lock_pressure_high_lookback
+        self.profit_lock_def3_price_pct = profit_lock_def3_price_pct
+        self.profit_lock_pressure_mode = profit_lock_pressure_mode
+        self.profit_lock_debug = profit_lock_debug
         self.kl_exhausted_atr_multiplier = kl_exhausted_atr_multiplier
 
     @classmethod
@@ -168,11 +191,25 @@ class PositionManagerConfig:
             enable_addon=pos.get("enable_addon", False),
             addon_quantity=pos.get("addon_quantity", 2),
             max_addon_count=pos.get("max_addon_count", 2),
-            # 利潤鎖定
+            # 利潤鎖定（結構版）
             enable_profit_lock=trading.get("enable_profit_lock", False),
             profit_lock_long_only=trading.get("profit_lock_long_only", False),
-            profit_lock_minutes=trading.get("profit_lock_minutes", 30),
-            profit_lock_ratio=trading.get("profit_lock_ratio", 0.4),
+            profit_lock_lookback_bars=trading.get("profit_lock_lookback_bars", 12),
+            profit_lock_atr_period=trading.get("profit_lock_atr_period", 14),
+            profit_lock_atr_rank_max=trading.get("profit_lock_atr_rank_max", 3),
+            profit_lock_swing_left=trading.get("profit_lock_swing_left", 5),
+            profit_lock_swing_right=trading.get("profit_lock_swing_right", 5),
+            profit_lock_swing_stop_buffer=trading.get(
+                "profit_lock_swing_stop_buffer", 10
+            ),
+            profit_lock_pressure_high_lookback=trading.get(
+                "profit_lock_pressure_high_lookback", 20
+            ),
+            profit_lock_def3_price_pct=trading.get(
+                "profit_lock_def3_price_pct", 0.005
+            ),
+            profit_lock_pressure_mode=trading.get("profit_lock_pressure_mode", "any"),
+            profit_lock_debug=trading.get("profit_lock_debug", False),
             # KL 耗盡後 ATR-based trailing
             kl_exhausted_atr_multiplier=trading.get("kl_exhausted_atr_multiplier", 0.5),
         )
@@ -425,9 +462,8 @@ class PositionManager:
             addon_count=addon_count,
             metadata=restored_metadata,
         )
-        self._pl_waiting_logged = False
-        self._pl_activated_logged = False
-        self._pl_last_log_minute = -1
+        self._pl_armed = False
+        self._pl_last_eval_bar_time = None
 
         ts_info = ""
         if record.trailing_stop_active:
@@ -576,6 +612,8 @@ class PositionManager:
                 print(f"📦 Position {self.position.position_id} 已完全平倉")
                 self.position = None
                 self._last_fast_stop_check_kbar_time = None
+                self._pl_armed = False
+                self._pl_last_eval_bar_time = None
 
     def check_time_exit(
         self, current_time: datetime, current_price: int
@@ -642,6 +680,8 @@ class PositionManager:
         """重置 PositionManager 狀態"""
         self.position = None
         self._last_fast_stop_check_kbar_time = None
+        self._pl_armed = False
+        self._pl_last_eval_bar_time = None
 
     # === Private Methods ===
 
@@ -825,9 +865,8 @@ class PositionManager:
             lowest_price=entry_price,
             metadata=position_metadata,
         )
-        self._pl_waiting_logged = False
-        self._pl_activated_logged = False
-        self._pl_last_log_minute = -1
+        self._pl_armed = False
+        self._pl_last_eval_bar_time = None
 
         dir_str = "📈 做多" if is_long else "📉 做空"
         tighten_info = ""
@@ -1334,12 +1373,14 @@ class PositionManager:
                         print(f"📊 {leg.leg_id} 移動停損更新: {new_stop_price}")
 
     def _apply_profit_lock(self, current_price: int, kbar_list) -> None:
-        """利潤鎖定：根據持倉時間，鎖定峰值利潤的百分比作為移停下限。
+        """結構型利潤鎖定：無壓力區 + ATR 分位 + 進場後無新高/低 + swing，延遲一根收緊移停。
 
-        做多：lock_stop = entry + peak_profit * ratio，取 max(current_stop, lock_stop)
-        做空：lock_stop = entry - peak_profit * ratio，取 min(current_stop, lock_stop)
+        固定使用「已收盤棒」評估：以 kbar_list[:-1] 作為計算窗口，
+        等同於你提的 [-13:-1] 思路（一般化為 lookback 參數）。
         """
-        if not self.position:
+        if not self.position or not kbar_list or len(kbar_list.kbars) < 3:
+            return
+        if self.indicator_service is None:
             return
 
         pos = self.position
@@ -1349,103 +1390,130 @@ class PositionManager:
         if self.config.profit_lock_long_only and not is_long:
             return
 
-        entry_price = pos.entry_price
-        entry_time = pos.entry_time
-        current_profit = (
-            (current_price - entry_price) if is_long
-            else (entry_price - current_price)
-        )
-
-        peak_profit = (
-            (pos.highest_price - entry_price)
-            if is_long
-            else (entry_price - pos.lowest_price)
-        )
-
-        if peak_profit <= 0:
+        # 只用已收盤棒：最後一根視為當前 forming bar，不納入條件計算。
+        kb_all = kbar_list.kbars
+        kb = kb_all[:-1]
+        last_closed = kb[-1]
+        last_t = last_closed.time
+        if getattr(self, "_pl_last_eval_bar_time", None) == last_t:
             return
+        self._pl_last_eval_bar_time = last_t
 
-        now = (
-            kbar_list.kbars[-1].time
-            if kbar_list and len(kbar_list) > 0
-            else datetime.now()
-        )
-        hold_minutes = (now - entry_time).total_seconds() / 60.0
+        key_levels = pos.metadata.get("key_levels")
+        if not key_levels:
+            self._pl_armed = False
+            return
 
         cfg = self.config
-        if hold_minutes < cfg.profit_lock_minutes:
-            if not hasattr(self, '_pl_waiting_logged') or not self._pl_waiting_logged:
-                remaining = cfg.profit_lock_minutes - hold_minutes
-                print(
-                    f"🔒 PL [{dir_str}] waiting: "
-                    f"hold={hold_minutes:.0f}m < {cfg.profit_lock_minutes}m "
-                    f"(activate in ~{remaining:.0f}m) | "
-                    f"entry={entry_price} peak={peak_profit}pt "
-                    f"current_pnl={current_profit:+d}pt"
-                )
-                self._pl_waiting_logged = True
-            return
-        lock_ratio = cfg.profit_lock_ratio
+        pl_params = StructuralProfitLockParams(
+            lookback_bars=cfg.profit_lock_lookback_bars,
+            atr_period=cfg.profit_lock_atr_period,
+            atr_rank_max=cfg.profit_lock_atr_rank_max,
+            swing_left=cfg.profit_lock_swing_left,
+            swing_right=cfg.profit_lock_swing_right,
+            swing_stop_buffer=cfg.profit_lock_swing_stop_buffer,
+            pressure_high_lookback=cfg.profit_lock_pressure_high_lookback,
+            def3_price_pct=cfg.profit_lock_def3_price_pct,
+            pressure_mode=cfg.profit_lock_pressure_mode,
+        )
 
-        if not hasattr(self, '_pl_activated_logged') or not self._pl_activated_logged:
-            print(
-                f"🔒 PL [{dir_str}] ACTIVATED: "
-                f"hold={hold_minutes:.0f}m ≥ {cfg.profit_lock_minutes}m | "
-                f"ratio={cfg.profit_lock_ratio:.0%} | "
-                f"entry={entry_price} peak={peak_profit}pt "
-                f"current_pnl={current_profit:+d}pt"
-            )
-            self._pl_activated_logged = True
-
-        if is_long:
-            raw_lock = entry_price + int(peak_profit * lock_ratio)
-            lock_stop = min(raw_lock, current_price)
-        else:
-            raw_lock = entry_price - int(peak_profit * lock_ratio)
-            lock_stop = max(raw_lock, current_price)
-
-        capped = lock_stop != raw_lock
-        retraced_pct = (1.0 - current_profit / peak_profit) * 100 if peak_profit else 0
-
-        for leg in pos.open_legs:
-            exit_rule = leg.exit_rule
-            current_stop = exit_rule.trailing_stop_price
-            if current_stop is None:
-                continue
-
-            will_update = (
-                (is_long and lock_stop > current_stop)
-                or (not is_long and lock_stop < current_stop)
-            )
-
-            if will_update:
-                gap = abs(current_price - lock_stop)
-                exit_rule.trailing_stop_price = lock_stop
-                print(
-                    f"🔒 PL [{dir_str}] {leg.leg_id}: "
-                    f"stop {current_stop}→{lock_stop} | "
-                    f"price={current_price} gap={gap}pt | "
-                    f"entry={entry_price} peak={peak_profit}pt "
-                    f"current_pnl={current_profit:+d}pt | "
-                    f"hold={hold_minutes:.0f}m lock={lock_ratio:.0%}"
-                    + (f" ⚠️CAPPED(target={raw_lock})" if capped else "")
+        atr_arr = self.indicator_service.calculate_atr_array(
+            kbar_list.view(len(kb)), cfg.profit_lock_atr_period,
+        )
+        dbg = None
+        if cfg.profit_lock_debug:
+            if is_long:
+                dbg = structural_debug_long(
+                    kb, pos.entry_time, pos.entry_price, list(key_levels), atr_arr, pl_params,
                 )
             else:
-                if not hasattr(self, '_pl_last_log_minute'):
-                    self._pl_last_log_minute = -1
-                log_minute = int(hold_minutes)
-                if log_minute % 5 == 0 and log_minute != self._pl_last_log_minute:
-                    self._pl_last_log_minute = log_minute
-                    current_stop_val = current_stop
-                    print(
-                        f"🔒 PL [{dir_str}] idle: "
-                        f"lock_target={raw_lock} {'<' if is_long else '>'} "
-                        f"current_stop={current_stop_val} → no change | "
-                        f"price={current_price} peak={peak_profit}pt "
-                        f"retraced={retraced_pct:.0f}% | "
-                        f"hold={hold_minutes:.0f}m"
-                        + (f" ⚠️CAPPED(target={raw_lock}→{lock_stop})" if capped else "")
-                    )
+                dbg = structural_debug_short(
+                    kb, pos.entry_time, pos.entry_price, list(key_levels), atr_arr, pl_params,
+                )
+        if is_long:
+            ok, swing_px, _close_px = structural_gates_long(
+                kb, pos.entry_time, pos.entry_price, list(key_levels), atr_arr, pl_params,
+            )
+        else:
+            ok, swing_px, _close_px = structural_gates_short(
+                kb, pos.entry_time, pos.entry_price, list(key_levels), atr_arr, pl_params,
+            )
+
+        prev_armed = getattr(self, "_pl_armed", False)
+
+        if not ok or swing_px is None:
+            if cfg.profit_lock_debug and dbg is not None:
+                print(
+                    f"🔎 PL [{dir_str}] gate=OFF "
+                    f"reason={dbg.get('reason')} d1={dbg.get('d1')} "
+                    f"d3={dbg.get('d3')} d4={dbg.get('d4')} "
+                    f"atr={dbg.get('atr_ref')} atr_ok={dbg.get('atr_rank_ok')} "
+                    f"new_ext_ok={dbg.get('no_new_extreme_ok')} "
+                    f"swing={dbg.get('swing_px')} close={dbg.get('close_px')}"
+                )
+            self._pl_armed = False
+            return
+
+        buf = pl_params.swing_stop_buffer
+        if prev_armed:
+            if is_long:
+                reclaim = current_price > swing_px
+                candidate = swing_px - buf
+            else:
+                reclaim = current_price < swing_px
+                candidate = swing_px + buf
+
+            if reclaim:
+                for leg in pos.open_legs:
+                    er = leg.exit_rule
+                    old_sl = er.stop_loss_price
+                    ts = er.trailing_stop_price
+                    stops = [s for s in (old_sl, ts) if s is not None]
+                    if is_long:
+                        if candidate >= current_price:
+                            continue
+                        current_best = max(stops) if stops else float("-inf")
+                        if candidate <= current_best:
+                            continue
+                        er.stop_loss_price = candidate
+                        # 如果已經有 trailing stop，一併收緊到同一位置，避免雙重 stop 不一致。
+                        if ts is not None and candidate > ts:
+                            er.trailing_stop_price = candidate
+                        print(
+                            f"🔒 PL [{dir_str}] {leg.leg_id}: "
+                            f"SL {old_sl}→{candidate}, TS {ts}→{er.trailing_stop_price} "
+                            f"(swing={swing_px}−{buf}) px={current_price}"
+                        )
+                    else:
+                        if candidate <= current_price:
+                            continue
+                        current_best = min(stops) if stops else float("inf")
+                        if candidate >= current_best:
+                            continue
+                        er.stop_loss_price = candidate
+                        if ts is not None and candidate < ts:
+                            er.trailing_stop_price = candidate
+                        print(
+                            f"🔒 PL [{dir_str}] {leg.leg_id}: "
+                            f"SL {old_sl}→{candidate}, TS {ts}→{er.trailing_stop_price} "
+                            f"(swing={swing_px}+{buf}) px={current_price}"
+                        )
+            elif cfg.profit_lock_debug:
+                print(
+                    f"🔎 PL [{dir_str}] armed but reclaim=OFF "
+                    f"close={dbg.get('close_px') if dbg else None} "
+                    f"swing={swing_px} px={current_price}"
+                )
+        elif cfg.profit_lock_debug:
+            print(
+                f"🔎 PL [{dir_str}] armed=ON "
+                f"d1={dbg.get('d1') if dbg else None} "
+                f"d3={dbg.get('d3') if dbg else None} "
+                f"d4={dbg.get('d4') if dbg else None} "
+                f"swing={swing_px} px={current_price}"
+            )
+
+        self._pl_armed = True
 
     def _close_all_legs(
         self, current_price: int, exit_reason: ExitReason

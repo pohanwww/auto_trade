@@ -61,7 +61,9 @@ class IndicatorService:
 
         if cached is not None and len(cached) >= n:
             if n > 1:
-                cached[n - 1] = float(kbar_list[n - 1].close) * k + cached[n - 2] * (1 - k)
+                cached[n - 1] = float(kbar_list[n - 1].close) * k + cached[n - 2] * (
+                    1 - k
+                )
             else:
                 cached[0] = float(kbar_list[0].close)
             return cached[:n]
@@ -69,7 +71,9 @@ class IndicatorService:
         if cached is not None and len(cached) > 0:
             prev_n = len(cached)
             if prev_n > 1:
-                cached[prev_n - 1] = float(kbar_list[prev_n - 1].close) * k + cached[prev_n - 2] * (1 - k)
+                cached[prev_n - 1] = float(kbar_list[prev_n - 1].close) * k + cached[
+                    prev_n - 2
+                ] * (1 - k)
             else:
                 cached[0] = float(kbar_list[0].close)
             start = prev_n
@@ -98,10 +102,7 @@ class IndicatorService:
         arr = self._get_ema_array(kbar_list, period)
         n = len(kbar_list)
 
-        ema_data = [
-            EMAData(time=kbar_list[i].time, ema_value=arr[i])
-            for i in range(n)
-        ]
+        ema_data = [EMAData(time=kbar_list[i].time, ema_value=arr[i]) for i in range(n)]
 
         return EMAList(
             ema_data=ema_data,
@@ -305,9 +306,7 @@ class IndicatorService:
     # ADX (Average Directional Index)
     # ──────────────────────────────────────────────
 
-    def calculate_adx(
-        self, kbar_list: KBarList, period: int = 14
-    ) -> float | None:
+    def calculate_adx(self, kbar_list: KBarList, period: int = 14) -> float | None:
         """計算 ADX（平均方向指數）
 
         ADX > 25：趨勢明確（適合做突破）
@@ -369,9 +368,7 @@ class IndicatorService:
     # ATR (Average True Range)
     # ──────────────────────────────────────────────
 
-    def calculate_atr(
-        self, kbar_list: KBarList, period: int = 14
-    ) -> float | None:
+    def calculate_atr(self, kbar_list: KBarList, period: int = 14) -> float | None:
         """計算 ATR（平均真實範圍）
 
         衡量市場波動度，用於動態設定 SL/TP/TS 距離。
@@ -401,13 +398,42 @@ class IndicatorService:
         val = atr.iloc[-1]
         return float(val) if not pd.isna(val) else None
 
+    def calculate_atr_array(
+        self, kbar_list: KBarList, period: int = 14
+    ) -> list[float | None]:
+        """每根 K 收盤後的 ATR 序列（與 calculate_atr 最後一根一致）。
+
+        回傳長度與 kbar_list 相同；前 period 根為 None（資料不足）。
+        """
+        n = len(kbar_list)
+        if n == 0:
+            return []
+        if n < period + 1:
+            return [None] * n
+
+        highs = pd.Series([float(k.high) for k in kbar_list.kbars])
+        lows = pd.Series([float(k.low) for k in kbar_list.kbars])
+        closes = pd.Series([float(k.close) for k in kbar_list.kbars])
+
+        tr1 = highs - lows
+        tr2 = (highs - closes.shift(1)).abs()
+        tr3 = (lows - closes.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        alpha = 1.0 / period
+        atr = tr.ewm(alpha=alpha, min_periods=period).mean()
+
+        out: list[float | None] = []
+        for i in range(n):
+            v = atr.iloc[i]
+            out.append(float(v) if not pd.isna(v) else None)
+        return out
+
     # ──────────────────────────────────────────────
     # RVOL (Relative Volume)
     # ──────────────────────────────────────────────
 
-    def calculate_rvol(
-        self, kbar_list: KBarList, lookback: int = 20
-    ) -> float | None:
+    def calculate_rvol(self, kbar_list: KBarList, lookback: int = 20) -> float | None:
         """計算相對成交量 RVOL = 當前量 / 平均量
 
         RVOL > 1.3：放量突破，有效性高
@@ -681,25 +707,25 @@ class IndicatorService:
         latest_ema_vals = {p: ema_arrays[p][eval_idx] for p in periods}
         all_ema = list(latest_ema_vals.values())
         latest_spread = max(all_ema) - min(all_ema)
-        latest_spread_pct = (latest_spread / latest_price) * 100.0 if latest_price > 0 else 0.0
+        latest_spread_pct = (
+            (latest_spread / latest_price) * 100.0 if latest_price > 0 else 0.0
+        )
 
         is_converged = latest_spread_pct < threshold_pct
         was_converged = peak_converged_count >= min_bars
 
-        bars_since = eval_idx - last_convergence_idx if last_convergence_idx >= 0 else 9999
+        bars_since = (
+            eval_idx - last_convergence_idx if last_convergence_idx >= 0 else 9999
+        )
         if allow_entry_during_convergence:
             in_window = was_converged and bars_since <= max_bars_after
         else:
-            in_window = was_converged and bars_since >= 1 and bars_since <= max_bars_after
+            in_window = (
+                was_converged and bars_since >= 1 and bars_since <= max_bars_after
+            )
 
-        breakout_long = (
-            in_window
-            and latest_price > max(all_ema)
-        )
-        breakout_short = (
-            in_window
-            and latest_price < min(all_ema)
-        )
+        breakout_long = in_window and latest_price > max(all_ema)
+        breakout_short = in_window and latest_price < min(all_ema)
         spread_expanding = latest_spread_pct > prev_spread_pct
 
         return {
@@ -743,7 +769,11 @@ class IndicatorService:
             (swing_highs, swing_lows) -- each a sorted list of unique
             price levels (ascending).
         """
-        bars = kbar_list.kbars[-lookback_bars:] if len(kbar_list) > lookback_bars else kbar_list.kbars
+        bars = (
+            kbar_list.kbars[-lookback_bars:]
+            if len(kbar_list) > lookback_bars
+            else kbar_list.kbars
+        )
         n = len(bars)
         if n < period * 2 + 1:
             return [], []
@@ -757,17 +787,13 @@ class IndicatorService:
 
             is_swing_high = all(
                 h >= int(bars[j].high) for j in range(i - period, i)
-            ) and all(
-                h >= int(bars[j].high) for j in range(i + 1, i + period + 1)
-            )
+            ) and all(h >= int(bars[j].high) for j in range(i + 1, i + period + 1))
             if is_swing_high:
                 raw_highs.append(h)
 
             is_swing_low = all(
                 lo <= int(bars[j].low) for j in range(i - period, i)
-            ) and all(
-                lo <= int(bars[j].low) for j in range(i + 1, i + period + 1)
-            )
+            ) and all(lo <= int(bars[j].low) for j in range(i + 1, i + period + 1))
             if is_swing_low:
                 raw_lows.append(lo)
 

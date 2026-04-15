@@ -154,8 +154,22 @@ def make_unit(
         force_exit_time=force_exit_time,
         enable_profit_lock=params.get("enable_profit_lock", False),
         profit_lock_long_only=params.get("profit_lock_long_only", False),
-        profit_lock_minutes=params.get("profit_lock_minutes", 30),
-        profit_lock_ratio=params.get("profit_lock_ratio", 0.4),
+        profit_lock_lookback_bars=params.get("profit_lock_lookback_bars", 12),
+        profit_lock_atr_period=params.get("profit_lock_atr_period", 14),
+        profit_lock_atr_rank_max=params.get("profit_lock_atr_rank_max", 3),
+        profit_lock_swing_left=params.get("profit_lock_swing_left", 5),
+        profit_lock_swing_right=params.get("profit_lock_swing_right", 5),
+        profit_lock_swing_stop_buffer=params.get(
+            "profit_lock_swing_stop_buffer", 10
+        ),
+        profit_lock_pressure_high_lookback=params.get(
+            "profit_lock_pressure_high_lookback", 20
+        ),
+        profit_lock_def3_price_pct=params.get(
+            "profit_lock_def3_price_pct", 0.005
+        ),
+        profit_lock_pressure_mode=params.get("profit_lock_pressure_mode", "any"),
+        profit_lock_debug=params.get("profit_lock_debug", False),
         kl_exhausted_atr_multiplier=params.get("kl_exhausted_atr_multiplier", 0.5),
     )
 
@@ -197,10 +211,10 @@ def make_unit(
         or_kl_tag = ""
     pl_tag = ""
     if params.get("enable_profit_lock"):
-        plm = params.get("profit_lock_minutes", 30)
-        plr = params.get("profit_lock_ratio", 0.4)
+        lb = params.get("profit_lock_lookback_bars", 12)
+        rk = params.get("profit_lock_atr_rank_max", 3)
         lo_suffix = "L" if params.get("profit_lock_long_only") else ""
-        pl_tag = f" PL{lo_suffix}({plm}m/{plr:.0%})"
+        pl_tag = f" PL{lo_suffix}(lb={lb}/rk≤{rk})"
     atr_fb_tag = ""
     atr_mult = params.get("kl_exhausted_atr_multiplier", 0.5)
     if atr_mult != 0.5:
@@ -508,7 +522,7 @@ OR_SL_PARAMS = [
 ]
 
 def _make_profit_lock_params() -> list[dict]:
-    """Profit Lock sweep: minutes × ratio coarse grid."""
+    """Structural Profit Lock sweep: lookback × ATR rank × gap thresholds."""
     configs = [
         (True, "day_only",   "long_only", "or"),
         (True, "day_only",   "both",      "or"),
@@ -523,23 +537,25 @@ def _make_profit_lock_params() -> list[dict]:
             "kl_exhausted_atr_multiplier": 0.5,
         }
         params.append({**base, "enable_profit_lock": False})
-        for m in [20, 30, 45]:
-            for r in [0.3, 0.4, 0.5]:
-                params.append({
-                    **base,
-                    "enable_profit_lock": True,
-                    "profit_lock_minutes": m,
-                    "profit_lock_ratio": r,
-                })
+        for lb in [12, 16]:
+            for rk in [3, 4]:
+                for pct in [0.005, 0.007]:
+                    params.append({
+                        **base,
+                        "enable_profit_lock": True,
+                        "profit_lock_lookback_bars": lb,
+                        "profit_lock_atr_rank_max": rk,
+                        "profit_lock_def3_price_pct": pct,
+                    })
         if direction == "both":
-            for m in [20, 30, 45]:
-                for r in [0.3, 0.4, 0.5]:
+            for lb in [12, 16]:
+                for rk in [3, 4]:
                     params.append({
                         **base,
                         "enable_profit_lock": True,
                         "profit_lock_long_only": True,
-                        "profit_lock_minutes": m,
-                        "profit_lock_ratio": r,
+                        "profit_lock_lookback_bars": lb,
+                        "profit_lock_atr_rank_max": rk,
                     })
     return params
 
@@ -548,11 +564,11 @@ PROFIT_LOCK_PARAMS = _make_profit_lock_params()
 
 
 def _make_maxtrade_params() -> list[dict]:
-    """Test max_trades 2/3/4 with best PL configs per scenario."""
+    """Test max_trades 2/3/4 with representative structural PL configs."""
     best_pl = {
-        "long_only": [(20, 0.30), (20, 0.40)],
-        "both_pl":   [(20, 0.30), (20, 0.40)],
-        "both_pll":  [(20, 0.30), (20, 0.40)],
+        "long_only": [{"lb": 12, "rk": 3}, {"lb": 16, "rk": 3}],
+        "both_pl":   [{"lb": 12, "rk": 3}, {"lb": 12, "rk": 4}],
+        "both_pll":  [{"lb": 12, "rk": 3}, {"lb": 16, "rk": 4}],
     }
     configs = [
         (True, "day_only",   "long_only", "or"),
@@ -569,21 +585,21 @@ def _make_maxtrade_params() -> list[dict]:
                 "kl_exhausted_atr_multiplier": 0.5,
             }
             params.append({**base, "enable_profit_lock": False})
-            for m, r in best_pl["long_only" if direction == "long_only" else "both_pl"]:
+            for pl in best_pl["long_only" if direction == "long_only" else "both_pl"]:
                 params.append({
                     **base,
                     "enable_profit_lock": True,
-                    "profit_lock_minutes": m,
-                    "profit_lock_ratio": r,
+                    "profit_lock_lookback_bars": pl["lb"],
+                    "profit_lock_atr_rank_max": pl["rk"],
                 })
             if direction == "both":
-                for m, r in best_pl["both_pll"]:
+                for pl in best_pl["both_pll"]:
                     params.append({
                         **base,
                         "enable_profit_lock": True,
                         "profit_lock_long_only": True,
-                        "profit_lock_minutes": m,
-                        "profit_lock_ratio": r,
+                        "profit_lock_lookback_bars": pl["lb"],
+                        "profit_lock_atr_rank_max": pl["rk"],
                     })
     return params
 

@@ -157,7 +157,8 @@ def _generate_chart(
     or_range = ss.get("or_range", 1)
 
     # ── 2. Fetch K-bars for chart display ─────────────────
-    sub_symbol = _SUB_MAP.get(symbol, symbol + "R1")
+    # Prefer the actually running contract from live state/config, then fallback to R1.
+    sub_symbol = live.get("sub_symbol") or _SUB_MAP.get(symbol, symbol + "R1")
     lookback_days = 7
 
     ms = _get_kl_market_service()

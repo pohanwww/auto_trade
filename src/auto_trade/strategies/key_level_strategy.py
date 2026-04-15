@@ -153,6 +153,7 @@ class KeyLevelStrategy(BaseStrategy):
         self.or_sl_use_boundary = kwargs.get("or_sl_use_boundary", False)
         self.or_as_kl = kwargs.get("or_as_kl", False)
         self.or_kl_weight = kwargs.get("or_kl_weight", 2.0)
+        self.signal_min_score = kwargs.get("signal_min_score", 2.0)
 
         # Trend filter
         self.trend_filter = trend_filter
@@ -163,6 +164,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  mode=%s | timeframe=%s | session_lookback=%d\n"
             "  OR: use=%s, bars=%d, start=%s, entry_end=%s, session_end=%s\n"
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
+            "  Signal score gate: > %.1f\n"
             "  Signal: brk_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
@@ -171,6 +173,7 @@ class KeyLevelStrategy(BaseStrategy):
             "OR" if use_or else "Pure", timeframe, self._session_lookback,
             use_or, or_bars, or_start_time, entry_end_time, session_end_time,
             swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
+            self.signal_min_score,
             breakout_buffer, instant_threshold, atr_period,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
@@ -364,6 +367,16 @@ class KeyLevelStrategy(BaseStrategy):
 
         return state if state else None
 
+    def _split_signal_and_trailing_levels(self) -> None:
+        """Split levels into signal (score-gated) and trailing buckets."""
+        n = self.signal_level_count
+        signal_pool = [kl for kl in self._key_levels if kl.score > self.signal_min_score]
+        self._signal_levels = signal_pool[:n]
+        signal_ids = {id(kl) for kl in self._signal_levels}
+        self._trailing_levels = sorted(
+            [kl.price for kl in self._key_levels if id(kl) not in signal_ids],
+        )
+
     def restore_state(self, state: dict) -> None:
         """Restore runtime state from persisted strategy_state."""
         if not state:
@@ -407,11 +420,7 @@ class KeyLevelStrategy(BaseStrategy):
                     sources=d.get("sources", []),
                 ))
             self._key_levels = restored
-            n = self.signal_level_count
-            self._signal_levels = self._key_levels[:n]
-            self._trailing_levels = sorted(
-                [kl.price for kl in self._key_levels[n:]],
-            )
+            self._split_signal_and_trailing_levels()
             self._levels_calculated = True
             _log(
                 "Restored key_levels=%d (signal=%d, trailing=%d)",
@@ -551,18 +560,15 @@ class KeyLevelStrategy(BaseStrategy):
         )
 
         self._key_levels = levels
-        n = self.signal_level_count
-        self._signal_levels = self._key_levels[:n]
-        self._trailing_levels = sorted(
-            [kl.price for kl in self._key_levels[n:]],
-        )
+        self._split_signal_and_trailing_levels()
 
         self._levels_calculated = True
 
         _log("  Total levels found: %d (signal=%d, trailing=%d)",
                  len(self._key_levels), len(self._signal_levels), len(self._trailing_levels))
+        signal_ids = {id(kl) for kl in self._signal_levels}
         for i, kl in enumerate(self._key_levels):
-            role = "SIGNAL" if i < n else "TRAIL"
+            role = "SIGNAL" if id(kl) in signal_ids else "TRAIL"
             _log(
                 "  [%s] #%d: price=%d | score=%.1f | touches=%d | sources=%s",
                 role, i + 1, kl.price, kl.score, kl.touch_count,

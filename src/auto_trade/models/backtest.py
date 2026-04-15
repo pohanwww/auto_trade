@@ -12,6 +12,7 @@ def get_point_value(symbol: str) -> int:
     point_values = {
         "TXF": 200,  # 大台指每點200元
         "MXF": 50,  # 小台指每點50元
+        "TMF": 10,  # 微台指每點10元
         "EXF": 200,  # 電子期貨每點200元
         "FXF": 200,  # 金融期貨每點200元
         "NXF": 200,  # 非金電期貨每點200元

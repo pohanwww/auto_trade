@@ -1,0 +1,552 @@
+//@version=6
+indicator("KL Confluence (Python-aligned, Indicator)", overlay=true, scale=scale.none, max_bars_back=1000, max_lines_count=500, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+grpSess = "Session / OR"
+i_session_mode = input.string("day_only", "Session Mode", options=["day_only", "night_only", "day_night"], group=grpSess)
+i_or_bars      = input.int(3, "OR Bars", minval=1, maxval=20, group=grpSess)
+i_day_or_start_h   = input.int(8, "Day OR Start Hour", minval=0, maxval=23, group=grpSess)
+i_day_or_start_m   = input.int(45, "Day OR Start Minute", minval=0, maxval=59, group=grpSess)
+i_night_or_start_h = input.int(15, "Night OR Start Hour", minval=0, maxval=23, group=grpSess)
+i_night_or_start_m = input.int(0, "Night OR Start Minute", minval=0, maxval=59, group=grpSess)
+i_or_as_kl     = input.bool(true, "Inject OR High/Low as KL", group=grpSess)
+i_or_kl_weight = input.float(2.0, "OR KL Weight", minval=0.0, maxval=10.0, step=0.1, group=grpSess)
+
+grpKL = "KL Methods (Python)"
+i_swing_period     = input.int(10, "Swing Period", minval=3, maxval=50, group=grpKL)
+i_cluster_tol      = input.float(50, "Swing Cluster Tolerance", minval=1, maxval=500, group=grpKL)
+i_zone_tol         = input.float(50, "Zone Merge Tolerance", minval=1, maxval=500, group=grpKL)
+i_round_scan       = input.float(500, "Round Scan Range", minval=50, maxval=5000, group=grpKL)
+i_volume_bucket    = input.int(10, "Volume Bucket Size", minval=1, maxval=100, group=grpKL)
+i_volume_lookback  = input.int(300, "Volume Node Lookback Bars", minval=50, maxval=1200, group=grpKL)
+i_touch_weight     = input.float(1.0, "Touch Weight", minval=0.0, maxval=5.0, step=0.1, group=grpKL)
+i_recency_pool     = input.int(20, "Recency Pool", minval=5, maxval=40, group=grpKL)
+i_max_levels       = input.int(15, "Max Levels", minval=5, maxval=30, group=grpKL)
+i_signal_count     = input.int(7, "Signal Level Count", minval=1, maxval=20, group=grpKL)
+i_signal_min_score = input.float(2.0, "Signal Min Score (strict >)", minval=0.0, maxval=20.0, step=0.1, group=grpKL)
+
+grpVis = "Visualization"
+i_show_levels = input.bool(true, "Show KL lines", group=grpVis)
+i_show_labels = input.bool(true, "Show labels", group=grpVis)
+i_show_or     = input.bool(true, "Show OR", group=grpVis)
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+_sf(float[] arr, int i) =>
+    float r = na
+    if i >= 0 and i < array.size(arr)
+        r := array.get(arr, i)
+    r
+
+_si(int[] arr, int i) =>
+    int r = 0
+    if i >= 0 and i < array.size(arr)
+        r := array.get(arr, i)
+    r
+
+_session_minute() =>
+    hour * 60 + minute
+
+_mean(float[] arr) =>
+    int n = array.size(arr)
+    float s = 0.0
+    if n > 0
+        for i = 0 to n - 1
+            s += nz(_sf(arr, i))
+    n > 0 ? s / n : na
+
+_stdev(float[] arr, float m) =>
+    int n = array.size(arr)
+    if n <= 1 or na(m)
+        0.0
+    else
+        float s2 = 0.0
+        for i = 0 to n - 1
+            float d = nz(_sf(arr, i)) - m
+            s2 += d * d
+        math.sqrt(s2 / (n - 1))
+
+// Bubble sort parallel arrays by price asc
+_sort_by_price(float[] p, float[] w, int[] src, int[] fb) =>
+    int n = array.size(p)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - i - 2
+                float a = _sf(p, j)
+                float b = _sf(p, j + 1)
+                if not na(a) and not na(b) and a > b
+                    float tp = a
+                    float tw = _sf(w, j)
+                    int ts = _si(src, j)
+                    int tf = _si(fb, j)
+                    array.set(p, j, b)
+                    array.set(w, j, _sf(w, j + 1))
+                    array.set(src, j, _si(src, j + 1))
+                    array.set(fb, j, _si(fb, j + 1))
+                    array.set(p, j + 1, tp)
+                    array.set(w, j + 1, nz(tw))
+                    array.set(src, j + 1, ts)
+                    array.set(fb, j + 1, tf)
+
+// Sort by score desc
+_sort_by_score_desc(float[] p, float[] s, int[] t, int[] lt) =>
+    int n = array.size(p)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - i - 2
+                float a = _sf(s, j)
+                float b = _sf(s, j + 1)
+                if not na(a) and not na(b) and a < b
+                    float tp = _sf(p, j)
+                    float ts = a
+                    int tt = _si(t, j)
+                    int tl = _si(lt, j)
+                    array.set(p, j, _sf(p, j + 1))
+                    array.set(s, j, _sf(s, j + 1))
+                    array.set(t, j, _si(t, j + 1))
+                    array.set(lt, j, _si(lt, j + 1))
+                    array.set(p, j + 1, nz(tp))
+                    array.set(s, j + 1, nz(ts))
+                    array.set(t, j + 1, tt)
+                    array.set(lt, j + 1, tl)
+
+// Sort by last-touch desc then score desc
+_sort_by_recency_then_score(float[] p, float[] s, int[] t, int[] lt) =>
+    int n = array.size(p)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - i - 2
+                int l0 = _si(lt, j)
+                int l1 = _si(lt, j + 1)
+                float s0 = _sf(s, j)
+                float s1 = _sf(s, j + 1)
+                bool swap = l0 < l1 or (l0 == l1 and s0 < s1)
+                if swap
+                    float tp = _sf(p, j)
+                    float ts = s0
+                    int tt = _si(t, j)
+                    int tl = l0
+                    array.set(p, j, _sf(p, j + 1))
+                    array.set(s, j, _sf(s, j + 1))
+                    array.set(t, j, _si(t, j + 1))
+                    array.set(lt, j, _si(lt, j + 1))
+                    array.set(p, j + 1, nz(tp))
+                    array.set(s, j + 1, nz(ts))
+                    array.set(t, j + 1, tt)
+                    array.set(lt, j + 1, tl)
+
+// -----------------------------------------------------------------------------
+// Session state
+// -----------------------------------------------------------------------------
+var int lastDay = na
+var bool orDone = false
+var int orCnt = 0
+var float orHigh = na
+var float orLow = na
+var bool levelsDone = false
+var bool prevOrDone = false
+var int activeSessionKind = na   // 0=day, 1=night
+var int activeSessionDate = na   // YYYYMMDD (night uses trading-day key)
+
+int cm = _session_minute()
+int curDay = dayofmonth
+int dayStart = 8 * 60 + 45
+int dayEnd = 13 * 60 + 45
+int nightStart = 15 * 60
+int nightEnd = 5 * 60
+bool inDayBar = cm >= dayStart and cm < dayEnd
+bool inNightBar = cm >= nightStart or cm < nightEnd
+
+int sessKind = na
+bool inActiveSession = false
+if i_session_mode == "day_only"
+    inActiveSession := inDayBar
+    sessKind := 0
+else if i_session_mode == "night_only"
+    inActiveSession := inNightBar
+    sessKind := 1
+else
+    inActiveSession := inDayBar or inNightBar
+    sessKind := inNightBar ? 1 : 0
+
+int dayOrStart = i_day_or_start_h * 60 + i_day_or_start_m
+int nightOrStart = i_night_or_start_h * 60 + i_night_or_start_m
+int OR_START = sessKind == 1 ? nightOrStart : dayOrStart
+
+int tdTimeForSession = cm < nightEnd ? time - 24 * 60 * 60 * 1000 : time
+int tradingDayKey = year(tdTimeForSession) * 10000 + month(tdTimeForSession) * 100 + dayofmonth(tdTimeForSession)
+int calendarDayKey = year * 10000 + month * 100 + dayofmonth
+int sessionDateKey = sessKind == 1 ? tradingDayKey : calendarDayKey
+
+bool newSession = inActiveSession and (
+     na(activeSessionKind) or na(activeSessionDate) or
+     sessKind != activeSessionKind or sessionDateKey != activeSessionDate)
+if newSession
+    activeSessionKind := sessKind
+    activeSessionDate := sessionDateKey
+    lastDay := curDay
+    orDone := false
+    orCnt := 0
+    orHigh := na
+    orLow := na
+    levelsDone := false
+    prevOrDone := false
+
+bool inOrWindow = inActiveSession and cm >= OR_START and not orDone
+if inOrWindow
+    if orCnt == 0
+        orHigh := high
+        orLow := low
+    else
+        orHigh := math.max(orHigh, high)
+        orLow := math.min(orLow, low)
+    orCnt += 1
+    if orCnt >= i_or_bars
+        orDone := true
+
+// Previous day OHLC (stable, no repaint)
+[prevH, prevL, prevC] = request.security(
+     syminfo.tickerid, "D", [high[1], low[1], close[1]],
+     lookahead = barmerge.lookahead_on)
+
+// Previous completed night session OHLC (15:00 ~ 05:00) keyed by trading day
+bool isNightBar = inNightBar
+int tdKey = tradingDayKey
+var int curNightTdKey = na
+var float curNightH = na
+var float curNightL = na
+var float curNightC = na
+var float prevNightH = na
+var float prevNightL = na
+var float prevNightC = na
+var bool wasNightBar = false
+
+if isNightBar
+    if na(curNightTdKey) or tdKey != curNightTdKey
+        curNightTdKey := tdKey
+        curNightH := high
+        curNightL := low
+        curNightC := close
+    else
+        curNightH := math.max(curNightH, high)
+        curNightL := math.min(curNightL, low)
+        curNightC := close
+
+// When leaving night session, freeze the finished night session as "previous night"
+if not isNightBar and wasNightBar and not na(curNightH) and not na(curNightL) and not na(curNightC)
+    prevNightH := curNightH
+    prevNightL := curNightL
+    prevNightC := curNightC
+    curNightH := na
+    curNightL := na
+    curNightC := na
+    curNightTdKey := na
+
+wasNightBar := isNightBar
+
+// -----------------------------------------------------------------------------
+// Rolling swings for clustering and touch counting
+// -----------------------------------------------------------------------------
+var float[] swingP = array.new_float()
+var int[] swingB = array.new_int()
+float ph = ta.pivothigh(high, i_swing_period, i_swing_period)
+float pl = ta.pivotlow(low, i_swing_period, i_swing_period)
+if not na(ph)
+    array.push(swingP, ph)
+    array.push(swingB, bar_index - i_swing_period)
+if not na(pl)
+    array.push(swingP, pl)
+    array.push(swingB, bar_index - i_swing_period)
+while array.size(swingP) > 300
+    array.shift(swingP)
+    array.shift(swingB)
+
+// -----------------------------------------------------------------------------
+// KL build (once per day after OR or session start)
+// -----------------------------------------------------------------------------
+bool shouldBuild = inActiveSession and (orDone or not i_or_as_kl) and not levelsDone
+
+var float[] klPrice = array.new_float()
+var float[] klScore = array.new_float()
+var int[]   klTouch = array.new_int()
+var bool[]  klIsSig = array.new_bool()
+var int[]   klLastTouchBar = array.new_int()
+
+if shouldBuild
+    float[] rawP = array.new_float()
+    float[] rawW = array.new_float()
+    int[] rawSrc = array.new_int()   // method id
+    int[] rawFB = array.new_int()    // first_seen bar proxy
+
+    // 1) Swing clusters
+    int swN = array.size(swingP)
+    if swN > 0
+        float[] sw = array.copy(swingP)
+        array.sort(sw, order.ascending)
+        float cSum = _sf(sw, 0)
+        int cCnt = 1
+        for i = 1 to array.size(sw) - 1
+            float x = _sf(sw, i)
+            float cen = cSum / cCnt
+            if math.abs(x - cen) <= i_cluster_tol
+                cSum += x
+                cCnt += 1
+            else
+                array.push(rawP, cSum / cCnt)
+                array.push(rawW, 3.0 * cCnt)
+                array.push(rawSrc, 1)
+                array.push(rawFB, bar_index)
+                cSum := x
+                cCnt := 1
+        array.push(rawP, cSum / cCnt)
+        array.push(rawW, 3.0 * cCnt)
+        array.push(rawSrc, 1)
+        array.push(rawFB, bar_index)
+
+    // 2) Volume nodes (distributed volume-at-price)
+    float[] vpP = array.new_float()
+    float[] vpV = array.new_float()
+    int lb = math.min(i_volume_lookback, bar_index + 1)
+    for i = 0 to lb - 1
+        float lo = low[i]
+        float hi = high[i]
+        float vol = volume[i]
+        if vol <= 0 or hi <= lo
+            continue
+        float loB = math.floor(lo / i_volume_bucket) * i_volume_bucket
+        float hiB = math.floor(hi / i_volume_bucket) * i_volume_bucket
+        int nB = int(math.max(1, (hiB - loB) / i_volume_bucket + 1))
+        float per = vol / nB
+        float b = loB
+        while b <= hiB
+            int idx = array.indexof(vpP, b)
+            if idx == -1
+                array.push(vpP, b)
+                array.push(vpV, per)
+            else
+                array.set(vpV, idx, _sf(vpV, idx) + per)
+            b += i_volume_bucket
+    int vpN = array.size(vpP)
+    if vpN >= 3
+        float mv = _mean(vpV)
+        float sv = _stdev(vpV, mv)
+        float th = mv + sv
+        float mx = array.max(vpV)
+        for i = 0 to vpN - 1
+            float vv = _sf(vpV, i)
+            if vv >= th
+                float center = _sf(vpP, i) + i_volume_bucket / 2.0
+                float rw = mx > 0 ? vv / mx : 1.0
+                array.push(rawP, center)
+                array.push(rawW, math.round(rw * 0.5 * 100.0) / 100.0)
+                array.push(rawSrc, 2)
+                array.push(rawFB, bar_index)
+
+    // 3) Round numbers
+    float ref = na(open) ? prevC : open
+    if not na(ref)
+        float loR = ref - i_round_scan
+        float hiR = ref + i_round_scan
+        float p = math.floor(loR / 500.0) * 500.0
+        while p <= hiR
+            if p >= loR
+                if p % 1000 == 0
+                    array.push(rawP, p)
+                    array.push(rawW, 2.0)
+                    array.push(rawSrc, 4)
+                    array.push(rawFB, bar_index)
+                else if p % 500 == 0
+                    array.push(rawP, p)
+                    array.push(rawW, 1.5)
+                    array.push(rawSrc, 4)
+                    array.push(rawFB, bar_index)
+            p += 500
+
+    // 4) Session OHLC (prev day only; aligns core baseline)
+    if not na(prevH)
+        array.push(rawP, prevH)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+    if not na(prevL)
+        array.push(rawP, prevL)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+    if not na(prevC)
+        array.push(rawP, prevC)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+    if not na(prevNightH)
+        array.push(rawP, prevNightH)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+    if not na(prevNightL)
+        array.push(rawP, prevNightL)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+    if not na(prevNightC)
+        array.push(rawP, prevNightC)
+        array.push(rawW, 2.0)
+        array.push(rawSrc, 5)
+        array.push(rawFB, bar_index)
+
+    // 5) OR High/Low as KL (optional)
+    if i_or_as_kl and orDone
+        if not na(orHigh)
+            array.push(rawP, orHigh)
+            array.push(rawW, i_or_kl_weight)
+            array.push(rawSrc, 5)
+            array.push(rawFB, bar_index)
+        if not na(orLow)
+            array.push(rawP, orLow)
+            array.push(rawW, i_or_kl_weight)
+            array.push(rawSrc, 5)
+            array.push(rawFB, bar_index)
+
+    // Merge to zones (price-sorted, centroid cluster)
+    _sort_by_price(rawP, rawW, rawSrc, rawFB)
+    float[] zP = array.new_float()
+    float[] zS = array.new_float()
+    int[] zT = array.new_int()
+    int[] zLT = array.new_int()
+
+    int rn = array.size(rawP)
+    if rn > 0
+        float sumP = _sf(rawP, 0)
+        float sumW = _sf(rawW, 0)
+        float bestP = _sf(rawP, 0)
+        float bestW = _sf(rawW, 0)
+        int cN = 1
+        for i = 1 to rn - 1
+            float px = _sf(rawP, i)
+            float ww = _sf(rawW, i)
+            float cen = sumP / cN
+            if math.abs(px - cen) <= i_zone_tol
+                sumP += px
+                sumW += ww
+                cN += 1
+                if ww > bestW
+                    bestW := ww
+                    bestP := px
+            else
+                array.push(zP, bestP)
+                array.push(zS, sumW)
+                array.push(zT, 0)
+                array.push(zLT, 0)
+                sumP := px
+                sumW := ww
+                bestP := px
+                bestW := ww
+                cN := 1
+        array.push(zP, bestP)
+        array.push(zS, sumW)
+        array.push(zT, 0)
+        array.push(zLT, 0)
+
+    // Touch verification from swings (simplified count)
+    int zn = array.size(zP)
+    for zi = 0 to zn - 1
+        float zp = _sf(zP, zi)
+        int tc = 0
+        int ltb = 0
+        for si = 0 to array.size(swingP) - 1
+            float sp = _sf(swingP, si)
+            int sb = _si(swingB, si)
+            if math.abs(sp - zp) <= i_zone_tol
+                tc += 1
+                ltb := math.max(ltb, sb)
+        array.set(zT, zi, tc)
+        array.set(zLT, zi, ltb)
+        array.set(zS, zi, _sf(zS, zi) + i_touch_weight * tc)
+
+    // Selection: recency pool then score
+    _sort_by_recency_then_score(zP, zS, zT, zLT)
+    int keepRec = math.min(i_recency_pool, array.size(zP))
+    float[] rP = array.new_float()
+    float[] rS = array.new_float()
+    int[] rT = array.new_int()
+    int[] rLT = array.new_int()
+    for i = 0 to keepRec - 1
+        array.push(rP, _sf(zP, i))
+        array.push(rS, _sf(zS, i))
+        array.push(rT, _si(zT, i))
+        array.push(rLT, _si(zLT, i))
+    _sort_by_score_desc(rP, rS, rT, rLT)
+
+    array.clear(klPrice), array.clear(klScore), array.clear(klTouch), array.clear(klIsSig), array.clear(klLastTouchBar)
+    int keep = math.min(i_max_levels, array.size(rP))
+    int sigUsed = 0
+    for i = 0 to keep - 1
+        float p = _sf(rP, i)
+        float s = _sf(rS, i)
+        int t = _si(rT, i)
+        bool isSig = s > i_signal_min_score and sigUsed < i_signal_count
+        if isSig
+            sigUsed += 1
+        array.push(klPrice, p)
+        array.push(klScore, s)
+        array.push(klTouch, t)
+        array.push(klIsSig, isSig)
+        array.push(klLastTouchBar, _si(rLT, i))
+
+    levelsDone := true
+
+// -----------------------------------------------------------------------------
+// Draw
+// -----------------------------------------------------------------------------
+var line[] lvLines = array.new_line()
+var label[] lvLabels = array.new_label()
+
+int tfSec = timeframe.in_seconds()
+int barsForward = math.max(20, int(math.round(6 * 3600.0 / tfSec)))
+
+bool justOrDone = orDone and not prevOrDone
+prevOrDone := orDone
+if justOrDone and i_show_or
+    color cOr = color.new(color.blue, 0)
+    line lOh = line.new(bar_index, orHigh, bar_index + barsForward, orHigh, color=cOr, width=2, style=line.style_solid)
+    line lOl = line.new(bar_index, orLow, bar_index + barsForward, orLow, color=cOr, width=2, style=line.style_dashed)
+    array.push(lvLines, lOh)
+    array.push(lvLines, lOl)
+    if i_show_labels
+        label lbH = label.new(bar_index, orHigh, "OR H " + str.tostring(orHigh, "#"), style=label.style_none, textcolor=cOr, size=size.small)
+        label lbL = label.new(bar_index, orLow, "OR L " + str.tostring(orLow, "#"), style=label.style_none, textcolor=cOr, size=size.small)
+        array.push(lvLabels, lbH)
+        array.push(lvLabels, lbL)
+
+bool justBuilt = levelsDone and not levelsDone[1]
+if justBuilt and i_show_levels
+    int n = array.size(klPrice)
+    for i = 0 to n - 1
+        float p = _sf(klPrice, i)
+        float s = _sf(klScore, i)
+        int t = _si(klTouch, i)
+        bool isSig = array.get(klIsSig, i)
+        color c = isSig ? color.new(color.purple, 10) : color.new(color.gray, 65)
+        int w = isSig ? 2 : 1
+        line ln = line.new(
+             bar_index, p, bar_index + barsForward, p,
+             color=c,
+             style=isSig ? line.style_solid : line.style_dotted,
+             width=w)
+        array.push(lvLines, ln)
+        if i_show_labels
+            string tag = isSig ? "SIGNAL" : "TRAIL"
+            label lb = label.new(
+                 bar_index, p,
+                 tag + " " + str.tostring(p, "#") + " | score=" + str.tostring(s, "#.0") + " | touch=" + str.tostring(t),
+                 style=label.style_none, textcolor=c, size=size.small)
+            array.push(lvLabels, lb)
+
+// keep history, but trim oldest drawings to stay under limits
+while array.size(lvLines) > 450
+    line.delete(array.shift(lvLines))
+while array.size(lvLabels) > 450
+    label.delete(array.shift(lvLabels))
