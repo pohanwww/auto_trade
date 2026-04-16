@@ -230,7 +230,8 @@ crontab crontab.txt
 | 參數 | 說明 | 預設值 | 激進 | 保守 |
 |------|------|--------|------|------|
 | `signal_check_interval` | 訊號檢測間隔（分鐘） | 5 | 3 | 10 |
-| `position_check_interval` | 持倉檢測間隔（秒） | 3 | 2 | 5 |
+
+有倉時的停損／移停／停利檢查由行情 **tick** 驅動，不再透過設定檔調整間隔。
 
 ---
 
@@ -252,7 +253,6 @@ default:
   
   monitoring:
     signal_check_interval: 5
-    position_check_interval: 3
 ```
 
 ### 方法 2：新增自訂策略
@@ -272,7 +272,6 @@ my_strategy:
   
   monitoring:
     signal_check_interval: 7
-    position_check_interval: 4
 ```
 
 然後修改 `active_strategy` 來啟用：
@@ -308,7 +307,6 @@ default:
     take_profit_points: 500
   monitoring:
     signal_check_interval: 5
-    position_check_interval: 3
 
 aggressive:
   trading:

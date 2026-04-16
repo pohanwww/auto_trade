@@ -26,7 +26,6 @@ default:
   
   monitoring:
     signal_check_interval: 15          # 訊號檢測間隔 (分鐘)
-    position_check_interval: 3        # 持倉檢測間隔 (秒)
 
 
 # index 25000~27500
@@ -43,7 +42,6 @@ simple:
 
   monitoring:
     signal_check_interval: 15
-    position_check_interval: 3
 
 
 complex:
@@ -60,4 +58,3 @@ complex:
   
   monitoring:
     signal_check_interval: 15          # 訊號檢測間隔 (分鐘)
-    position_check_interval: 2        # 持倉檢測間隔 (秒)

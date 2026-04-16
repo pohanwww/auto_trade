@@ -96,10 +96,9 @@ class Config:
             trading, position
         )
 
-        # 檢測頻率
+        # 檢測頻率（進場／加碼等）；持倉出場一律在行情 tick 時檢查
         monitoring = strategy_data["monitoring"]
         self.signal_check_interval: int = monitoring["signal_check_interval"]
-        self.position_check_interval: int = monitoring["position_check_interval"]
 
         # 保存策略名稱和可用策略列表
         self.strategy_name: str = active_strategy

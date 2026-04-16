@@ -67,9 +67,8 @@ class TradingEngine:
         self.symbol: str | None = None
         self.sub_symbol: str | None = None
 
-        # 檢測頻率
+        # 檢測頻率（進場／加碼等）；持倉出場僅在 tick 喚醒時檢查
         self.signal_check_interval: int = 5  # 分鐘
-        self.position_check_interval: int = 5  # 秒
 
         # 加碼信號去重
         self._addon_checked_this_interval: bool = False
@@ -84,7 +83,6 @@ class TradingEngine:
         symbol: str,
         sub_symbol: str,
         signal_check_interval: int = 5,
-        position_check_interval: int = 5,
         config_file: str | None = None,
     ) -> None:
         """設定交易參數
@@ -93,20 +91,19 @@ class TradingEngine:
             symbol: 商品代碼
             sub_symbol: 子商品代碼
             signal_check_interval: 信號檢測間隔（分鐘）
-            position_check_interval: 持倉檢測間隔（秒）
             config_file: YAML 配置檔名（如 strategy_ma.yaml）
         """
         self.config_file = config_file
         self.symbol = symbol
         self.sub_symbol = sub_symbol
         self.signal_check_interval = signal_check_interval
-        self.position_check_interval = position_check_interval
 
         print("🔧 TradingEngine 配置:")
         print(f"  交易單元: {self.trading_unit.name}")
         print(f"  策略: {self.trading_unit.strategy.name}")
         print(f"  倉位配置: {self.trading_unit.pm_config}")
         print(f"  商品: {symbol} / {sub_symbol}")
+        print("  持倉出場檢查: 每筆 tick")
 
     def run(self) -> None:
         """執行交易主循環"""
@@ -221,7 +218,7 @@ class TradingEngine:
                     elif current_time.minute % 5 != 0:
                         print_flag = False
 
-                    self.market_service.wait_for_tick(timeout=self.position_check_interval)
+                    self.market_service.wait_for_tick(timeout=None)
 
                 else:
                     # === 無倉位：低頻檢測信號 ===
