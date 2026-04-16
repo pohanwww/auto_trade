@@ -342,24 +342,29 @@ class PositionManager:
         trailing_stop_price: int | None = None
         is_tightened = False
         if record.trailing_stop_active:
-            ts_points = calculate_points(
-                self.config.trailing_stop_points,
-                self.config.trailing_stop_points_rate,
-                entry_price,
-            )
-            # 檢查是否已進入收緊模式
-            if tighten_after_price is not None and tightened_ts_points is not None:
-                past_tighten = (
-                    highest >= tighten_after_price
-                    if is_long
-                    else highest <= tighten_after_price
+            # 優先信任持倉檔內已保存的移停價（避免重啟時跳價）。
+            if record.trailing_stop_price is not None:
+                trailing_stop_price = int(record.trailing_stop_price)
+            else:
+                ts_points = calculate_points(
+                    self.config.trailing_stop_points,
+                    self.config.trailing_stop_points_rate,
+                    entry_price,
                 )
-                if past_tighten:
-                    ts_points = tightened_ts_points
-                    is_tightened = True
-            trailing_stop_price = (
-                highest - ts_points if is_long else highest + ts_points
-            )
+                # 檢查是否已進入收緊模式
+                if tighten_after_price is not None and tightened_ts_points is not None:
+                    past_tighten = (
+                        highest >= tighten_after_price
+                        if is_long
+                        else lowest <= tighten_after_price
+                    )
+                    if past_tighten:
+                        ts_points = tightened_ts_points
+                        is_tightened = True
+                # fallback: 做多用最高價、做空用最低價
+                trailing_stop_price = (
+                    highest - ts_points if is_long else lowest + ts_points
+                )
 
         # 建立 Legs
         position_id = str(uuid.uuid4())[:8]
