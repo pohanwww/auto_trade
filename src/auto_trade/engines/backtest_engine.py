@@ -216,7 +216,6 @@ class BacktestEngine:
             take_profit_points=unit.pm_config.take_profit_points,
             trailing_stop_points_rate=unit.pm_config.trailing_stop_points_rate,
             take_profit_points_rate=unit.pm_config.take_profit_points_rate,
-            enable_macd_fast_stop=unit.pm_config.enable_macd_fast_stop,
         )
 
         result = BacktestResult(config=bt_config)

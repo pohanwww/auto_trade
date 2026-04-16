@@ -32,11 +32,6 @@ class MACDGoldenCrossStrategy(BaseStrategy):
         signal_period: int = 9,
         volume_percentile_threshold: float = 0.0,
         volume_percentile_lookback: int = 100,
-        # Swing key level trailing stop
-        use_key_level_trailing: bool = False,
-        key_level_buffer: int = 10,
-        swing_period: int = 5,
-        swing_lookback_days: int = 5,
         **kwargs,  # noqa: ARG002
     ):
         super().__init__(indicator_service, name="MACD Golden Cross Strategy")
@@ -46,46 +41,9 @@ class MACDGoldenCrossStrategy(BaseStrategy):
         self.signal_period = signal_period
         self.volume_percentile_threshold = volume_percentile_threshold
         self.volume_percentile_lookback = volume_percentile_lookback
-        self.use_key_level_trailing = use_key_level_trailing
-        self.key_level_buffer = key_level_buffer
-        self.swing_period = swing_period
-        self.swing_lookback_days = swing_lookback_days
 
         # Dedup: prevent re-emitting signal on the same bar across multiple checks
         self._last_signal_bar_time: datetime | None = None
-
-    def _build_key_level_metadata(
-        self, kbar_list: KBarList, entry_price: int, is_long: bool
-    ) -> dict:
-        """Compute swing high/low key levels and return PM-compatible metadata."""
-        bars_per_day = 40  # ~40 bars of 30m per trading day (day+night)
-        lookback_bars = self.swing_lookback_days * bars_per_day
-
-        swing_highs, swing_lows = self.indicator_service.find_swing_levels(
-            kbar_list,
-            period=self.swing_period,
-            lookback_bars=lookback_bars,
-        )
-
-        if is_long:
-            key_levels = sorted(lv for lv in swing_highs if lv > entry_price)
-        else:
-            key_levels = sorted(
-                (lv for lv in swing_lows if lv < entry_price), reverse=True
-            )
-
-        meta: dict = {}
-        if key_levels:
-            meta["key_levels"] = key_levels
-            meta["key_level_buffer"] = self.key_level_buffer
-            meta["hybrid_key_level"] = True
-            print(
-                f"  🔑 MACD Key level trailing: "
-                f"{len(key_levels)} swing levels, "
-                f"buffer={self.key_level_buffer}pts, "
-                f"levels={key_levels[:5]}{'...' if len(key_levels) > 5 else ''}"
-            )
-        return meta
 
     def _check_volume_filter(self, kbar_list: KBarList) -> tuple[bool, float | None]:
         """檢查成交量是否通過過濾條件
@@ -193,12 +151,6 @@ class MACDGoldenCrossStrategy(BaseStrategy):
                 "histogram": current_macd.histogram,
                 "volume_percentile": vol_pct,
             }
-
-            if self.use_key_level_trailing:
-                kl_meta = self._build_key_level_metadata(
-                    kbar_list, int(current_price), is_long=True
-                )
-                meta.update(kl_meta)
 
             self._last_signal_bar_time = latest_bar_time
             return StrategySignal(

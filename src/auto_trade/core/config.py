@@ -128,7 +128,6 @@ class Config:
             if pm.stop_loss_points_rate is not None
             else f"{pm.stop_loss_points}點"
         )
-        fs_display = "啟用" if pm.enable_macd_fast_stop else "禁用"
         tighten_display = ""
         if pm.has_tightened_trailing_stop:
             tighten_display = f"\n  收緊移停: 獲利 {pm.tighten_after_points}點後 → {pm.tightened_trailing_stop_points}點"
@@ -141,7 +140,7 @@ class Config:
             f"  停損: {stop_loss_display}\n"
             f"  移動停損: {trailing_stop_display}\n"
             f"  獲利了結: {take_profit_display}\n"
-            f"  快速停損 (FS): {fs_display}"
+            f"  收緊移停: {'啟用' if pm.has_tightened_trailing_stop else '禁用'}"
             f"{tighten_display}\n"
             f")"
         )

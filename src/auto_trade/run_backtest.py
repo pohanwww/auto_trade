@@ -130,7 +130,6 @@ def build_trading_units_from_config(
             # MACD 策略
             "macd_threshold",
             "swing_period",
-            "swing_lookback_days",
             # Scalp 策略
             "session_start_time",
             "entry_mode",
@@ -201,7 +200,6 @@ def build_trading_units_from_config(
             "key_level": "KL",
         }
         type_tag = type_tags.get(strategy_type, strategy_type)
-        fs_tag = " FS" if pm_config.enable_macd_fast_stop else ""
         ts_tag = " tightenTS" if pm_config.has_tightened_trailing_stop else ""
 
         # filter tags
@@ -265,7 +263,7 @@ def build_trading_units_from_config(
 
         unit = TradingUnit(
             name=(
-                f"{name} ({type_tag}{fs_tag}{ts_tag}"
+                f"{name} ({type_tag}{ts_tag}"
                 f"{filter_str}"
                 f" qty={pm_config.total_quantity}"
                 f" TP={pm_config.tp_leg_quantity}/TS={pm_config.ts_leg_quantity})"

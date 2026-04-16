@@ -162,7 +162,6 @@ def make_unit(
         start_trailing_stop_points=80,
         trailing_stop_points=60,
         timeframe=timeframe,
-        enable_macd_fast_stop=False,
         force_exit_time=force_exit_time,
         enable_profit_lock=params.get("enable_profit_lock", False),
         profit_lock_long_only=params.get("profit_lock_long_only", False),

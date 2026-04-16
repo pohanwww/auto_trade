@@ -124,13 +124,6 @@ class BacktestConfig:
     enable_trailing_stop: bool = True
     enable_take_profit: bool = True
 
-    # MACD 快速停損設定
-    enable_macd_fast_stop: bool = (
-        False  # 是否啟用 MACD 快速停損（使用 stop_loss_points 作為門檻）
-    )
-    min_acceleration_threshold: float = 0.0  # 死叉加速度門檻（0.0 = 不過濾）
-
-
 @dataclass
 class BacktestResult:
     """回測結果"""

@@ -70,7 +70,6 @@ class PositionManagerConfig:
         tightened_trailing_stop_points_rate: float | None = None,
         # 其他
         timeframe: str = "30m",
-        enable_macd_fast_stop: bool = True,
         # 時間強制平倉（日內策略用，格式 "HH:MM"，如 "13:30"）
         force_exit_time: str | None = None,
         # 加碼設定
@@ -118,7 +117,6 @@ class PositionManagerConfig:
         self.tightened_trailing_stop_points_rate = tightened_trailing_stop_points_rate
 
         self.timeframe = timeframe
-        self.enable_macd_fast_stop = enable_macd_fast_stop
         self.force_exit_time = force_exit_time
 
         # 加碼
@@ -165,14 +163,14 @@ class PositionManagerConfig:
             tp_leg_quantity=pos.get("tp_leg_quantity", 0),
             ts_leg_quantity=pos.get("ts_leg_quantity", total_qty),
             # 停損
-            stop_loss_points=trading["stop_loss_points"],
+            stop_loss_points=trading.get("stop_loss_points", 50),
             stop_loss_points_rate=trading.get("stop_loss_points_rate"),
             # 停利
-            take_profit_points=trading["take_profit_points"],
+            take_profit_points=trading.get("take_profit_points", 500),
             take_profit_points_rate=trading.get("take_profit_points_rate"),
             # 移動停損
             start_trailing_stop_points=trading["start_trailing_stop_points"],
-            trailing_stop_points=trading["trailing_stop_points"],
+            trailing_stop_points=trading.get("trailing_stop_points", 200),
             trailing_stop_points_rate=trading.get("trailing_stop_points_rate"),
             # 收緊移停
             tighten_after_points=trading.get("tighten_after_points"),
@@ -185,7 +183,6 @@ class PositionManagerConfig:
             ),
             # 其他
             timeframe=trading.get("timeframe", "30m"),
-            enable_macd_fast_stop=trading.get("enable_macd_fast_stop", True),
             force_exit_time=trading.get("force_exit_time"),
             # 加碼
             enable_addon=pos.get("enable_addon", False),
@@ -272,9 +269,6 @@ class PositionManager:
         self.config = config
         self.indicator_service = indicator_service
         self.position: ManagedPosition | None = None
-
-        # MACD 快速停損相關
-        self._last_fast_stop_check_kbar_time: datetime | None = None
 
     @property
     def has_position(self) -> bool:
@@ -537,7 +531,7 @@ class PositionManager:
 
         Args:
             current_price: 當前價格
-            kbar_list: 當前 K 線資料（用於 MACD 快速停損）
+            kbar_list: 當前 K 線資料（用於動能衰竭檢查）
 
         Returns:
             list[OrderAction]: 需要執行的平倉動作列表
@@ -549,19 +543,6 @@ class PositionManager:
         self.position.update_price_tracking(current_price)
 
         actions: list[OrderAction] = []
-
-        # 檢查 MACD 快速停損（整個 Position 級別）
-        if (
-            self.config.enable_macd_fast_stop
-            and kbar_list is not None
-            and self.indicator_service is not None
-        ):
-            fast_stop_triggered = self._check_macd_fast_stop(current_price, kbar_list)
-            if fast_stop_triggered:
-                actions.extend(
-                    self._close_all_legs(current_price, ExitReason.FAST_STOP)
-                )
-                return actions
 
         # 檢查動能衰竭停利（整個 Position 級別）
         if (
@@ -611,7 +592,6 @@ class PositionManager:
             if self.position.status == PositionStatus.CLOSED:
                 print(f"📦 Position {self.position.position_id} 已完全平倉")
                 self.position = None
-                self._last_fast_stop_check_kbar_time = None
                 self._pl_armed = False
                 self._pl_last_eval_bar_time = None
 
@@ -679,7 +659,6 @@ class PositionManager:
     def reset(self) -> None:
         """重置 PositionManager 狀態"""
         self.position = None
-        self._last_fast_stop_check_kbar_time = None
         self._pl_armed = False
         self._pl_last_eval_bar_time = None
 
@@ -1546,93 +1525,6 @@ class PositionManager:
             )
 
         return actions
-
-    def _check_macd_fast_stop(self, current_price: int, kbar_list: KBarList) -> bool:
-        """檢查 MACD 快速停損（方向感知）
-
-        做多：死叉為不利信號 → 虧損超過門檻則觸發
-        做空：金叉為不利信號 → 虧損超過門檻則觸發
-        """
-        if not self.position or not self.indicator_service:
-            return False
-
-        is_long = self._is_long
-
-        # 計算當前盈虧（方向感知）
-        current_profit = (
-            current_price - self.position.entry_price
-            if is_long
-            else self.position.entry_price - current_price
-        )
-
-        stop_loss_threshold = calculate_points(
-            self.config.stop_loss_points,
-            self.config.stop_loss_points_rate,
-            self.position.entry_price,
-        )
-
-        if len(kbar_list) < 35:
-            return False
-
-        # 獲取最新 K 棒的時間
-        latest_kbar = kbar_list.kbars[-1]
-        latest_kbar_time = latest_kbar.time
-
-        # 如果是同一根 K 棒，不重複檢查
-        if self._last_fast_stop_check_kbar_time == latest_kbar_time:
-            return False
-
-        self._last_fast_stop_check_kbar_time = latest_kbar_time
-
-        # 檢查是否有任何 Leg 已啟動移停（已啟動則不使用快速停損）
-        any_trailing_active = any(
-            leg.exit_rule.trailing_stop_active for leg in self.position.open_legs
-        )
-
-        # 如果已經在不利交叉狀態且虧損達標
-        if (
-            self.position.is_in_macd_adverse_cross
-            and not any_trailing_active
-            and current_profit < -stop_loss_threshold
-        ):
-            print(
-                f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {stop_loss_threshold} 點"
-            )
-            return True
-
-        # 計算 MACD 並檢查交叉
-        macd_list = self.indicator_service.calculate_macd(kbar_list)
-        is_death_cross = self.indicator_service.check_death_cross(
-            macd_list, min_acceleration=None
-        )
-        is_golden_cross = self.indicator_service.check_golden_cross(macd_list)
-
-        # 判斷不利交叉和有利交叉（方向感知）
-        if is_long:
-            is_adverse_cross = is_death_cross
-            is_favorable_cross = is_golden_cross
-        else:
-            is_adverse_cross = is_golden_cross
-            is_favorable_cross = is_death_cross
-
-        if is_adverse_cross:
-            self.position.is_in_macd_adverse_cross = True
-            cross_name = "死叉" if is_long else "金叉"
-            print(f"🔴 MACD {cross_name}確認（不利於{'多' if is_long else '空'}頭）")
-
-            if not any_trailing_active and current_profit < -stop_loss_threshold:
-                print(
-                    f"⚡ MACD 快速停損觸發！虧損 {-current_profit} 點 >= 門檻 {stop_loss_threshold} 點"
-                )
-                return True
-
-        elif is_favorable_cross:
-            if self.position.is_in_macd_adverse_cross:
-                self.position.is_in_macd_adverse_cross = False
-                cross_name = "金叉" if is_long else "死叉"
-                print(f"✅ MACD {cross_name}，解除不利交叉狀態")
-
-        return False
 
     def _check_momentum_exhaustion(
         self, current_price: int, kbar_list: KBarList
