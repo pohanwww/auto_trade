@@ -150,6 +150,22 @@ class KeyLevelStrategy(BaseStrategy):
         self.breakout_buffer_short = kwargs.get("breakout_buffer_short", breakout_buffer)
         self.instant_threshold_long = kwargs.get("instant_threshold_long", instant_threshold)
         self.instant_threshold_short = kwargs.get("instant_threshold_short", instant_threshold)
+        # Volume-confirmed instant breakout:
+        # - Backtest: 1m RVOL via evaluate_instant_volume_breakout_1m + BacktestEngine 1m step
+        # - Live: RollingTickVolumeWindow on cumulative tick volume vs avg/10s from last N closed 5m bars
+        self.instant_volume_confirm_1m = kwargs.get("instant_volume_confirm_1m", True)
+        self.instant_volume_lookback = kwargs.get("instant_volume_lookback", 20)
+        # Backtest: min RVOL; Live tick mode: rolling sum vs baseline must exceed this multiple
+        self.instant_volume_rvol_min = kwargs.get("instant_volume_rvol_min", 1.3)
+        self.instant_volume_max_confirm_bars = kwargs.get(
+            "instant_volume_max_confirm_bars", 2
+        )
+        self.instant_volume_tick_window_sec = float(
+            kwargs.get("instant_volume_tick_window_sec", 10.0)
+        )
+        self.instant_volume_baseline_closed_5m_bars = int(
+            kwargs.get("instant_volume_baseline_closed_5m_bars", 3)
+        )
         self.or_sl_use_boundary = kwargs.get("or_sl_use_boundary", False)
         self.or_as_kl = kwargs.get("or_as_kl", False)
         self.or_kl_weight = kwargs.get("or_kl_weight", 2.0)
@@ -166,6 +182,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
             "  Signal score gate: > %.1f\n"
             "  Signal: brk_buf=%.2f, instant=%.2f, atr_period=%d\n"
+            "  Instant 1m vol: enabled=%s lookback=%d rvol>=%.2f max_confirm=%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
             "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
@@ -175,6 +192,10 @@ class KeyLevelStrategy(BaseStrategy):
             swing_period, cluster_tolerance, zone_tolerance, signal_level_count,
             self.signal_min_score,
             breakout_buffer, instant_threshold, atr_period,
+            self.instant_volume_confirm_1m,
+            self.instant_volume_lookback,
+            self.instant_volume_rvol_min,
+            self.instant_volume_max_confirm_bars,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
@@ -228,6 +249,11 @@ class KeyLevelStrategy(BaseStrategy):
         self._target_short: KeyLevel | None = None
         self._instant_target_long: KeyLevel | None = None
         self._instant_target_short: KeyLevel | None = None
+        self._iv_last_processed_1m_time: datetime | None = None
+        self._iv_pending_long_level: int | None = None
+        self._iv_pending_long_bars: int = 0
+        self._iv_pending_short_level: int | None = None
+        self._iv_pending_short_bars: int = 0
 
         self._kl_updated: bool = False
 
@@ -490,6 +516,11 @@ class KeyLevelStrategy(BaseStrategy):
 
         return long_price, short_price
 
+    @property
+    def requires_1m_instant_volume_data(self) -> bool:
+        """True → backtest loads 1m bars for RVOL instant path (live uses tick rolling instead)."""
+        return bool(self.instant_volume_confirm_1m)
+
     def get_instant_trigger_prices(self) -> list[tuple[float, str]]:
         """Legacy wrapper — adapts get_instant_targets to old list format."""
         long_p, short_p = self.get_instant_targets()
@@ -508,7 +539,232 @@ class KeyLevelStrategy(BaseStrategy):
             minutes=tf_min - mins_past,
         )
         self._cooldown_until = next_bar
+        self._iv_pending_long_level = None
+        self._iv_pending_long_bars = 0
+        self._iv_pending_short_level = None
+        self._iv_pending_short_bars = 0
         _log("Cooldown until %s (skip 1 bar)", next_bar.strftime("%H:%M:%S"))
+
+    def evaluate_instant_volume_breakout_1m(
+        self,
+        kbar_list_1m: KBarList,
+        symbol: str,
+        kbar_5m,
+        prev_kbar_5m,
+        kbar_list_5m: KBarList,
+    ) -> StrategySignal | None:
+        """Evaluate 1m volume-confirmed instant breakout.
+
+        Logic:
+        - Price condition first: close_1m > KL + breakout_buffer(ATR) (short uses <).
+        - Then volume confirm on the same 1m closed bar.
+        - If first breakout bar has no volume confirmation, allow one more bar
+          (configurable via instant_volume_max_confirm_bars) as long as price
+          remains beyond threshold.
+        - Entry price:
+            1) if this 1m bar range contains theoretical instant trigger level
+               (KL +/- instant_threshold*ATR), use that trigger price;
+            2) otherwise use this 1m bar close.
+        """
+        if not self.instant_volume_confirm_1m or self._atr <= 0:
+            return None
+        # Live: TradingEngine uses tick rolling volume, not 1m RVOL.
+        if self.is_live:
+            return None
+        if len(kbar_list_1m) < 3:
+            return None
+        last_closed_1m = kbar_list_1m.kbars[-2]
+        next_1m = kbar_list_1m.kbars[-1]
+        if self._cooldown_until and next_1m.time < self._cooldown_until:
+            return None
+        if self._iv_last_processed_1m_time == last_closed_1m.time:
+            return None
+        self._iv_last_processed_1m_time = last_closed_1m.time
+
+        session_name = self._get_trade_session(kbar_5m.time)
+        if self._reached_trade_limit(session_name):
+            return None
+
+        allow_long, allow_short = self._get_allowed_directions(
+            float(last_closed_1m.close), kbar_list_5m, kbar_5m
+        )
+
+        closed_bars = kbar_list_1m.kbars[:-1]
+
+        # --- Long side ---
+        long_kl = self._instant_target_long
+        if allow_long and self.use_breakout_long and self.use_instant_long and long_kl:
+            long_threshold = long_kl.price + self._atr * self.breakout_buffer_long
+            long_breakout = int(last_closed_1m.close) > long_threshold
+            long_vol_ok = self._volume_confirm_on_closed_1m(closed_bars)
+            long_theoretical = int(
+                long_kl.price + self._atr * self.instant_threshold_long
+            )
+            long_contains_theoretical = (
+                int(last_closed_1m.low)
+                <= long_theoretical
+                <= int(last_closed_1m.high)
+            )
+            long_entry_price = (
+                long_theoretical
+                if long_contains_theoretical
+                else int(last_closed_1m.close)
+            )
+
+            long_sig = self._resolve_1m_pending_side(
+                is_long=True,
+                breakout=long_breakout,
+                vol_ok=long_vol_ok,
+                kl=long_kl,
+                level=long_kl.price,
+                entry_price=long_entry_price,
+                kbar_5m=kbar_5m,
+                prev_kbar_5m=prev_kbar_5m,
+                session_name=session_name,
+                symbol=symbol,
+            )
+            if long_sig is not None:
+                return long_sig
+
+        # --- Short side ---
+        short_kl = self._instant_target_short
+        if allow_short and self.use_breakout_short and self.use_instant_short and short_kl:
+            short_threshold = short_kl.price - self._atr * self.breakout_buffer_short
+            short_breakout = int(last_closed_1m.close) < short_threshold
+            short_vol_ok = self._volume_confirm_on_closed_1m(closed_bars)
+            short_theoretical = int(
+                short_kl.price - self._atr * self.instant_threshold_short
+            )
+            short_contains_theoretical = (
+                int(last_closed_1m.low)
+                <= short_theoretical
+                <= int(last_closed_1m.high)
+            )
+            short_entry_price = (
+                short_theoretical
+                if short_contains_theoretical
+                else int(last_closed_1m.close)
+            )
+
+            short_sig = self._resolve_1m_pending_side(
+                is_long=False,
+                breakout=short_breakout,
+                vol_ok=short_vol_ok,
+                kl=short_kl,
+                level=short_kl.price,
+                entry_price=short_entry_price,
+                kbar_5m=kbar_5m,
+                prev_kbar_5m=prev_kbar_5m,
+                session_name=session_name,
+                symbol=symbol,
+            )
+            if short_sig is not None:
+                return short_sig
+
+        return None
+
+    def _resolve_1m_pending_side(
+        self,
+        *,
+        is_long: bool,
+        breakout: bool,
+        vol_ok: bool,
+        kl: KeyLevel,
+        level: int,
+        entry_price: int,
+        kbar_5m,
+        prev_kbar_5m,
+        session_name: str | None,
+        symbol: str,
+    ) -> StrategySignal | None:
+        """Handle first/second-bar confirmation state for one side."""
+        if is_long:
+            pending_level = self._iv_pending_long_level
+            pending_bars = self._iv_pending_long_bars
+        else:
+            pending_level = self._iv_pending_short_level
+            pending_bars = self._iv_pending_short_bars
+
+        # Pending invalidation: level switched or no longer breakout.
+        if pending_level is not None and (pending_level != level or not breakout):
+            pending_level = None
+            pending_bars = 0
+
+        # Immediate confirm on first breakout bar.
+        if breakout and vol_ok and pending_level is None:
+            return self._emit_entry(
+                is_long,
+                kl,
+                entry_price,
+                True,
+                kbar_5m,
+                session_name,
+                "breakout_long" if is_long else "breakout_short",
+                symbol,
+                prev_kbar=prev_kbar_5m,
+            )
+
+        # First breakout bar without volume -> start pending.
+        if breakout and not vol_ok and pending_level is None:
+            pending_level = level
+            pending_bars = 1
+            _log(
+                "  1m instant pending %s: level=%d (bar#1 no volume)",
+                "LONG" if is_long else "SHORT",
+                level,
+                verbose=True,
+            )
+        elif pending_level is not None and breakout:
+            # Second (or nth) confirm bar while still beyond threshold.
+            next_count = pending_bars + 1
+            if vol_ok and next_count <= self.instant_volume_max_confirm_bars:
+                pending_level = None
+                pending_bars = 0
+                return self._emit_entry(
+                    is_long,
+                    kl,
+                    entry_price,
+                    True,
+                    kbar_5m,
+                    session_name,
+                    "breakout_long" if is_long else "breakout_short",
+                    symbol,
+                    prev_kbar=prev_kbar_5m,
+                )
+            if next_count >= self.instant_volume_max_confirm_bars:
+                pending_level = None
+                pending_bars = 0
+            else:
+                pending_bars = next_count
+
+        if is_long:
+            self._iv_pending_long_level = pending_level
+            self._iv_pending_long_bars = pending_bars
+        else:
+            self._iv_pending_short_level = pending_level
+            self._iv_pending_short_bars = pending_bars
+        return None
+
+    def _volume_confirm_on_closed_1m(self, closed_bars: list[KBar]) -> bool:
+        """RVOL-only volume confirmation over closed 1m bars."""
+        lb = max(2, int(self.instant_volume_lookback))
+        if len(closed_bars) < lb + 1:
+            return False
+
+        recent = closed_bars[-(lb + 1) :]
+        current_vol = float(recent[-1].volume)
+        if current_vol <= 0:
+            return False
+
+        hist = [float(b.volume) for b in recent[:-1] if b.volume > 0]
+        if not hist:
+            return False
+
+        avg_vol = sum(hist) / len(hist)
+        if avg_vol <= 0:
+            return False
+        rvol = current_vol / avg_vol
+        return rvol >= float(self.instant_volume_rvol_min)
 
     # ──────────────────────────────────────────────
     # Key level calculation
@@ -762,6 +1018,11 @@ class KeyLevelStrategy(BaseStrategy):
         self._target_short = None
         self._instant_target_long = None
         self._instant_target_short = None
+        self._iv_last_processed_1m_time = None
+        self._iv_pending_long_level = None
+        self._iv_pending_long_bars = 0
+        self._iv_pending_short_level = None
+        self._iv_pending_short_bars = 0
         self._kl_updated = False
 
     def _get_trading_day(self, bar_time: datetime):
@@ -875,6 +1136,9 @@ class KeyLevelStrategy(BaseStrategy):
           - instant: kbar.open (current bar's open)
         """
         if self._atr <= 0:
+            return None
+        # Volume-confirmed mode: no plain 5m bar-close entry; backtest uses 1m RVOL, live uses tick rolling.
+        if bar_close and self.instant_volume_confirm_1m:
             return None
 
         session_name = self._get_trade_session(kbar.time)

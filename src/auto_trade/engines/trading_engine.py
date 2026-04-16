@@ -312,6 +312,18 @@ class TradingEngine:
         else:
             next_time = now.replace(minute=next_min, second=0, microsecond=0)
 
+        use_vol_confirm = bool(
+            getattr(self.trading_unit.strategy, "instant_volume_confirm_1m", False)
+        )
+        if use_vol_confirm:
+            print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
+            print(
+                "⚡ Instant monitoring: tick rolling 帶量（實盤）；"
+                "回測仍用 1m RVOL"
+            )
+            self._wait_instant_tick_volume_gated(next_time)
+            return
+
         long_target, short_target = self.trading_unit.strategy.get_instant_targets()
 
         if long_target is None and short_target is None:
@@ -399,6 +411,155 @@ class TradingEngine:
                     continue
 
                 # Wait for next tick (fallback timeout keeps adaptive ceiling)
+                distances = []
+                if long_target is not None:
+                    distances.append(abs(price - long_target))
+                if short_target is not None:
+                    distances.append(abs(price - short_target))
+                min_dist = min(distances) if distances else 9999
+                poll = (
+                    self._INSTANT_POLL_FAST
+                    if min_dist <= self._INSTANT_PROXIMITY
+                    else self._INSTANT_POLL_NORMAL
+                )
+                self.market_service.wait_for_tick(timeout=poll)
+
+            except Exception:
+                self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
+
+    def _wait_instant_tick_volume_gated(self, next_time: datetime) -> None:
+        """實盤：即時價觸發價 AND 近窗 tick 累積量達標（對照前三根已收 5m 均量/窗寬）。
+
+        回測仍由 BacktestEngine + evaluate_instant_volume_breakout_1m（1m RVOL）處理。
+        """
+        from auto_trade.services.tick_volume_monitor import (
+            RollingTickVolumeWindow,
+            avg_volume_per_seconds_from_last_n_closed_5m,
+            is_high_volume_vs_baseline,
+        )
+
+        s = self.trading_unit.strategy
+        window_sec = float(getattr(s, "instant_volume_tick_window_sec", 10.0))
+        n_closed = int(getattr(s, "instant_volume_baseline_closed_5m_bars", 3))
+        mult = float(getattr(s, "instant_volume_rvol_min", 1.3))
+        tw = RollingTickVolumeWindow(window_sec=window_sec)
+
+        long_target: float | None = None
+        short_target: float | None = None
+        kbar_list = None
+        baseline: float | None = None
+        last_kbar_mono: float = 0.0
+        _KBAR_REFRESH_INTERVAL = 5.0
+
+        suppress_until = 0.0
+
+        while datetime.now() < next_time:
+            try:
+                quote = self.market_service.get_realtime_quote(
+                    self.symbol, self.sub_symbol
+                )
+                if not quote:
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
+                    continue
+
+                ts = quote.timestamp if quote.timestamp else datetime.now()
+                tw.on_tick(ts, int(quote.volume))
+
+                now_mono = _time.monotonic()
+                if kbar_list is None or (
+                    now_mono - last_kbar_mono > _KBAR_REFRESH_INTERVAL
+                ):
+                    last_kbar_mono = now_mono
+                    kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                        self.symbol,
+                        self.sub_symbol,
+                        self.trading_unit.pm_config.timeframe,
+                        days=5,
+                    )
+                    if hasattr(s, "_compute_active_targets"):
+                        s._compute_active_targets(kbar_list)
+                    long_target, short_target = s.get_instant_targets()
+                    baseline = avg_volume_per_seconds_from_last_n_closed_5m(
+                        kbar_list,
+                        n_closed_bars=n_closed,
+                        baseline_window_sec=max(1, int(round(window_sec))),
+                        exclude_forming=True,
+                    )
+
+                now_ts = _time.monotonic()
+                if now_ts < suppress_until:
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
+                    continue
+
+                price = quote.price
+                triggered = (
+                    (long_target is not None and price >= long_target)
+                    or (short_target is not None and price <= short_target)
+                )
+                rolling = tw.rolling_sum(ts)
+                vol_ok = (
+                    baseline is not None
+                    and baseline > 0
+                    and is_high_volume_vs_baseline(
+                        float(rolling), baseline, multiplier=mult
+                    )
+                )
+
+                if triggered and vol_ok:
+                    print(
+                        f"⚡ Instant trigger (tick vol): price={price:.0f} "
+                        f"roll={rolling} baseline_per_{int(round(window_sec))}s≈{baseline:.1f} "
+                        f"(>{mult:.2f}×)"
+                    )
+
+                    if kbar_list is None or len(kbar_list.kbars) < 2:
+                        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                            self.symbol,
+                            self.sub_symbol,
+                            self.trading_unit.pm_config.timeframe,
+                            days=5,
+                        )
+
+                    signal = s.evaluate(
+                        kbar_list,
+                        price,
+                        self.sub_symbol,
+                        bar_close=False,
+                    )
+                    actions = self.position_manager.on_signal(
+                        signal,
+                        kbar_list,
+                        self.symbol,
+                        self.sub_symbol,
+                    )
+
+                    if actions:
+                        for action in actions:
+                            fill_result = self._execute_action(action)
+                            if (
+                                fill_result
+                                and action.order_type == "Open"
+                                and self.position_manager.position
+                            ):
+                                pos = self.position_manager.position
+                                signal_price = pos.entry_price
+                                pos.entry_price = fill_result
+                                pos.highest_price = fill_result
+                                pos.lowest_price = fill_result
+                                for leg in pos.legs:
+                                    if leg.entry_price == signal_price:
+                                        leg.entry_price = fill_result
+                        self._sync_position_record(int(price))
+                        return
+
+                    suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
+                    print(
+                        f"⚡ Trigger rejected (tick vol ok), suppress "
+                        f"{self._INSTANT_SUPPRESS_SECONDS}s"
+                    )
+                    self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
+                    continue
+
                 distances = []
                 if long_target is not None:
                     distances.append(abs(price - long_target))

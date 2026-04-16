@@ -176,6 +176,12 @@ def build_trading_units_from_config(
             "use_instant_long", "use_instant_short",
             "breakout_buffer_long", "breakout_buffer_short",
             "instant_threshold_long", "instant_threshold_short",
+            "instant_volume_confirm_1m",
+            "instant_volume_lookback",
+            "instant_volume_rvol_min",
+            "instant_volume_max_confirm_bars",
+            "instant_volume_tick_window_sec",
+            "instant_volume_baseline_closed_5m_bars",
         ]
         strategy_kwargs = {k: trading[k] for k in _STRATEGY_PARAM_KEYS if k in trading}
 

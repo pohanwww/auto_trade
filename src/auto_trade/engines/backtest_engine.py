@@ -14,7 +14,7 @@
 
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from auto_trade.executors.backtest_executor import BacktestExecutor
 from auto_trade.models.account import Action
@@ -121,6 +121,10 @@ class BacktestEngine:
         for unit in trading_units:
             if unit.enabled:
                 needed_timeframes.add(unit.pm_config.timeframe)
+                if bool(
+                    getattr(unit.strategy, "requires_1m_instant_volume_data", False)
+                ):
+                    needed_timeframes.add("1m")
         if not needed_timeframes:
             needed_timeframes.add(self.config.timeframe)
 
@@ -165,13 +169,20 @@ class BacktestEngine:
             print(f"   配置: {unit.pm_config}")
             print(f"{'=' * 60}")
 
-            result = self._run_single_unit(unit, unit_kbars)
+            result = self._run_single_unit(
+                unit,
+                unit_kbars,
+                kbar_cache.get("1m"),
+            )
             results[unit.name] = result
 
         return results
 
     def _run_single_unit(
-        self, unit: TradingUnit, kbar_list: KBarList
+        self,
+        unit: TradingUnit,
+        kbar_list: KBarList,
+        kbar_list_1m: KBarList | None = None,
     ) -> BacktestResult:
         """執行單一 TradingUnit 的回測
 
@@ -224,6 +235,13 @@ class BacktestEngine:
         _deferred_signal: StrategySignal | None = None
         _deferred_direction: Action | None = None
 
+        use_1m_instant_volume = bool(
+            getattr(unit.strategy, "requires_1m_instant_volume_data", False)
+        )
+        tf_minutes = self._TIMEFRAME_MINUTES.get(unit.pm_config.timeframe, 5)
+        one_min_idx = 0
+        one_min_bars = kbar_list_1m.kbars if kbar_list_1m is not None else []
+
         total_qty = unit.pm_config.total_quantity
 
         for i in range(30, len(kbar_list)):
@@ -237,6 +255,80 @@ class BacktestEngine:
             executor.set_market_state(current_open, current_time)
 
             current_kbars = kbar_list.view(i + 1)
+            entered_this_bar = False
+
+            # ── Step 0: 1m volume-confirmed instant breakout (KL only) ──
+            if (
+                use_1m_instant_volume
+                and not pm.has_position
+                and _deferred_signal is None
+                and len(current_kbars) >= 2
+                and one_min_bars
+            ):
+                # Keep strategy targets synced with the current 5m bar context.
+                if hasattr(unit.strategy, "_compute_active_targets"):
+                    unit.strategy._compute_active_targets(current_kbars)
+
+                bar_end = current_time + timedelta(minutes=tf_minutes)
+                while (
+                    one_min_idx < len(one_min_bars)
+                    and one_min_bars[one_min_idx].time < current_time
+                ):
+                    one_min_idx += 1
+
+                scan_idx = one_min_idx
+                while scan_idx + 1 < len(one_min_bars):
+                    bar_1m = one_min_bars[scan_idx]
+                    if bar_1m.time >= bar_end:
+                        break
+
+                    one_min_view = kbar_list_1m.view(scan_idx + 2)
+                    signal_1m = unit.strategy.evaluate_instant_volume_breakout_1m(
+                        one_min_view,
+                        self.config.sub_symbol,
+                        kbar,
+                        kbar_list[i - 1],
+                        current_kbars,
+                    )
+                    scan_idx += 1
+
+                    if signal_1m is None:
+                        continue
+
+                    fill_price = int(signal_1m.price)
+                    fill_time = one_min_view.kbars[-1].time
+                    actions_1m = pm.on_signal(
+                        signal_1m,
+                        current_kbars,
+                        self.config.symbol,
+                        self.config.sub_symbol,
+                    )
+                    for action in actions_1m:
+                        executor.set_market_state(fill_price, fill_time)
+                        fill = executor.execute(action)
+                        if fill.success and fill.fill_price is not None:
+                            if pm.position:
+                                pm.position.entry_price = fill.fill_price
+                                pm.position.entry_time = fill_time
+                                pm.position.highest_price = fill.fill_price
+                                pm.position.lowest_price = fill.fill_price
+                            pending_entry_price = fill.fill_price
+                            pending_entry_time = fill_time
+                            pending_direction = (
+                                Action.Buy
+                                if signal_1m.signal_type == SignalType.ENTRY_LONG
+                                else Action.Sell
+                            )
+                            dir_str = (
+                                "做多" if pending_direction == Action.Buy else "做空"
+                            )
+                            print(
+                                f"⚡ 1m帶量{dir_str}即時開倉: {fill.fill_price} @ {fill_time.strftime('%H:%M')}"
+                            )
+                            entered_this_bar = True
+                    break
+
+                one_min_idx = scan_idx
 
             # ── Step 1: 處理延遲進場（上一根 K 棒的信號，用本根 Open 成交）──
             if _deferred_signal is not None:
@@ -275,7 +367,7 @@ class BacktestEngine:
                 _deferred_direction = None
 
             # ── Step 2: 持倉中 → 檢查出場條件 ──
-            if pm.has_position:
+            if pm.has_position and not entered_this_bar:
                 is_long = pm.position.direction == Action.Buy
 
                 pm.position.update_price_tracking(current_high)
@@ -331,6 +423,7 @@ class BacktestEngine:
             # ── Step 2.5: 持倉中 + 加碼啟用 → 評估加碼信號 ──
             if (
                 pm.has_position
+                and not entered_this_bar
                 and pm.config.enable_addon
                 and _deferred_signal is None
             ):
@@ -350,7 +443,7 @@ class BacktestEngine:
                         f"(延遲至下一根 K 棒開盤進場)"
                     )
 
-            elif _deferred_signal is None and not pm.has_position:
+            elif _deferred_signal is None and not pm.has_position and not entered_this_bar:
                 # ── Step 3: 無倉位且無待處理信號 → 評估策略 ──
                 signal = unit.strategy.evaluate(
                     current_kbars, current_price, self.config.sub_symbol
