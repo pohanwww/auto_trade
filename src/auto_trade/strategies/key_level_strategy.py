@@ -1067,7 +1067,9 @@ class KeyLevelStrategy(BaseStrategy):
 
         return allow_long, allow_short
 
-    def _compute_active_targets(self, kbar_list: KBarList) -> None:
+    def _compute_active_targets(
+        self, kbar_list: KBarList, *, log_targets: bool = True
+    ) -> None:
         """Determine the next breakout target KL in each direction.
 
         Computes two sets of targets:
@@ -1108,15 +1110,16 @@ class KeyLevelStrategy(BaseStrategy):
                 if self._target_short and self._instant_target_short:
                     break
 
-        _log(
-            "  Targets: long=%s short=%s | instant_long=%s instant_short=%s | bar_ref=%d instant_ref=%d",
-            self._target_long.price if self._target_long else None,
-            self._target_short.price if self._target_short else None,
-            self._instant_target_long.price if self._instant_target_long else None,
-            self._instant_target_short.price if self._instant_target_short else None,
-            bar_ref, instant_ref,
-            verbose=True,
-        )
+        if log_targets:
+            _log(
+                "  Targets: long=%s short=%s | instant_long=%s instant_short=%s | bar_ref=%d instant_ref=%d",
+                self._target_long.price if self._target_long else None,
+                self._target_short.price if self._target_short else None,
+                self._instant_target_long.price if self._instant_target_long else None,
+                self._instant_target_short.price if self._instant_target_short else None,
+                bar_ref, instant_ref,
+                verbose=True,
+            )
 
     def _check_breakout_target(
         self,

@@ -447,8 +447,12 @@ class TradingEngine:
         baseline: float | None = None
         last_kbar_mono: float = 0.0
         _KBAR_REFRESH_INTERVAL = 5.0
+        _VOL_LOG_INTERVAL = 5.0
+        _TRIGGER_REJECT_LOG_INTERVAL = 2.0
 
         suppress_until = 0.0
+        last_vol_log_mono = 0.0
+        last_reject_log_mono = 0.0
 
         while datetime.now() < next_time:
             try:
@@ -474,7 +478,8 @@ class TradingEngine:
                         days=5,
                     )
                     if hasattr(s, "_compute_active_targets"):
-                        s._compute_active_targets(kbar_list)
+                        # Instant rolling loop refreshes frequently; skip target spam.
+                        s._compute_active_targets(kbar_list, log_targets=False)
                     long_target, short_target = s.get_instant_targets()
                     baseline = avg_volume_per_seconds_from_last_n_closed_5m(
                         kbar_list,
@@ -501,6 +506,23 @@ class TradingEngine:
                         float(rolling), baseline, multiplier=mult
                     )
                 )
+                vol_ratio = (
+                    (float(rolling) / float(baseline))
+                    if baseline is not None and baseline > 0
+                    else 0.0
+                )
+
+                if now_mono - last_vol_log_mono >= _VOL_LOG_INTERVAL:
+                    last_vol_log_mono = now_mono
+                    print(
+                        "📊 Instant tick vol: "
+                        f"roll={rolling} / baseline≈{(baseline or 0):.1f} "
+                        f"(ratio={vol_ratio:.2f}x, need>={mult:.2f}x) "
+                        f"price={price:.0f} "
+                        f"targets(L/S)="
+                        f"{(f'{long_target:.0f}' if long_target is not None else '-')}/"
+                        f"{(f'{short_target:.0f}' if short_target is not None else '-')}"
+                    )
 
                 if triggered and vol_ok:
                     print(
@@ -556,6 +578,17 @@ class TradingEngine:
                     )
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
+
+                if triggered and not vol_ok and (
+                    now_mono - last_reject_log_mono >= _TRIGGER_REJECT_LOG_INTERVAL
+                ):
+                    last_reject_log_mono = now_mono
+                    print(
+                        "⚠️ Instant price hit but volume not enough: "
+                        f"price={price:.0f} roll={rolling} "
+                        f"baseline≈{(baseline or 0):.1f} "
+                        f"ratio={vol_ratio:.2f}x (<{mult:.2f}x)"
+                    )
 
                 distances = []
                 if long_target is not None:

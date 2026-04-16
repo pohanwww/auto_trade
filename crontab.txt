@@ -1,15 +1,17 @@
 # ── 日盤 ──────────────────────────────────────────────
 
 # 8:45 啟動策略
-45 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level.yaml
+45 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml
+50 8 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level.yaml
 
 # 13:45 停止日盤
-45 13 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_key_level.yaml
+45 13 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh
 
 # ── 夜盤 ──────────────────────────────────────────────
 
-# 15:00 啟動      
-0 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level_night.yaml
+# 15:00 啟動    
+0 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_macd.yaml
+5 15 * * 1-5 cd /home/pohanwwwgame/auto_trade && /bin/bash start_trading.sh strategy_key_level_night.yaml
 
 # 05:00 停止夜盤
-0 5 * * 2-6 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh strategy_key_level_night.yaml
+0 5 * * 2-6 cd /home/pohanwwwgame/auto_trade && /bin/bash stop_trading.sh
