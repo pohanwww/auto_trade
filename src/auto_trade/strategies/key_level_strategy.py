@@ -153,7 +153,7 @@ class KeyLevelStrategy(BaseStrategy):
         # Volume-confirmed instant breakout:
         # - Backtest: 1m RVOL via evaluate_instant_volume_breakout_1m + BacktestEngine 1m step
         # - Live: RollingTickVolumeWindow on cumulative tick volume vs avg/10s from last N closed 5m bars
-        self.instant_volume_confirm_1m = kwargs.get("instant_volume_confirm_1m", True)
+        self.instant_volume_confirm_1m = kwargs.get("instant_volume_confirm_1m", False)
         self.instant_volume_lookback = kwargs.get("instant_volume_lookback", 20)
         # Backtest: min RVOL; Live tick mode: rolling sum vs baseline must exceed this multiple
         self.instant_volume_rvol_min = kwargs.get("instant_volume_rvol_min", 1.3)

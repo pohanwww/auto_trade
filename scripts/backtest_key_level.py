@@ -131,7 +131,7 @@ def make_unit(
         or_sl_use_boundary=params.get("or_sl_use_boundary", False),
         or_as_kl=params.get("or_as_kl", False),
         or_kl_weight=params.get("or_kl_weight", 2.0),
-        instant_volume_confirm_1m=params.get("instant_volume_confirm_1m", True),
+        instant_volume_confirm_1m=params.get("instant_volume_confirm_1m", False),
         instant_volume_lookback=params.get("instant_volume_lookback", 20),
         instant_volume_rvol_min=params.get("instant_volume_rvol_min", 1.3),
         instant_volume_max_confirm_bars=params.get(
