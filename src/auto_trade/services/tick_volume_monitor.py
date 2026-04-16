@@ -97,10 +97,11 @@ class RollingTickVolumeWindow:
 
 def _incremental_volume(prev: int | None, cum: int) -> int:
     if prev is None:
-        return max(0, cum)
+        # Warmup tick: establish baseline only; avoid first-tick spike.
+        return 0
     if cum < prev:
-        # Session reset or contract roll — treat this tick's cum as new baseline.
-        return max(0, cum)
+        # Session reset or contract roll — reset baseline without adding spike.
+        return 0
     return cum - prev
 
 

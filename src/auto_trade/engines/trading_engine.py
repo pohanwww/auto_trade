@@ -74,6 +74,9 @@ class TradingEngine:
         self._addon_checked_this_interval: bool = False
 
         self._INSTANT_SUPPRESS_SECONDS = 30
+        # Persist tick-volume rolling window across instant-monitor rounds.
+        self._instant_tick_volume_window = None
+        self._instant_tick_volume_window_sec: float | None = None
 
         # 配置檔名（用於 dashboard 辨識程序）
         self.config_file: str | None = None
@@ -439,7 +442,15 @@ class TradingEngine:
         window_sec = float(getattr(s, "instant_volume_tick_window_sec", 10.0))
         n_closed = int(getattr(s, "instant_volume_baseline_closed_5m_bars", 3))
         mult = float(getattr(s, "instant_volume_rvol_min", 1.3))
-        tw = RollingTickVolumeWindow(window_sec=window_sec)
+        if (
+            self._instant_tick_volume_window is None
+            or self._instant_tick_volume_window_sec != window_sec
+        ):
+            self._instant_tick_volume_window = RollingTickVolumeWindow(
+                window_sec=window_sec
+            )
+            self._instant_tick_volume_window_sec = window_sec
+        tw = self._instant_tick_volume_window
 
         long_target: float | None = None
         short_target: float | None = None
@@ -486,6 +497,18 @@ class TradingEngine:
                         n_closed_bars=n_closed,
                         baseline_window_sec=max(1, int(round(window_sec))),
                         exclude_forming=True,
+                    )
+                    closed_bars = kbar_list.kbars[:-1]
+                    baseline_bars = closed_bars[-n_closed:] if len(closed_bars) >= n_closed else []
+                    baseline_snapshot = ", ".join(
+                        f"{b.time.strftime('%H:%M')}:{int(b.volume)}"
+                        for b in baseline_bars
+                    )
+                    print(
+                        "📦 Instant baseline source: "
+                        f"{baseline_snapshot or 'insufficient closed 5m bars'} "
+                        f"-> per_{int(round(window_sec))}s≈"
+                        f"{(baseline if baseline is not None else 0.0):.1f}"
                     )
 
                 now_ts = _time.monotonic()
