@@ -156,6 +156,18 @@ class RecordService:
             if sub_symbol in records:
                 return PositionRecord.from_dict(records[sub_symbol])
 
+            p = self.record_file.resolve()
+            sz = self.record_file.stat().st_size if self.record_file.exists() else 0
+            if not records and sz > 2:
+                print(
+                    f"⚠️ 持倉檔 {p} 讀成空 dict 但檔案大小 {sz}b — "
+                    "多半是 JSON 解析失敗（BOM/全形引號/尾逗號等）；"
+                    "請用 `python -m json.tool` 在「同一台機器同一路徑」驗證。"
+                )
+            print(
+                f"📋 持倉檔 {p} 無 key「{sub_symbol}」"
+                f"（頂層 keys: {list(records.keys())}）"
+            )
             return None
 
         except Exception as e:
@@ -250,7 +262,12 @@ class RecordService:
         """
         try:
             return json.loads(file_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            # 若靜默回 {}，後續 _sync_position_record 會用「只有 _live」覆寫掉整份持倉檔。
+            print(
+                f"⚠️ position.json JSON 解析失敗 → 當作空 dict（"
+                f"{file_path.resolve()}）：{e}"
+            )
             return {}
 
     # ==================== Google Sheets 記錄 ====================

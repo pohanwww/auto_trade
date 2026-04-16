@@ -765,7 +765,22 @@ class TradingEngine:
         pos = pm.position
 
         try:
-            records = self.record_service._load_records(self.record_service.record_file)
+            path = self.record_service.record_file
+            raw = path.read_text(encoding="utf-8")
+            try:
+                records = json.loads(raw)
+            except json.JSONDecodeError as e:
+                # 避免用「只有 _live」覆寫掉一份其實有內容但 JSON 壞掉的檔案
+                print(
+                    f"⚠️ position.json 解析失敗，略過寫入以免清空持倉: "
+                    f"{path.resolve()} err={e}"
+                )
+                return
+            if not isinstance(records, dict):
+                print(
+                    f"⚠️ position.json 根節點必須是 JSON 物件，略過寫入: {path.resolve()}"
+                )
+                return
 
             # Always write live metadata
             records["_live"] = {
