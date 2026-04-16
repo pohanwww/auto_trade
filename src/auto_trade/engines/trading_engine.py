@@ -442,6 +442,7 @@ class TradingEngine:
         window_sec = float(getattr(s, "instant_volume_tick_window_sec", 10.0))
         n_closed = int(getattr(s, "instant_volume_baseline_closed_5m_bars", 3))
         mult = float(getattr(s, "instant_volume_rvol_min", 1.3))
+        min_roll = int(getattr(s, "instant_volume_min_rolling", 10))
         if (
             self._instant_tick_volume_window is None
             or self._instant_tick_volume_window_sec != window_sec
@@ -528,6 +529,7 @@ class TradingEngine:
                     and is_high_volume_vs_baseline(
                         float(rolling), baseline, multiplier=mult
                     )
+                    and rolling > min_roll
                 )
                 vol_ratio = (
                     (float(rolling) / float(baseline))
@@ -540,7 +542,7 @@ class TradingEngine:
                     print(
                         "📊 Instant tick vol: "
                         f"roll={rolling} / baseline≈{(baseline or 0):.1f} "
-                        f"(ratio={vol_ratio:.2f}x, need>={mult:.2f}x) "
+                        f"(ratio={vol_ratio:.2f}x, need>={mult:.2f}x, roll>{min_roll}) "
                         f"price={price:.0f} "
                         f"targets(L/S)="
                         f"{(f'{long_target:.0f}' if long_target is not None else '-')}/"
@@ -551,7 +553,7 @@ class TradingEngine:
                     print(
                         f"⚡ Instant trigger (tick vol): price={price:.0f} "
                         f"roll={rolling} baseline_per_{int(round(window_sec))}s≈{baseline:.1f} "
-                        f"(>{mult:.2f}×)"
+                        f"(>{mult:.2f}× and >{min_roll})"
                     )
 
                     if kbar_list is None or len(kbar_list.kbars) < 2:
@@ -610,7 +612,7 @@ class TradingEngine:
                         "⚠️ Instant price hit but volume not enough: "
                         f"price={price:.0f} roll={rolling} "
                         f"baseline≈{(baseline or 0):.1f} "
-                        f"ratio={vol_ratio:.2f}x (<{mult:.2f}x)"
+                        f"ratio={vol_ratio:.2f}x (<{mult:.2f}x or roll<={min_roll})"
                     )
 
                 distances = []

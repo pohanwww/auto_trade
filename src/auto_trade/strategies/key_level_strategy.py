@@ -166,6 +166,10 @@ class KeyLevelStrategy(BaseStrategy):
         self.instant_volume_baseline_closed_5m_bars = int(
             kwargs.get("instant_volume_baseline_closed_5m_bars", 3)
         )
+        # Live tick mode absolute gate: rolling(window_sec) must be strictly greater.
+        self.instant_volume_min_rolling = int(
+            kwargs.get("instant_volume_min_rolling", 10)
+        )
         self.or_sl_use_boundary = kwargs.get("or_sl_use_boundary", False)
         self.or_as_kl = kwargs.get("or_as_kl", False)
         self.or_kl_weight = kwargs.get("or_kl_weight", 2.0)
@@ -182,7 +186,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  KL detect: swing=%d, cluster_tol=%d, zone_tol=%d, signal_count=%d\n"
             "  Signal score gate: > %.1f\n"
             "  Signal: brk_buf=%.2f, instant=%.2f, atr_period=%d\n"
-            "  Instant 1m vol: enabled=%s lookback=%d rvol>=%.2f max_confirm=%d\n"
+            "  Instant 1m vol: enabled=%s lookback=%d rvol>=%.2f max_confirm=%d abs_roll>%d\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
             "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
@@ -196,6 +200,7 @@ class KeyLevelStrategy(BaseStrategy):
             self.instant_volume_lookback,
             self.instant_volume_rvol_min,
             self.instant_volume_max_confirm_bars,
+            self.instant_volume_min_rolling,
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
