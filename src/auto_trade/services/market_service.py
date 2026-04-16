@@ -167,6 +167,18 @@ class MarketService:
             # 獲取 tick 價格和時間
             tick_price = tick.close
             tick_time = tick.datetime
+            tick_total_volume = int(getattr(tick, "total_volume", 0) or 0)
+
+            last_total_volume = cached_data.get("last_tick_total_volume")
+            if last_total_volume is None:
+                # First live tick is only used to establish cumulative-volume baseline.
+                incremental_volume = 0
+            elif tick_total_volume < last_total_volume:
+                # Session reset / reconnect / contract volume reset.
+                incremental_volume = 0
+            else:
+                incremental_volume = tick_total_volume - last_total_volume
+            cached_data["last_tick_total_volume"] = tick_total_volume
 
             # 對齊到分鐘（去除秒和微秒）
             kbar_time = tick_time.replace(second=0, microsecond=0)
@@ -180,6 +192,7 @@ class MarketService:
                     high=tick_price,
                     low=tick_price,
                     close=tick_price,
+                    volume=incremental_volume,
                 )
                 kbars_1m.kbars.append(new_kbar)
                 # print(f"🆕 新 K 線: {kbar_time.strftime('%H:%M')} @ {tick_price}")
@@ -192,6 +205,7 @@ class MarketService:
                     current_kbar.high = max(current_kbar.high, tick_price)
                     current_kbar.low = min(current_kbar.low, tick_price)
                     current_kbar.close = tick_price
+                    current_kbar.volume += incremental_volume
 
             # 更新最後更新時間
             cached_data["last_tick_update"] = datetime.now()
@@ -245,6 +259,7 @@ class MarketService:
                 "kbars_1m": kbars_1m,
                 "last_api_sync": now,
                 "last_tick_update": None,
+                "last_tick_total_volume": None,
                 "current_kbar": None,
                 "subscribed": True,
             }
@@ -269,6 +284,7 @@ class MarketService:
                 # 更新緩存
                 existing_kbars.kbars = merged_kbars
                 cached_data["last_api_sync"] = now
+                cached_data["last_tick_total_volume"] = None
 
                 # 清除 resample 緩存，強制從有 volume 的新數據重建
                 for key in list(cached_data.keys()):
@@ -280,6 +296,7 @@ class MarketService:
                 # 緩存為空，直接使用新數據
                 cached_data["kbars_1m"] = kbars_1m
                 cached_data["last_api_sync"] = now
+                cached_data["last_tick_total_volume"] = None
                 print(f"✅ 同步完成，共 {len(kbars_1m.kbars)} 根 K 線")
 
     def subscribe_symbol(self, symbol: str, sub_symbol: str, init_days: int = 30):
