@@ -597,9 +597,13 @@ class TradingEngine:
                         return
 
                     suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
+                    sig_type = getattr(signal, "signal_type", None)
+                    sig_type_str = getattr(sig_type, "value", str(sig_type))
+                    sig_reason = getattr(signal, "reason", "") or "no reason"
                     print(
                         f"⚡ Trigger rejected (tick vol ok), suppress "
-                        f"{self._INSTANT_SUPPRESS_SECONDS}s"
+                        f"{self._INSTANT_SUPPRESS_SECONDS}s "
+                        f"| signal={sig_type_str} | reason={sig_reason}"
                     )
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue

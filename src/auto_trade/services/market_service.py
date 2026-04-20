@@ -726,7 +726,8 @@ class MarketService:
 
         # 刷新最後一根 5m bar：tick callback 會 in-place 更新 1m bar 的 OHLC，
         # 但增量 resample 只處理「新增」的 1m bar，不會看到同根 1m 的 tick 更新。
-        # 這裡用最後一根 1m bar 的最新數據同步到對應的 5m bar。
+        # 這裡用最後一根 1m bar 的最新數據同步到對應的 5m bar，並重算該 5m bucket volume，
+        # 避免只吃到該分鐘開頭的小量導致 5m baseline 被低估。
         if all_1m and resampled_bars:
             last_1m = all_1m[-1]
             last_bucket = self._align_to_tf_bucket(last_1m.time, tf_minutes)
@@ -737,6 +738,12 @@ class MarketService:
                 if last_1m.low < bar.low:
                     bar.low = last_1m.low
                 bar.close = last_1m.close
+                # Recompute volume for current bucket from all 1m bars in that bucket.
+                bar.volume = sum(
+                    kb.volume
+                    for kb in all_1m
+                    if self._align_to_tf_bucket(kb.time, tf_minutes) == last_bucket
+                )
 
         # 補充當前時段的合成 bar（成交量少時最新 1m 可能滯後）
         synthetic = None
