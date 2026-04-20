@@ -88,7 +88,7 @@ class KeyLevelStrategy(BaseStrategy):
         sl_atr_multiplier: float = 1.5,
         tp_atr_multiplier: float = 2.0,
         key_level_buffer: float = 0.15,
-        key_level_trail_mode: str = "current",  # "current" or "previous"
+        key_level_trail_mode: str = "previous",  # "current" or "previous"
         # --- Entry types ---
         use_breakout: bool = True,
         # --- Trend filter ---

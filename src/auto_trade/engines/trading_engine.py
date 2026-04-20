@@ -889,6 +889,7 @@ class TradingEngine:
                 if pos.metadata:
                     meta_keys = [
                         "key_levels", "next_key_level_idx", "key_level_buffer",
+                        "key_level_trail_mode",
                         "or_high", "or_low", "or_mid", "or_range",
                         "override_take_profit_points",
                         "override_start_trailing_stop_points",
@@ -1088,6 +1089,10 @@ class TradingEngine:
                 lowest_price=position.lowest_price or fill_price,
                 sheets_row_map=existing_row_map,
                 legs_info=existing_legs_info,
+                # Keep strategy metadata (e.g. key_level_trail_mode) for restart restore.
+                position_metadata=(
+                    dict(position.metadata) if position.metadata else None
+                ),
             )
 
             # 找出尚未記錄的新 legs

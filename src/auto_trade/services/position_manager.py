@@ -474,7 +474,7 @@ class PositionManager:
             kl_info = (
                 f", KL={len(restored_metadata['key_levels'])}levels"
                 f" idx={restored_metadata.get('next_key_level_idx', 0)}"
-                f" mode={restored_metadata.get('key_level_trail_mode', 'current')}"
+                f" mode={restored_metadata.get('key_level_trail_mode', 'previous')}"
             )
         print(
             f"🔄 恢復倉位: {'做多' if is_long else '做空'} "
@@ -803,7 +803,7 @@ class PositionManager:
         if "key_levels" in meta:
             position_metadata["key_levels"] = meta["key_levels"]
             position_metadata["key_level_buffer"] = meta.get("key_level_buffer", 10)
-            position_metadata["key_level_trail_mode"] = meta.get("key_level_trail_mode", "current")
+            position_metadata["key_level_trail_mode"] = meta.get("key_level_trail_mode", "previous")
             position_metadata["next_key_level_idx"] = 0
             if "key_level_min_profit" in meta:
                 position_metadata["key_level_min_profit"] = meta["key_level_min_profit"]
@@ -1167,7 +1167,7 @@ class PositionManager:
             idx = self.position.metadata.get("next_key_level_idx", 0)
             buffer = self.position.metadata.get("key_level_buffer", 10)
             trail_mode = self.position.metadata.get(
-                "key_level_trail_mode", "current"
+                "key_level_trail_mode", "previous"
             )
 
             while idx < len(key_levels):

@@ -1986,8 +1986,8 @@ def _build_key_levels_html(token_param: str) -> str:
   </select>
   <label>Symbol</label>
   <select id="inp-sym">
+    <option value="TXF" selected>TXF (大台)</option>
     <option value="MXF">MXF (小台)</option>
-    <option value="TXF">TXF (大台)</option>
   </select>
   <button class="btn" id="btn-gen" onclick="generate()">Generate</button>
 </div>
@@ -2074,6 +2074,20 @@ function showToast(msg) {{
   setTimeout(() => el.classList.remove('show'), 5000);
 }}
 
+function applyDefaultFilters() {{
+  // Session default by local time:
+  // 08:45~15:00 => day, otherwise => night.
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const dayStart = 8 * 60 + 45;
+  const dayEnd = 15 * 60;
+  const preferredSession = (mins >= dayStart && mins < dayEnd) ? 'day' : 'night';
+  document.getElementById('inp-session').value = preferredSession;
+  // Symbol default: TXF (大台)
+  document.getElementById('inp-sym').value = 'TXF';
+}}
+
+applyDefaultFilters();
 loadList();
 </script>
 </body>
