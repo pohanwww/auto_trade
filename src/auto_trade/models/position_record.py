@@ -32,6 +32,7 @@ class PositionRecord:
     entry_price: int  # 進場價格
     stop_loss_price: int | None  # 停損價格
     start_trailing_stop_price: int | None = None  # 啟動移動停損的價格
+    trailing_stop_price: int | None = None  # 當前移動停損價格（重啟恢復用）
     take_profit_price: int | None = None  # 獲利了結價格
     trailing_stop_active: bool = False  # 移動停損是否啟動
     highest_price: int | None = None  # 進場後最高價（用於重啟恢復移停）
@@ -52,6 +53,7 @@ class PositionRecord:
             "entry_price": self.entry_price,
             "stop_loss_price": self.stop_loss_price,
             "start_trailing_stop_price": self.start_trailing_stop_price,
+            "trailing_stop_price": self.trailing_stop_price,
             "take_profit_price": self.take_profit_price,
             "trailing_stop_active": self.trailing_stop_active,
             "highest_price": self.highest_price,
@@ -78,6 +80,11 @@ class PositionRecord:
             start_trailing_stop_price=(
                 int(data["start_trailing_stop_price"])
                 if data.get("start_trailing_stop_price")
+                else None
+            ),  # 向後兼容
+            trailing_stop_price=(
+                int(data["trailing_stop_price"])
+                if data.get("trailing_stop_price")
                 else None
             ),  # 向後兼容
             take_profit_price=(
