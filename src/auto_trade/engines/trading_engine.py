@@ -26,6 +26,7 @@ from auto_trade.services.line_bot_service import LineBotService
 from auto_trade.services.market_service import MarketService
 from auto_trade.services.position_manager import PositionManager
 from auto_trade.services.record_service import RecordService
+from auto_trade.strategies.key_level_strategy import KeyLevelStrategy
 
 
 class TradingEngine:
@@ -998,9 +999,16 @@ class TradingEngine:
         只初始化 ATR 等 runtime state。
         如果尚未計算（首次啟動）→ evaluate 會觸發 KL 計算。
         丟棄信號結果。若有持倉且產生新 KL，同步到 PM。
+
+        僅 Key Level 需要此步驟。對 MACD 等策略若在此呼叫 evaluate，
+        可能會設定進場去重狀態（如 _last_signal_bar_time）卻未經 PM 下單，
+        導致主循環整根 K 棒內永遠不再進場。
         """
         try:
             strategy = self.trading_unit.strategy
+            if not isinstance(strategy, KeyLevelStrategy):
+                return
+
             already_restored = getattr(strategy, "_levels_calculated", False)
 
             kbar_list = self.market_service.get_futures_kbars_with_timeframe(
