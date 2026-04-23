@@ -853,10 +853,21 @@ class KeyLevelStrategy(BaseStrategy):
             and self._is_active_session(k.time)
         ]
 
-        if len(today_session_kbars) < self.or_bars:
+        # 實盤：最後一根由 MarketService 以 tick/1m 持續更新，屬未完成棒；OR 只能用 time 早於該根的
+        # 已存在 bucket（三根都收完後，last 才會進到下一根，例如 ≈09:00 後才有完整 OR）。
+        # 回測：view(i+1) 最後一根是「本步已收盤」的歷史棒，不可排除，否則永遠少一根。
+        if not kbar_list.kbars:
+            return False
+        if self.is_live:
+            last_bucket_time = kbar_list.kbars[-1].time
+            eligible = [k for k in today_session_kbars if k.time < last_bucket_time]
+        else:
+            eligible = today_session_kbars
+
+        if len(eligible) < self.or_bars:
             return False
 
-        or_kbars = today_session_kbars[:self.or_bars]
+        or_kbars = eligible[: self.or_bars]
         self._or_high = int(max(k.high for k in or_kbars))
         self._or_low = int(min(k.low for k in or_kbars))
         self._or_mid = (self._or_high + self._or_low) // 2
