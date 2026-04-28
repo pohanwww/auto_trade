@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime
 
 from auto_trade.models.account import Action
+from auto_trade.models.backtest import WickHedgeMode
 from auto_trade.models.market import KBarList
 from auto_trade.models.position import (
     ExitRule,
@@ -91,6 +92,11 @@ class PositionManagerConfig:
         profit_lock_debug: bool = False,
         # KL 耗盡後 ATR-based trailing
         kl_exhausted_atr_multiplier: float = 0.5,
+        # Backtest: wick filter + options hedge
+        wick_hedge_mode: WickHedgeMode = WickHedgeMode.ORIGINAL,
+        put_premium_points: float | None = None,
+        put_premium_atr_multiplier: float | None = None,
+        put_premium_atr_period: int = 14,
     ):
         self.total_quantity = total_quantity
         self.tp_leg_quantity = tp_leg_quantity
@@ -138,6 +144,10 @@ class PositionManagerConfig:
         self.profit_lock_pressure_mode = profit_lock_pressure_mode
         self.profit_lock_debug = profit_lock_debug
         self.kl_exhausted_atr_multiplier = kl_exhausted_atr_multiplier
+        self.wick_hedge_mode = wick_hedge_mode
+        self.put_premium_points = put_premium_points
+        self.put_premium_atr_multiplier = put_premium_atr_multiplier
+        self.put_premium_atr_period = put_premium_atr_period
 
     @classmethod
     def from_dict(
@@ -209,6 +219,13 @@ class PositionManagerConfig:
             profit_lock_debug=trading.get("profit_lock_debug", False),
             # KL 耗盡後 ATR-based trailing
             kl_exhausted_atr_multiplier=trading.get("kl_exhausted_atr_multiplier", 0.5),
+            # Backtest: wick filter + options hedge
+            wick_hedge_mode=WickHedgeMode(
+                trading.get("wick_hedge_mode", WickHedgeMode.ORIGINAL.value)
+            ),
+            put_premium_points=trading.get("put_premium_points"),
+            put_premium_atr_multiplier=trading.get("put_premium_atr_multiplier"),
+            put_premium_atr_period=trading.get("put_premium_atr_period", 14),
         )
 
     @property
@@ -249,6 +266,8 @@ class PositionManagerConfig:
             parts += f", tighten@{tighten_str}→{tightened_str}"
         if self.force_exit_time:
             parts += f", force_exit@{self.force_exit_time}"
+        if self.wick_hedge_mode != WickHedgeMode.ORIGINAL:
+            parts += f", hedge={self.wick_hedge_mode.value}"
         parts += ")"
         return parts
 

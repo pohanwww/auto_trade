@@ -163,6 +163,7 @@ def _generate_chart(
 
     ms = _get_kl_market_service()
     kbar_list = None
+    need_api_fallback = False
     try:
         cache_key = (symbol, sub_symbol)
         if cache_key not in ms._symbol_cache:
@@ -170,12 +171,26 @@ def _generate_chart(
         kbar_list = ms.get_futures_kbars_with_timeframe(
             symbol, sub_symbol, timeframe, days=30,
         )
+        # Dashboard is a long-running process; in-memory cache can become stale
+        # if tick updates stop or the process spans multiple trading days.
+        if kbar_list is None or len(kbar_list) == 0:
+            need_api_fallback = True
+        else:
+            latest_bar_time = kbar_list.kbars[-1].time
+            if latest_bar_time.date() < target_date.date():
+                need_api_fallback = True
+                print(
+                    "⚠️  KL chart: stale cache detected, fallback to API "
+                    f"(latest={latest_bar_time.strftime('%Y-%m-%d %H:%M')}, "
+                    f"target={trading_day_str})"
+                )
     except Exception as e:
         print(f"⚠️  KL chart: tick-cache unavailable ({e}), using API fallback")
+        need_api_fallback = True
 
-    if kbar_list is None or len(kbar_list) == 0:
+    if need_api_fallback:
         start_date = target_date - timedelta(days=lookback_days)
-        end_date = target_date + timedelta(days=2)
+        end_date = datetime.now() + timedelta(days=1)
         kbar_list = ms.get_futures_kbars_by_date_range(
             symbol=symbol, sub_symbol=sub_symbol,
             start_date=start_date, end_date=end_date,

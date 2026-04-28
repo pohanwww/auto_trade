@@ -2,9 +2,20 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 
 from auto_trade.models.account import Action
 from auto_trade.models.position_record import ExitReason
+
+
+class WickHedgeMode(Enum):
+    """Stop/Trailing 保護模式（回測專用）"""
+
+    ORIGINAL = "original"
+    INITIAL_SL_PROTECTED = "initial_sl_protected"
+    TRAILING_STOP_PROTECTED = "trailing_stop_protected"
+    BOTH_PROTECTED = "both_protected"
+
 
 
 def get_point_value(symbol: str) -> int:
@@ -39,7 +50,7 @@ class BacktestTrade:
     slippage: float = 0.0  # 滑價
 
     def calculate_pnl(self) -> tuple[float, float]:
-        """計算盈虧 (點數, 新台幣)"""
+        """計算盈虧 (點數, 新台幣淨值)"""
         if self.exit_price is None:
             return 0.0, 0.0
 
@@ -50,7 +61,8 @@ class BacktestTrade:
 
         # 根據商品代碼獲取每點價值
         point_value = get_point_value(self.symbol)
-        pnl_twd = pnl_points * self.quantity * point_value
+        gross_pnl_twd = pnl_points * self.quantity * point_value
+        pnl_twd = gross_pnl_twd - self.commission - self.slippage
 
         self.pnl_points = pnl_points
         self.pnl_twd = pnl_twd
@@ -123,6 +135,10 @@ class BacktestConfig:
     max_positions: int = 1  # 最大同時持倉數
     enable_trailing_stop: bool = True
     enable_take_profit: bool = True
+    wick_hedge_mode: WickHedgeMode = WickHedgeMode.ORIGINAL
+    put_premium_points: float | None = None
+    put_premium_atr_multiplier: float | None = None
+    put_premium_atr_period: int = 14
 
 @dataclass
 class BacktestResult:

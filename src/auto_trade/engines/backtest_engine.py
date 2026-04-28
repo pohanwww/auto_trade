@@ -21,6 +21,7 @@ from auto_trade.models.account import Action
 from auto_trade.models.backtest import (
     BacktestResult,
     BacktestTrade,
+    WickHedgeMode,
     get_point_value,
 )
 from auto_trade.models.market import KBarList
@@ -216,6 +217,10 @@ class BacktestEngine:
             take_profit_points=unit.pm_config.take_profit_points,
             trailing_stop_points_rate=unit.pm_config.trailing_stop_points_rate,
             take_profit_points_rate=unit.pm_config.take_profit_points_rate,
+            wick_hedge_mode=unit.pm_config.wick_hedge_mode,
+            put_premium_points=unit.pm_config.put_premium_points,
+            put_premium_atr_multiplier=unit.pm_config.put_premium_atr_multiplier,
+            put_premium_atr_period=unit.pm_config.put_premium_atr_period,
         )
 
         result = BacktestResult(config=bt_config)
@@ -242,6 +247,15 @@ class BacktestEngine:
         one_min_bars = kbar_list_1m.kbars if kbar_list_1m is not None else []
 
         total_qty = unit.pm_config.total_quantity
+        main_entry_qty = total_qty
+
+        # 選擇權保費狀態（只對主倉位扣，與加碼切開）
+        premium_pool_twd = 0.0
+        premium_pool_qty = 0
+        premium_paid_on_entry = False
+        premium_paid_on_trailing_start = False
+        premium_paid_on_tighten = False
+        hedge_mode = unit.pm_config.wick_hedge_mode
 
         for i in range(30, len(kbar_list)):
             kbar = kbar_list[i]
@@ -318,6 +332,17 @@ class BacktestEngine:
                                 if signal_1m.signal_type == SignalType.ENTRY_LONG
                                 else Action.Sell
                             )
+                            premium_pool_twd, premium_pool_qty, charged = self._maybe_charge_entry_premium(
+                                pm=pm,
+                                current_kbars=current_kbars,
+                                current_time=fill_time,
+                                point_value=point_value,
+                                premium_pool_twd=premium_pool_twd,
+                                premium_pool_qty=premium_pool_qty,
+                                premium_paid_on_entry=premium_paid_on_entry,
+                                main_entry_qty=action.quantity,
+                            )
+                            premium_paid_on_entry = premium_paid_on_entry or charged
                             dir_str = (
                                 "做多" if pending_direction == Action.Buy else "做空"
                             )
@@ -357,6 +382,17 @@ class BacktestEngine:
                             pending_entry_price = fill.fill_price
                             pending_entry_time = current_time
                             pending_direction = _deferred_direction
+                            premium_pool_twd, premium_pool_qty, charged = self._maybe_charge_entry_premium(
+                                pm=pm,
+                                current_kbars=current_kbars,
+                                current_time=current_time,
+                                point_value=point_value,
+                                premium_pool_twd=premium_pool_twd,
+                                premium_pool_qty=premium_pool_qty,
+                                premium_paid_on_entry=premium_paid_on_entry,
+                                main_entry_qty=action.quantity,
+                            )
+                            premium_paid_on_entry = premium_paid_on_entry or charged
                             dir_str = "做多" if pending_direction == Action.Buy else "做空"
                             print(f"📈 {dir_str}開倉: {fill.fill_price}")
                         else:
@@ -375,28 +411,231 @@ class BacktestEngine:
                 # 0. 時間強制平倉（日內策略用）
                 actions = pm.check_time_exit(current_time, current_price)
 
-                # 1. Open 檢查跳空觸發
-                if not actions:
-                    actions = pm.on_price_update(current_open, current_kbars)
+                ts_active_before = self._has_active_trailing_stop(pm)
+                ts_tightened_before = self._has_tightened_trailing_stop(pm)
 
-                # 2. 方向性極端價檢查
+                # 1. Open 檢查跳空觸發（僅盤中模式）
+                if not actions:
+                    probe_actions = pm.on_price_update(current_open, current_kbars)
+                    actions = self._filter_intrabar_actions(
+                        probe_actions, hedge_mode, allow_time_exit=True
+                    )
+                    ts_active_after = self._has_active_trailing_stop(pm)
+                    ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                    (
+                        premium_pool_twd,
+                        premium_pool_qty,
+                        premium_paid_on_trailing_start,
+                        premium_paid_on_tighten,
+                    ) = self._maybe_charge_trailing_premium(
+                        pm=pm,
+                        current_kbars=current_kbars,
+                        current_time=current_time,
+                        point_value=point_value,
+                        premium_pool_twd=premium_pool_twd,
+                        premium_pool_qty=premium_pool_qty,
+                        premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                        premium_paid_on_tighten=premium_paid_on_tighten,
+                        trailing_before=ts_active_before,
+                        trailing_after=ts_active_after,
+                        tighten_before=ts_tightened_before,
+                        tighten_after=ts_tightened_after,
+                        main_entry_qty=main_entry_qty,
+                    )
+                    ts_active_before = ts_active_after
+                    ts_tightened_before = ts_tightened_after
+
+                # 2. 方向性極端價檢查（僅盤中模式）
                 if not actions:
                     if is_long:
-                        actions = pm.on_price_update(current_low, current_kbars)
+                        probe_actions = pm.on_price_update(current_low, current_kbars)
+                        actions = self._filter_intrabar_actions(
+                            probe_actions, hedge_mode, allow_time_exit=False
+                        )
+                        ts_active_after = self._has_active_trailing_stop(pm)
+                        ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                        (
+                            premium_pool_twd,
+                            premium_pool_qty,
+                            premium_paid_on_trailing_start,
+                            premium_paid_on_tighten,
+                        ) = self._maybe_charge_trailing_premium(
+                            pm=pm,
+                            current_kbars=current_kbars,
+                            current_time=current_time,
+                            point_value=point_value,
+                            premium_pool_twd=premium_pool_twd,
+                            premium_pool_qty=premium_pool_qty,
+                            premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                            premium_paid_on_tighten=premium_paid_on_tighten,
+                            trailing_before=ts_active_before,
+                            trailing_after=ts_active_after,
+                            tighten_before=ts_tightened_before,
+                            tighten_after=ts_tightened_after,
+                            main_entry_qty=main_entry_qty,
+                        )
+                        ts_active_before = ts_active_after
+                        ts_tightened_before = ts_tightened_after
                         if not actions:
-                            actions = pm.on_price_update(current_high, current_kbars)
+                            probe_actions = pm.on_price_update(
+                                current_high, current_kbars
+                            )
+                            actions = self._filter_intrabar_actions(
+                                probe_actions, hedge_mode, allow_time_exit=False
+                            )
+                            ts_active_after = self._has_active_trailing_stop(pm)
+                            ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                            (
+                                premium_pool_twd,
+                                premium_pool_qty,
+                                premium_paid_on_trailing_start,
+                                premium_paid_on_tighten,
+                            ) = self._maybe_charge_trailing_premium(
+                                pm=pm,
+                                current_kbars=current_kbars,
+                                current_time=current_time,
+                                point_value=point_value,
+                                premium_pool_twd=premium_pool_twd,
+                                premium_pool_qty=premium_pool_qty,
+                                premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                                premium_paid_on_tighten=premium_paid_on_tighten,
+                                trailing_before=ts_active_before,
+                                trailing_after=ts_active_after,
+                                tighten_before=ts_tightened_before,
+                                tighten_after=ts_tightened_after,
+                                main_entry_qty=main_entry_qty,
+                            )
+                            ts_active_before = ts_active_after
+                            ts_tightened_before = ts_tightened_after
                     else:
-                        actions = pm.on_price_update(current_high, current_kbars)
+                        probe_actions = pm.on_price_update(current_high, current_kbars)
+                        actions = self._filter_intrabar_actions(
+                            probe_actions, hedge_mode, allow_time_exit=False
+                        )
+                        ts_active_after = self._has_active_trailing_stop(pm)
+                        ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                        (
+                            premium_pool_twd,
+                            premium_pool_qty,
+                            premium_paid_on_trailing_start,
+                            premium_paid_on_tighten,
+                        ) = self._maybe_charge_trailing_premium(
+                            pm=pm,
+                            current_kbars=current_kbars,
+                            current_time=current_time,
+                            point_value=point_value,
+                            premium_pool_twd=premium_pool_twd,
+                            premium_pool_qty=premium_pool_qty,
+                            premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                            premium_paid_on_tighten=premium_paid_on_tighten,
+                            trailing_before=ts_active_before,
+                            trailing_after=ts_active_after,
+                            tighten_before=ts_tightened_before,
+                            tighten_after=ts_tightened_after,
+                            main_entry_qty=main_entry_qty,
+                        )
+                        ts_active_before = ts_active_after
+                        ts_tightened_before = ts_tightened_after
                         if not actions:
-                            actions = pm.on_price_update(current_low, current_kbars)
+                            probe_actions = pm.on_price_update(current_low, current_kbars)
+                            actions = self._filter_intrabar_actions(
+                                probe_actions, hedge_mode, allow_time_exit=False
+                            )
+                            ts_active_after = self._has_active_trailing_stop(pm)
+                            ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                            (
+                                premium_pool_twd,
+                                premium_pool_qty,
+                                premium_paid_on_trailing_start,
+                                premium_paid_on_tighten,
+                            ) = self._maybe_charge_trailing_premium(
+                                pm=pm,
+                                current_kbars=current_kbars,
+                                current_time=current_time,
+                                point_value=point_value,
+                                premium_pool_twd=premium_pool_twd,
+                                premium_pool_qty=premium_pool_qty,
+                                premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                                premium_paid_on_tighten=premium_paid_on_tighten,
+                                trailing_before=ts_active_before,
+                                trailing_after=ts_active_after,
+                                tighten_before=ts_tightened_before,
+                                tighten_after=ts_tightened_after,
+                                main_entry_qty=main_entry_qty,
+                            )
+                            ts_active_before = ts_active_after
+                            ts_tightened_before = ts_tightened_after
 
-                # 3. 收盤價更新狀態
+                # 3. 收盤價檢查：保護模式在此確認（Close 突破）並延遲至 next open 成交
                 if not actions:
-                    pm.on_price_update(current_price, current_kbars)
+                    close_actions = pm.on_price_update(current_price, current_kbars)
+                    ts_active_after = self._has_active_trailing_stop(pm)
+                    ts_tightened_after = self._has_tightened_trailing_stop(pm)
+                    (
+                        premium_pool_twd,
+                        premium_pool_qty,
+                        premium_paid_on_trailing_start,
+                        premium_paid_on_tighten,
+                    ) = self._maybe_charge_trailing_premium(
+                        pm=pm,
+                        current_kbars=current_kbars,
+                        current_time=current_time,
+                        point_value=point_value,
+                        premium_pool_twd=premium_pool_twd,
+                        premium_pool_qty=premium_pool_qty,
+                        premium_paid_on_trailing_start=premium_paid_on_trailing_start,
+                        premium_paid_on_tighten=premium_paid_on_tighten,
+                        trailing_before=ts_active_before,
+                        trailing_after=ts_active_after,
+                        tighten_before=ts_tightened_before,
+                        tighten_after=ts_tightened_after,
+                        main_entry_qty=main_entry_qty,
+                    )
+                    protected_actions = self._filter_protected_close_actions(
+                        close_actions, hedge_mode
+                    )
+                    if protected_actions:
+                        protected_reason = ExitReason(
+                            protected_actions[0].metadata.get("exit_reason", "SL")
+                        )
+                        print(
+                            f"🛡️ Wick-filter confirm {protected_reason.value} @ close "
+                            f"{current_price}; fill locked at trigger price"
+                        )
+                        eq_delta, closed, premium_pool_twd, premium_pool_qty = self._execute_exit_actions(
+                            protected_actions,
+                            pm=pm,
+                            executor=executor,
+                            result=result,
+                            current_time=current_time,
+                            kbar_open=current_open,
+                            kbar_high=current_high,
+                            kbar_low=current_low,
+                            kbar_close=current_price,
+                            is_long=is_long,
+                            pending_entry_price=pending_entry_price,
+                            pending_entry_time=pending_entry_time,
+                            pending_direction=pending_direction,
+                            point_value=point_value,
+                            force_trigger_price=True,
+                            premium_pool_twd=premium_pool_twd,
+                            premium_pool_qty=premium_pool_qty,
+                        )
+                        current_equity += eq_delta
+                        if closed:
+                            pending_entry_price = None
+                            pending_entry_time = None
+                            pending_direction = None
+                            premium_pool_twd = 0.0
+                            premium_pool_qty = 0
+                            premium_paid_on_entry = False
+                            premium_paid_on_trailing_start = False
+                            premium_paid_on_tighten = False
+                            unit.strategy.on_position_closed(bar_time=current_time)
 
                 # 執行平倉
                 if actions:
-                    eq_delta, closed = self._execute_exit_actions(
+                    eq_delta, closed, premium_pool_twd, premium_pool_qty = self._execute_exit_actions(
                         actions,
                         pm=pm,
                         executor=executor,
@@ -411,12 +650,19 @@ class BacktestEngine:
                         pending_entry_time=pending_entry_time,
                         pending_direction=pending_direction,
                         point_value=point_value,
+                        premium_pool_twd=premium_pool_twd,
+                        premium_pool_qty=premium_pool_qty,
                     )
                     current_equity += eq_delta
                     if closed:
                         pending_entry_price = None
                         pending_entry_time = None
                         pending_direction = None
+                        premium_pool_twd = 0.0
+                        premium_pool_qty = 0
+                        premium_paid_on_entry = False
+                        premium_paid_on_trailing_start = False
+                        premium_paid_on_tighten = False
                         unit.strategy.on_position_closed(bar_time=current_time)
 
             # ── Step 2.5: 持倉中 + 加碼啟用 → 評估加碼信號 ──
@@ -485,6 +731,17 @@ class BacktestEngine:
                                 pending_entry_price = fill.fill_price
                                 pending_entry_time = current_time
                                 pending_direction = _entry_direction
+                                premium_pool_twd, premium_pool_qty, charged = self._maybe_charge_entry_premium(
+                                    pm=pm,
+                                    current_kbars=current_kbars,
+                                    current_time=current_time,
+                                    point_value=point_value,
+                                    premium_pool_twd=premium_pool_twd,
+                                    premium_pool_qty=premium_pool_qty,
+                                    premium_paid_on_entry=premium_paid_on_entry,
+                                    main_entry_qty=action.quantity,
+                                )
+                                premium_paid_on_entry = premium_paid_on_entry or charged
                                 dir_str = "做多" if _entry_direction == Action.Buy else "做空"
                                 print(f"⚡ {dir_str}即時開倉: {fill.fill_price}")
 
@@ -535,6 +792,192 @@ class BacktestEngine:
 
         return result
 
+    @staticmethod
+    def _is_reason_protected(exit_reason: ExitReason, mode: WickHedgeMode) -> bool:
+        if mode == WickHedgeMode.ORIGINAL:
+            return False
+        if mode == WickHedgeMode.INITIAL_SL_PROTECTED:
+            return exit_reason == ExitReason.STOP_LOSS
+        if mode == WickHedgeMode.TRAILING_STOP_PROTECTED:
+            return exit_reason == ExitReason.TRAILING_STOP
+        if mode == WickHedgeMode.BOTH_PROTECTED:
+            return exit_reason in (ExitReason.STOP_LOSS, ExitReason.TRAILING_STOP)
+        return False
+
+    def _filter_intrabar_actions(
+        self,
+        actions: list,
+        mode: WickHedgeMode,
+        *,
+        allow_time_exit: bool,
+    ) -> list:
+        """盤中價位檢查時，移除需收盤確認的出場單。"""
+        kept = []
+        for action in actions:
+            exit_reason_str = action.metadata.get("exit_reason", "SL")
+            exit_reason = ExitReason(exit_reason_str)
+            if exit_reason == ExitReason.TIME_EXIT and allow_time_exit:
+                kept.append(action)
+                continue
+            if not self._is_reason_protected(exit_reason, mode):
+                kept.append(action)
+        return kept
+
+    def _filter_protected_close_actions(
+        self,
+        actions: list,
+        mode: WickHedgeMode,
+    ) -> list:
+        """收盤檢查時，只保留需 wick-filter 的 SL/TS。"""
+        kept = []
+        for action in actions:
+            exit_reason_str = action.metadata.get("exit_reason", "SL")
+            exit_reason = ExitReason(exit_reason_str)
+            if self._is_reason_protected(exit_reason, mode):
+                kept.append(action)
+        return kept
+
+    @staticmethod
+    def _has_active_trailing_stop(pm: PositionManager) -> bool:
+        if not pm.has_position:
+            return False
+        return any(
+            leg.exit_rule.trailing_stop_active for leg in pm.position.open_legs
+        )
+
+    @staticmethod
+    def _has_tightened_trailing_stop(pm: PositionManager) -> bool:
+        if not pm.has_position:
+            return False
+        return any(leg.exit_rule.is_tightened for leg in pm.position.open_legs)
+
+    def _compute_put_premium_points(self, pm: PositionManager, current_kbars: KBarList) -> float:
+        cfg = pm.config
+        if cfg.put_premium_points is not None:
+            return float(cfg.put_premium_points)
+        if cfg.put_premium_atr_multiplier is not None:
+            atr = self.indicator_service.calculate_atr(
+                current_kbars, cfg.put_premium_atr_period
+            )
+            if atr is None:
+                return 0.0
+            return float(atr) * float(cfg.put_premium_atr_multiplier)
+        return 0.0
+
+    def _maybe_charge_entry_premium(
+        self,
+        *,
+        pm: PositionManager,
+        current_kbars: KBarList,
+        current_time: datetime,
+        point_value: float,
+        premium_pool_twd: float,
+        premium_pool_qty: int,
+        premium_paid_on_entry: bool,
+        main_entry_qty: int,
+    ) -> tuple[float, int, bool]:
+        mode = pm.config.wick_hedge_mode
+        should_charge = mode in (
+            WickHedgeMode.INITIAL_SL_PROTECTED,
+            WickHedgeMode.BOTH_PROTECTED,
+        )
+        if not should_charge or premium_paid_on_entry:
+            return premium_pool_twd, premium_pool_qty, False
+
+        premium_pts = self._compute_put_premium_points(pm, current_kbars)
+        if premium_pts <= 0:
+            return premium_pool_twd, premium_pool_qty, False
+
+        premium_twd = premium_pts * point_value * float(main_entry_qty)
+        print(
+            f"🛡️ Option hedge premium charged @entry: {premium_pts:.2f}pts "
+            f"x{main_entry_qty} = {premium_twd:.0f} TWD ({current_time.strftime('%Y-%m-%d %H:%M')})"
+        )
+        return premium_pool_twd + premium_twd, premium_pool_qty + main_entry_qty, True
+
+    def _maybe_charge_trailing_premium(
+        self,
+        *,
+        pm: PositionManager,
+        current_kbars: KBarList,
+        current_time: datetime,
+        point_value: float,
+        premium_pool_twd: float,
+        premium_pool_qty: int,
+        premium_paid_on_trailing_start: bool,
+        premium_paid_on_tighten: bool,
+        trailing_before: bool,
+        trailing_after: bool,
+        tighten_before: bool,
+        tighten_after: bool,
+        main_entry_qty: int,
+    ) -> tuple[float, int, bool, bool]:
+        mode = pm.config.wick_hedge_mode
+        should_charge_on_trailing_start = (
+            mode == WickHedgeMode.TRAILING_STOP_PROTECTED
+            or mode == WickHedgeMode.BOTH_PROTECTED
+        )
+        should_charge_on_tighten = mode in (
+            WickHedgeMode.TRAILING_STOP_PROTECTED,
+            WickHedgeMode.BOTH_PROTECTED,
+        )
+
+        do_charge_trailing_start = (
+            should_charge_on_trailing_start
+            and not premium_paid_on_trailing_start
+            and not trailing_before
+            and trailing_after
+        )
+        do_charge_tighten = (
+            should_charge_on_tighten
+            and not premium_paid_on_tighten
+            and not tighten_before
+            and tighten_after
+        )
+        if not do_charge_trailing_start and not do_charge_tighten:
+            return (
+                premium_pool_twd,
+                premium_pool_qty,
+                premium_paid_on_trailing_start,
+                premium_paid_on_tighten,
+            )
+
+        premium_pts = self._compute_put_premium_points(pm, current_kbars)
+        if premium_pts <= 0:
+            return (
+                premium_pool_twd,
+                premium_pool_qty,
+                premium_paid_on_trailing_start,
+                premium_paid_on_tighten,
+            )
+
+        if do_charge_trailing_start:
+            premium_twd = premium_pts * point_value * float(main_entry_qty)
+            print(
+                f"🛡️ Option hedge premium charged @trailing_start: {premium_pts:.2f}pts "
+                f"x{main_entry_qty} = {premium_twd:.0f} TWD ({current_time.strftime('%Y-%m-%d %H:%M')})"
+            )
+            premium_pool_twd += premium_twd
+            premium_pool_qty += main_entry_qty
+            premium_paid_on_trailing_start = True
+
+        if do_charge_tighten:
+            premium_twd = premium_pts * point_value * float(main_entry_qty)
+            print(
+                f"🛡️ Option hedge premium charged @tighten: {premium_pts:.2f}pts "
+                f"x{main_entry_qty} = {premium_twd:.0f} TWD ({current_time.strftime('%Y-%m-%d %H:%M')})"
+            )
+            premium_pool_twd += premium_twd
+            premium_pool_qty += main_entry_qty
+            premium_paid_on_tighten = True
+
+        return (
+            premium_pool_twd,
+            premium_pool_qty,
+            premium_paid_on_trailing_start,
+            premium_paid_on_tighten,
+        )
+
     def _execute_exit_actions(
         self,
         exit_actions: list,
@@ -552,10 +995,13 @@ class BacktestEngine:
         pending_entry_time,
         pending_direction,
         point_value: float,
-    ) -> tuple[float, bool]:
+        force_trigger_price: bool = False,
+        premium_pool_twd: float = 0.0,
+        premium_pool_qty: int = 0,
+    ) -> tuple[float, bool, float, int]:
         """Execute exit order actions and record trades.
 
-        Returns (equity_delta, position_fully_closed).
+        Returns (equity_delta, position_fully_closed, premium_pool_twd, premium_pool_qty).
         """
         equity_delta = 0.0
         position_closed = False
@@ -565,15 +1011,22 @@ class BacktestEngine:
             exit_reason = ExitReason(exit_reason_str)
             trigger_price = action.metadata.get("trigger_price")
 
-            sim_price = self._calculate_fill_price(
-                exit_reason=exit_reason,
-                trigger_price=trigger_price,
-                kbar_open=kbar_open,
-                kbar_high=kbar_high,
-                kbar_low=kbar_low,
-                kbar_close=kbar_close,
-                is_long=is_long,
-            )
+            if (
+                force_trigger_price
+                and trigger_price is not None
+                and exit_reason in (ExitReason.STOP_LOSS, ExitReason.TRAILING_STOP)
+            ):
+                sim_price = int(trigger_price)
+            else:
+                sim_price = self._calculate_fill_price(
+                    exit_reason=exit_reason,
+                    trigger_price=trigger_price,
+                    kbar_open=kbar_open,
+                    kbar_high=kbar_high,
+                    kbar_low=kbar_low,
+                    kbar_close=kbar_close,
+                    is_long=is_long,
+                )
 
             executor.set_market_state(sim_price, current_time)
             fill = executor.execute(action)
@@ -626,6 +1079,14 @@ class BacktestEngine:
                         else:
                             pnl_points = float(ep - fill.fill_price)
                         pnl_twd = pnl_points * leg_qty * point_value
+                        premium_alloc = 0.0
+                        if premium_pool_qty > 0 and premium_pool_twd > 0:
+                            alloc_qty = min(premium_pool_qty, leg_qty)
+                            premium_alloc = premium_pool_twd * (
+                                float(alloc_qty) / float(premium_pool_qty)
+                            )
+                            premium_pool_twd -= premium_alloc
+                            premium_pool_qty -= alloc_qty
 
                         trade = BacktestTrade(
                             trade_id=str(uuid.uuid4()),
@@ -639,21 +1100,22 @@ class BacktestEngine:
                             exit_reason=exit_reason,
                             pnl_points=pnl_points,
                             pnl_twd=pnl_twd,
+                            commission=premium_alloc,
                         )
                         result.trades.append(trade)
-                        equity_delta += pnl_twd
+                        equity_delta += pnl_twd - premium_alloc
                         dir_str = "多" if pending_direction == Action.Buy else "空"
                         print(
                             f"📉 平{dir_str}倉: {fill.fill_price} | "
                             f"進場:{ep} | "
                             f"{exit_reason.value} | "
-                            f"PnL: {pnl_twd:+.0f}"
+                            f"PnL: {(pnl_twd - premium_alloc):+.0f}"
                         )
 
                 if not pm.has_position:
                     position_closed = True
 
-        return equity_delta, position_closed
+        return equity_delta, position_closed, premium_pool_twd, premium_pool_qty
 
     @staticmethod
     def _calculate_fill_price(
@@ -685,6 +1147,7 @@ class BacktestEngine:
 
         - FAST_STOP：使用開盤價（方向無關）
         """
+        del kbar_high, kbar_low
         if exit_reason == ExitReason.FAST_STOP:
             return kbar_open
 
