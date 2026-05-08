@@ -296,6 +296,69 @@ class TradingEngine:
     _INSTANT_POLL_FAST = 1    # seconds
     _INSTANT_POLL_NORMAL = 3  # seconds
 
+    def _refresh_instant_targets(self):
+        """與 evaluate() 一致：先拉 K 線再 _compute_active_targets，避免引擎觸發價滯後。"""
+        kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+            self.symbol,
+            self.sub_symbol,
+            self.trading_unit.pm_config.timeframe,
+            days=5,
+        )
+        strat = self.trading_unit.strategy
+        # Key Level：即時圈需與 evaluate() 使用同一根 ATR，否則觸發價與突破檢查會错位
+        if isinstance(strat, KeyLevelStrategy) and len(kbar_list.kbars) >= 2:
+            atr = strat.indicator_service.calculate_atr(kbar_list, strat.atr_period)
+            if atr is not None and atr > 0:
+                strat._atr = atr
+        if hasattr(strat, "_compute_active_targets"):
+            strat._compute_active_targets(kbar_list, log_targets=False)
+        long_t, short_t = strat.get_instant_targets()
+        return long_t, short_t, kbar_list
+
+    def _log_instant_trigger_reject(
+        self,
+        *,
+        price: float,
+        long_target: float | None,
+        short_target: float | None,
+        signal,
+        actions: list,
+        kbar_list,
+        branch: str,
+    ) -> None:
+        """Instant 觸發後無法下單時的診斷輸出。"""
+        st = getattr(signal, "signal_type", None)
+        st_val = getattr(st, "value", str(st))
+        reason = getattr(signal, "reason", "") or ""
+        lines = [
+            "⚡ Trigger rejected — detail:",
+            f"  branch={branch}",
+            f"  tick_price={price:.4f} int_price={int(price)} (.0f_display={price:.0f})",
+            f"  engine_targets_after_refresh long={long_target} short={short_target}",
+            f"  signal={st_val} reason={reason!r}",
+            (
+                f"  pm_has_position={self.position_manager.has_position} "
+                f"len(actions)={len(actions)}"
+            ),
+        ]
+        if self.position_manager.has_position and len(actions) == 0:
+            lines.append(
+                "  hint: 已有持倉時 ENTRY 不會開新倉 → actions 為空"
+            )
+        elif st_val == "ENTRY_LONG" and len(actions) == 0:
+            lines.append(
+                "  hint: ENTRY_LONG 但 actions 為空 — 請檢查 PositionManager._open_position"
+            )
+        dbg = getattr(self.trading_unit.strategy, "instant_reject_debug", None)
+        if callable(dbg):
+            try:
+                extra = dbg(price, kbar_list)
+                if extra:
+                    lines.extend(extra)
+            except Exception as e:
+                lines.append(f"  strategy.instant_reject_debug failed: {e}")
+        print("\n".join(lines))
+
     def _wait_with_instant_check(self) -> None:
         """Wait for next bar while monitoring instant trigger prices.
 
@@ -325,7 +388,7 @@ class TradingEngine:
             self._wait_instant_tick_volume_gated(next_time)
             return
 
-        long_target, short_target = self.trading_unit.strategy.get_instant_targets()
+        long_target, short_target, _ = self._refresh_instant_targets()
 
         if long_target is None and short_target is None:
             print(f"下次執行時間: {next_time.strftime('%H:%M:%S')}")
@@ -344,16 +407,9 @@ class TradingEngine:
         )
 
         suppress_until = 0.0
-        last_refresh_minute = -1
 
         while datetime.now() < next_time:
             try:
-                # Refresh targets at each minute boundary
-                cur_min = datetime.now().minute
-                if cur_min != last_refresh_minute:
-                    last_refresh_minute = cur_min
-                    long_target, short_target = self.trading_unit.strategy.get_instant_targets()
-
                 quote = self.market_service.get_realtime_quote(
                     self.symbol, self.sub_symbol
                 )
@@ -369,6 +425,8 @@ class TradingEngine:
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
 
+                long_target, short_target, kbar_list = self._refresh_instant_targets()
+
                 triggered = (
                     (long_target is not None and price >= long_target)
                     or (short_target is not None and price <= short_target)
@@ -377,12 +435,6 @@ class TradingEngine:
                 if triggered:
                     print(f"⚡ Instant trigger hit! price={price:.0f}")
 
-                    kbar_list = self.market_service.get_futures_kbars_with_timeframe(
-                        self.symbol,
-                        self.sub_symbol,
-                        self.trading_unit.pm_config.timeframe,
-                        days=5,
-                    )
                     signal = self.trading_unit.strategy.evaluate(
                         kbar_list, price, self.sub_symbol, bar_close=False,
                     )
@@ -407,7 +459,18 @@ class TradingEngine:
 
                     # Rejected — suppress for 30s, keep monitoring
                     suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
-                    print(f"⚡ Trigger rejected, suppress {self._INSTANT_SUPPRESS_SECONDS}s")
+                    self._log_instant_trigger_reject(
+                        price=price,
+                        long_target=long_target,
+                        short_target=short_target,
+                        signal=signal,
+                        actions=actions,
+                        kbar_list=kbar_list,
+                        branch="instant_plain",
+                    )
+                    print(
+                        f"⚡ Trigger rejected, suppress {self._INSTANT_SUPPRESS_SECONDS}s"
+                    )
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
 
@@ -425,7 +488,8 @@ class TradingEngine:
                 )
                 self.market_service.wait_for_tick(timeout=poll)
 
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ _wait_with_instant_check: {e}")
                 self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
 
     def _wait_instant_tick_volume_gated(self, next_time: datetime) -> None:
@@ -454,18 +518,15 @@ class TradingEngine:
             self._instant_tick_volume_window_sec = window_sec
         tw = self._instant_tick_volume_window
 
-        long_target: float | None = None
-        short_target: float | None = None
-        kbar_list = None
         baseline: float | None = None
-        last_kbar_mono: float = 0.0
-        _KBAR_REFRESH_INTERVAL = 5.0
         _VOL_LOG_INTERVAL = 5.0
         _TRIGGER_REJECT_LOG_INTERVAL = 2.0
+        _BASELINE_SNAPSHOT_INTERVAL = 5.0
 
         suppress_until = 0.0
         last_vol_log_mono = 0.0
         last_reject_log_mono = 0.0
+        last_baseline_snapshot_mono = 0.0
 
         while datetime.now() < next_time:
             try:
@@ -480,28 +541,29 @@ class TradingEngine:
                 tw.on_tick(ts, int(quote.volume))
 
                 now_mono = _time.monotonic()
-                if kbar_list is None or (
-                    now_mono - last_kbar_mono > _KBAR_REFRESH_INTERVAL
-                ):
-                    last_kbar_mono = now_mono
-                    kbar_list = self.market_service.get_futures_kbars_with_timeframe(
-                        self.symbol,
-                        self.sub_symbol,
-                        self.trading_unit.pm_config.timeframe,
-                        days=5,
-                    )
-                    if hasattr(s, "_compute_active_targets"):
-                        # Instant rolling loop refreshes frequently; skip target spam.
-                        s._compute_active_targets(kbar_list, log_targets=False)
-                    long_target, short_target = s.get_instant_targets()
-                    baseline = avg_volume_per_seconds_from_last_n_closed_5m(
-                        kbar_list,
-                        n_closed_bars=n_closed,
-                        baseline_window_sec=max(1, int(round(window_sec))),
-                        exclude_forming=True,
-                    )
+
+                kbar_list = self.market_service.get_futures_kbars_with_timeframe(
+                    self.symbol,
+                    self.sub_symbol,
+                    self.trading_unit.pm_config.timeframe,
+                    days=5,
+                )
+                if hasattr(s, "_compute_active_targets"):
+                    s._compute_active_targets(kbar_list, log_targets=False)
+                long_target, short_target = s.get_instant_targets()
+                baseline = avg_volume_per_seconds_from_last_n_closed_5m(
+                    kbar_list,
+                    n_closed_bars=n_closed,
+                    baseline_window_sec=max(1, int(round(window_sec))),
+                    exclude_forming=True,
+                )
+
+                if now_mono - last_baseline_snapshot_mono >= _BASELINE_SNAPSHOT_INTERVAL:
+                    last_baseline_snapshot_mono = now_mono
                     closed_bars = kbar_list.kbars[:-1]
-                    baseline_bars = closed_bars[-n_closed:] if len(closed_bars) >= n_closed else []
+                    baseline_bars = (
+                        closed_bars[-n_closed:] if len(closed_bars) >= n_closed else []
+                    )
                     baseline_snapshot = ", ".join(
                         f"{b.time.strftime('%H:%M')}:{int(b.volume)}"
                         for b in baseline_bars
@@ -557,7 +619,7 @@ class TradingEngine:
                         f"(>{mult:.2f}× and >{min_roll})"
                     )
 
-                    if kbar_list is None or len(kbar_list.kbars) < 2:
+                    if len(kbar_list.kbars) < 2:
                         kbar_list = self.market_service.get_futures_kbars_with_timeframe(
                             self.symbol,
                             self.sub_symbol,
@@ -598,13 +660,18 @@ class TradingEngine:
                         return
 
                     suppress_until = now_ts + self._INSTANT_SUPPRESS_SECONDS
-                    sig_type = getattr(signal, "signal_type", None)
-                    sig_type_str = getattr(sig_type, "value", str(sig_type))
-                    sig_reason = getattr(signal, "reason", "") or "no reason"
+                    self._log_instant_trigger_reject(
+                        price=price,
+                        long_target=long_target,
+                        short_target=short_target,
+                        signal=signal,
+                        actions=actions,
+                        kbar_list=kbar_list,
+                        branch="instant_tick_vol_ok",
+                    )
                     print(
                         f"⚡ Trigger rejected (tick vol ok), suppress "
-                        f"{self._INSTANT_SUPPRESS_SECONDS}s "
-                        f"| signal={sig_type_str} | reason={sig_reason}"
+                        f"{self._INSTANT_SUPPRESS_SECONDS}s"
                     )
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
@@ -633,7 +700,8 @@ class TradingEngine:
                 )
                 self.market_service.wait_for_tick(timeout=poll)
 
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ _wait_instant_tick_volume_gated: {e}")
                 self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
 
     def _execute_action(self, action: OrderAction) -> int | None:

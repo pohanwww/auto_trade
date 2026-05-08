@@ -521,6 +521,98 @@ class KeyLevelStrategy(BaseStrategy):
 
         return long_price, short_price
 
+    def instant_reject_debug(
+        self, price: float, kbar_list: KBarList | None
+    ) -> list[str]:
+        """TradingEngine 在 instant 拒單時呼叫：輸出 OR / 門檻 / instant KL 細節。"""
+        lines: list[str] = []
+        p_int = int(price)
+        lines.append(
+            f"  [KL] dbg price={price:.4f} int={p_int} (.0f_log={price:.0f})"
+        )
+
+        if not self._levels_calculated:
+            lines.append("  [KL] dbg levels_calculated=False")
+            return lines
+
+        atr = self._atr
+        if atr is None or atr <= 0:
+            lines.append(
+                f"  [KL] dbg ATR invalid (_atr={atr}); get_instant_targets() needs ATR"
+            )
+            return lines
+
+        lines.append(f"  [KL] dbg ATR={atr:.4f}")
+
+        if self.use_or and self._or_calculated:
+            oh = self._or_high
+            ol = self._or_low
+            lines.append(
+                f"  [KL] dbg OR_H={oh} OR_L={ol} | "
+                f"long blocked when int(px)<OR_H → {p_int}<{oh} == {p_int < (oh or 0)}"
+            )
+
+        kl = self._instant_target_long
+        buf_l = self._atr * self.instant_threshold_long
+        buf_b = self._atr * self.breakout_buffer_long
+        if kl is not None:
+            tp_line = float(kl.price) + buf_l
+            if (
+                self.trend_filter == "or"
+                and self.use_or
+                and self._or_calculated
+                and self._or_high is not None
+            ):
+                lines.append(
+                    f"  [KL] dbg monitor tp_line={tp_line:.2f} vs OR_H={self._or_high} "
+                    f"(tp<OR_H clears engine target): {tp_line < self._or_high}"
+                )
+            lines.append(
+                f"  [KL] dbg instant KL={kl.price} ibuf={buf_l:.2f} bbuf={buf_b:.2f} "
+                f"| trigger_sum={tp_line:.2f}"
+            )
+
+        if kbar_list is None or len(kbar_list.kbars) < 2:
+            lines.append(
+                "  [KL] dbg kbar_list<2 → evaluate hold(insufficient data) possible"
+            )
+            return lines
+
+        kbar = kbar_list.kbars[-1]
+        prev_kbar = kbar_list.kbars[-2]
+        allow_long, allow_short = self._get_allowed_directions(
+            price, kbar_list, kbar,
+        )
+        lines.append(
+            f"  [KL] dbg allow_long={allow_long} allow_short={allow_short} "
+            f"| bar={kbar.time} bar_open={int(kbar.open)} prev_close={int(prev_kbar.close)}"
+        )
+
+        if kl is not None:
+            ref = int(kbar.open)
+            gate_side = ref <= float(kl.price) + buf_b
+            cross_ok = p_int >= float(kl.price) + buf_l
+            lines.append(
+                f"  [KL] dbg instant_long predicates: "
+                f"use_instant_long={self.use_instant_long} "
+                f"use_breakout_long={self.use_breakout_long} | "
+                f"int(px)>=kl+ibuf → {cross_ok} | "
+                f"ref<=kl+bbuf → {gate_side}"
+            )
+
+        ks = self._instant_target_short
+        if ks is not None:
+            buf_s_i = self._atr * self.instant_threshold_short
+            buf_s_b = self._atr * self.breakout_buffer_short
+            ref = int(kbar.open)
+            lines.append(
+                f"  [KL] dbg instant_short KL={ks.price} | "
+                f"int(px)<=kl-ibuf → {p_int <= float(ks.price) - buf_s_i} | "
+                f"ref>=kl-bbuf → {ref >= float(ks.price) - buf_s_b}"
+            )
+
+        return lines
+
     @property
     def requires_1m_instant_volume_data(self) -> bool:
         """True → backtest loads 1m bars for RVOL instant path (live uses tick rolling instead)."""
