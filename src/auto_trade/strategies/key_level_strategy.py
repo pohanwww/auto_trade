@@ -1198,7 +1198,7 @@ class KeyLevelStrategy(BaseStrategy):
 
             else:
                 if (self.use_instant_long
-                        and int(current_price) > kl.price + ibuf
+                        and int(current_price) >= kl.price + ibuf
                         and ref <= kl.price + bbuf):
                     return self._emit_entry(
                         True, kl, int(current_price), True,
@@ -1242,7 +1242,7 @@ class KeyLevelStrategy(BaseStrategy):
 
             else:
                 if (self.use_instant_short
-                        and int(current_price) < kl.price - ibuf
+                        and int(current_price) <= kl.price - ibuf
                         and ref >= kl.price - bbuf):
                     return self._emit_entry(
                         False, kl, int(current_price), True,
