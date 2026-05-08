@@ -101,6 +101,9 @@ class KeyLevelStrategy(BaseStrategy):
         super().__init__(indicator_service, name="KeyLevel Strategy")
 
         self.is_live = False
+        # True only during TradingEngine._initialize_strategy_levels: 暖身計算 KL/OR/ATR，
+        # 不執行進場邏輯、不增加 trades_today（否則會出現「幽靈成交」計數）。
+        self._eval_warmup = False
 
         # Timeframe → how many previous sessions to aggregate for key levels
         self.timeframe = timeframe
@@ -318,6 +321,9 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Compute targets from kbar data (always fresh, no stale state)
         self._compute_active_targets(kbar_list)
+
+        if self._eval_warmup:
+            return self._hold(symbol, current_price, "kl_warmup")
 
         # Check trading window
         if not self._is_in_trading_window(bar_time):

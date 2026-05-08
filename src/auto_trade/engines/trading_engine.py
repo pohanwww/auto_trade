@@ -1097,9 +1097,15 @@ class TradingEngine:
             # evaluate 內部：
             #   - _levels_calculated=True (已恢復) → 跳過 _calculate_key_levels
             #   - ATR 等 runtime state 正常初始化
-            self.trading_unit.strategy.evaluate(
-                kbar_list, current_price, self.sub_symbol,
-            )
+            # Key Level：必須暖身模式，否則若當下 K 線符合 bar-close 突破，
+            # _emit_entry 會增加 trades_today，但此處訊號會被丟棄、不會下單 → 幽靈筆數。
+            strategy._eval_warmup = True
+            try:
+                self.trading_unit.strategy.evaluate(
+                    kbar_list, current_price, self.sub_symbol,
+                )
+            finally:
+                strategy._eval_warmup = False
 
             # 首次啟動且產出新 KL → 同步到 PM
             if not already_restored and current_price > 0:
