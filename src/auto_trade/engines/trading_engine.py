@@ -519,13 +519,9 @@ class TradingEngine:
         tw = self._instant_tick_volume_window
 
         baseline: float | None = None
-        _VOL_LOG_INTERVAL = 5.0
-        _TRIGGER_REJECT_LOG_INTERVAL = 2.0
         _BASELINE_SNAPSHOT_INTERVAL = 5.0
 
         suppress_until = 0.0
-        last_vol_log_mono = 0.0
-        last_reject_log_mono = 0.0
         last_baseline_snapshot_mono = 0.0
 
         while datetime.now() < next_time:
@@ -600,12 +596,13 @@ class TradingEngine:
                     else 0.0
                 )
 
-                if now_mono - last_vol_log_mono >= _VOL_LOG_INTERVAL:
-                    last_vol_log_mono = now_mono
+                if triggered:
+                    # 僅在觸發區間印診斷：含 vol 是否達標（下單或 filter 前後同一格式）
                     print(
                         "📊 Instant tick vol: "
                         f"roll={rolling} / baseline≈{(baseline or 0):.1f} "
                         f"(ratio={vol_ratio:.2f}x, need>={mult:.2f}x, roll>{min_roll}) "
+                        f"vol_ok={vol_ok} "
                         f"price={price:.0f} "
                         f"targets(L/S)="
                         f"{(f'{long_target:.0f}' if long_target is not None else '-')}/"
@@ -613,11 +610,6 @@ class TradingEngine:
                     )
 
                 if triggered and vol_ok:
-                    print(
-                        f"⚡ Instant trigger (tick vol): price={price:.0f} "
-                        f"roll={rolling} baseline_per_{int(round(window_sec))}s≈{baseline:.1f} "
-                        f"(>{mult:.2f}× and >{min_roll})"
-                    )
 
                     if len(kbar_list.kbars) < 2:
                         kbar_list = self.market_service.get_futures_kbars_with_timeframe(
@@ -675,17 +667,6 @@ class TradingEngine:
                     )
                     self.market_service.wait_for_tick(timeout=self._INSTANT_POLL_NORMAL)
                     continue
-
-                if triggered and not vol_ok and (
-                    now_mono - last_reject_log_mono >= _TRIGGER_REJECT_LOG_INTERVAL
-                ):
-                    last_reject_log_mono = now_mono
-                    print(
-                        "⚠️ Instant price hit but volume not enough: "
-                        f"price={price:.0f} roll={rolling} "
-                        f"baseline≈{(baseline or 0):.1f} "
-                        f"ratio={vol_ratio:.2f}x (<{mult:.2f}x or roll<={min_roll})"
-                    )
 
                 distances = []
                 if long_target is not None:
@@ -963,6 +944,9 @@ class TradingEngine:
                         "override_take_profit_points",
                         "override_start_trailing_stop_points",
                         "override_trailing_stop_points",
+                        "kl_atr_trailing_active",
+                        "kl_atr_trailing_distance_pts",
+                        "kl_atr_trailing_multiplier",
                     ]
                     pos_meta = {}
                     for k in meta_keys:

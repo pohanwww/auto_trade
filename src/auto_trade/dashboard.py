@@ -1455,13 +1455,14 @@ function buildCard(d) {{
     const nextIdx = pm.next_key_level_idx || 0;
     const buf = pm.key_level_buffer || 0;
     const levels = pm.key_levels;
+    const exhausted = !!pm.kl_atr_trailing_active && nextIdx >= levels.length;
     const rows = levels.map((lv, i) => {{
       const broken = i < nextIdx;
       const isNext = i === nextIdx;
       const stopAt = isLong ? lv - buf : lv + buf;
       const icon = broken ? '✅' : isNext ? '👉' : '⬜';
       const color = broken ? 'var(--green)' : isNext ? 'var(--yellow)' : 'var(--text-muted)';
-      const stopInfo = broken ? ` → stop ${{fmt(stopAt)}}` : '';
+      const stopInfo = broken && !exhausted ? ` → stop ${{fmt(stopAt)}}` : '';
       return `<div style="display:flex;justify-content:space-between;padding:3px 0;color:${{color}};font-size:0.82rem;">` +
         `<span>${{icon}} Level ${{i+1}}: ${{fmt(lv)}}</span>` +
         `<span style="color:var(--text-muted)">${{stopInfo}}</span></div>`;
@@ -1470,7 +1471,14 @@ function buildCard(d) {{
     const tsPts = pm.override_trailing_stop_points;
     const tsStartPts = pm.override_start_trailing_stop_points;
     let exitInfo = '';
-    if (tpPts || tsPts || tsStartPts) {{
+    if (exhausted) {{
+      const mult = pm.kl_atr_trailing_multiplier != null ? pm.kl_atr_trailing_multiplier : '';
+      const dist = pm.kl_atr_trailing_distance_pts != null ? pm.kl_atr_trailing_distance_pts : '';
+      const multStr = mult !== '' ? String(mult) : '?';
+      const distStr = dist !== '' ? String(dist) : '?';
+      exitInfo = `<div style="margin-top:8px;font-size:0.78rem;color:var(--orange);line-height:1.35;">` +
+        `移停：已突破全部 KL → 改為 <b>進場 ATR×${{multStr}}</b>，距離約 <b>${{distStr}}</b> 點（隨行情更新）</div>`;
+    }} else if (tpPts || tsPts || tsStartPts) {{
       const parts = [];
       if (tpPts) parts.push(`TP=${{tpPts}}pts`);
       if (tsStartPts) parts.push(`TS start=${{tsStartPts}}pts`);

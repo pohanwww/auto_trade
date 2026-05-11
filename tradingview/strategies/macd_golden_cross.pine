@@ -1,6 +1,6 @@
 // This Pine Script™ is subject to the terms of the Mozilla Public License 2.0
 // https://mozilla.org/MPL/2.0/
-// MACD Golden Cross Strategy (MACD 金叉做多 + 加碼 + 收緊移停 + 選擇權插針過濾)
+// MACD Golden Cross Strategy (MACD 金叉做多 + 加碼 + 收緊移停)
 
 //@version=6
 strategy("MACD 金叉波段", overlay=true, default_qty_type=strategy.fixed, default_qty_value=4, initial_capital=10000000, currency=currency.TWD, commission_type=strategy.commission.cash_per_order, commission_value=100, margin_long=4, margin_short=4, pyramiding=3)
@@ -30,10 +30,11 @@ addon_qty       = input.int(2,     "加碼口數",       group="加碼參數")
 max_addon_count = input.int(2,     "最大加碼次數",   group="加碼參數")
 
 // ═══════════════════════════════════════════════
-// 插針過濾與保險設定 (新增)
+// 停損判斷方式（做多：跌破停損價）
 // ═══════════════════════════════════════════════
-use_wick_filter  = input.bool(true, "啟用「收盤過濾插針」", group="插針過濾 (選擇權保險)", tooltip="打勾：收盤破移停才出場，防插針\n不打勾：盤中碰到移停立刻出場 (原邏輯)")
-options_cost_pts = input.float(30.0, "每次移停保險成本 (點)", group="插針過濾 (選擇權保險)", tooltip="僅在啟用收盤過濾時，用於右下角自訂績效表的扣除計算")
+// 打勾 = 以「收盤價」判斷；不打勾 = 以「盤中最低價」判斷（觸價即視為觸發）
+initial_sl_use_close = input.bool(false, "初始停損：以收盤價判斷", group="停損判斷方式", tooltip="打勾：收盤跌破初始停損價才出場（過濾下影線）\n不打勾：當根 K 棒最低價觸及停損價即出場")
+trailing_sl_use_close = input.bool(false, "移動停損：以收盤價判斷", group="停損判斷方式", tooltip="打勾：收盤跌破移停價才出場\n不打勾：當根 K 棒最低價觸及移停價即出場")
 
 // ═══════════════════════════════════════════════
 // MACD 計算
@@ -77,7 +78,6 @@ var float sl_price = na
 var float tp_price = na
 var bool  ts_active = false
 var bool  ts_tightened = false
-var int   put_insurance_count = 0 // 紀錄觸發保險的次數
 
 // 偵測新倉位建立
 if strategy.position_size > 0 and strategy.position_size[1] == 0
@@ -113,49 +113,51 @@ if strategy.position_size > 0 and not na(entry_price)
         new_ts = highest_since_entry - ts_pts
         trailing_stop := na(trailing_stop) ? new_ts : math.max(trailing_stop, new_ts)
 
-    // -----------------------------------------------------------
-    // 執行出場邏輯
-    // -----------------------------------------------------------
-    
-    if not use_wick_filter
-        // 【模式 A：原版盤中觸發 (不打勾時執行)】
-        // 恢復你原本的寫法：將硬停損與移停取最大值，合併在同一個 exit 裡
-        effective_stop = not na(trailing_stop) and trailing_stop > sl_price ? trailing_stop : sl_price
-        
-        strategy.exit("Exit", "Long", stop=effective_stop, limit=tp_price)
+    // ── 停利（皆以盤中最高觸及為準）──
+    if high >= tp_price
+        strategy.close("Long", comment="停利")
         if addon_count >= 1
-            strategy.exit("Exit-A1", "Addon1", stop=effective_stop, limit=tp_price)
+            strategy.close("Addon1", comment="停利-A1")
         if addon_count >= 2
-            strategy.exit("Exit-A2", "Addon2", stop=effective_stop, limit=tp_price)
+            strategy.close("Addon2", comment="停利-A2")
+        entry_price := na
+        sl_price := na
+        tp_price := na
+        trailing_stop := na
+        ts_active := false
+        ts_tightened := false
+        addon_count := 0
 
+    // ── 停損：依兩個勾選項組合 ──
     else
-        // 【模式 B：收盤過濾插針 (打勾時執行)】
-        // 1. 硬停損與停利 (保留盤中觸發，防止崩盤)
-        strategy.exit("Exit_Hard", "Long", stop=sl_price, limit=tp_price)
-        if addon_count >= 1
-            strategy.exit("Exit_Hard_A1", "Addon1", stop=sl_price, limit=tp_price)
-        if addon_count >= 2
-            strategy.exit("Exit_Hard_A2", "Addon2", stop=sl_price, limit=tp_price)
-            
-        // 2. 移動停損 (收盤價跌破才出場)
-        if ts_active and close < trailing_stop
-            strategy.close("Long", comment="TS出場")
+        sl_touch = initial_sl_use_close ? (close < sl_price) : (low <= sl_price)
+        ts_touch = ts_active and not na(trailing_stop) and (trailing_sl_use_close ? (close < trailing_stop) : (low <= trailing_stop))
+
+        both_intrabar = not initial_sl_use_close and not trailing_sl_use_close
+        if both_intrabar
+            // 兩項皆「低點觸發」：合併為單一 effective_stop（與舊版一致）
+            effective_stop = not na(trailing_stop) and trailing_stop > sl_price ? trailing_stop : sl_price
+            strategy.exit("Exit", "Long", stop=effective_stop, limit=tp_price)
             if addon_count >= 1
-                strategy.close("Addon1", comment="TS出場-A1")
+                strategy.exit("Exit-A1", "Addon1", stop=effective_stop, limit=tp_price)
             if addon_count >= 2
-                strategy.close("Addon2", comment="TS出場-A2")
-            
-            // 紀錄觸發了一次保險扣款
-            put_insurance_count += 1
-            
-            // 強制清理狀態，避免下一根 K 棒誤判
-            entry_price := na
-            sl_price := na
-            tp_price := na
-            trailing_stop := na
-            ts_active := false
-            ts_tightened := false
-            addon_count := 0
+                strategy.exit("Exit-A2", "Addon2", stop=effective_stop, limit=tp_price)
+        else
+            // 至少一項用收盤判斷：手動平倉（無選擇權扣點）
+            if sl_touch or ts_touch
+                cmt = ts_touch and not sl_touch ? "移停出場" : sl_touch and not ts_touch ? "硬停損" : "停損/移停"
+                strategy.close("Long", comment=cmt)
+                if addon_count >= 1
+                    strategy.close("Addon1", comment=cmt + "-A1")
+                if addon_count >= 2
+                    strategy.close("Addon2", comment=cmt + "-A2")
+                entry_price := na
+                sl_price := na
+                tp_price := na
+                trailing_stop := na
+                ts_active := false
+                ts_tightened := false
+                addon_count := 0
 
 // ═══════════════════════════════════════════════
 // 視覺化
@@ -181,28 +183,3 @@ if barstate.islast
     table.cell(infoTable, 0, 2, "Avg: " + str.tostring(macd_avg, "#.#") + (macd_avg < macd_threshold ? " ✓" : " ✗"), text_color=macd_avg < macd_threshold ? color.green : color.red, text_size=size.normal)
     addon_str = enable_addon ? "Addon: " + str.tostring(addon_count) + "/" + str.tostring(max_addon_count) : "Addon: OFF"
     table.cell(infoTable, 0, 3, addon_str, text_color=color.gray, text_size=size.normal)
-
-
-// ═══════════════════════════════════════════════
-// 自訂真實績效追蹤 (扣除選擇權保險成本)
-// ═══════════════════════════════════════════════
-if barstate.islast and use_wick_filter
-    point_value = 200 // 大台乘數，如果是小台請改成 50
-    
-    // 計算總保險成本 (點數轉換為金額)
-    total_insurance_cost = put_insurance_count * options_cost_pts * point_value
-    
-    // 計算扣除保險後的「真實淨利」
-    real_net_profit = strategy.netprofit - total_insurance_cost
-    
-    // 將結果顯示在表格上
-    var perfTable = table.new(position.bottom_right, 2, 3, bgcolor=color.new(color.black, 80), border_width=1)
-    
-    table.cell(perfTable, 0, 0, "TV 原始總淨利", text_color=color.gray)
-    table.cell(perfTable, 1, 0, str.tostring(strategy.netprofit, "#.##"), text_color=color.white)
-    
-    table.cell(perfTable, 0, 1, "保險總成本 (" + str.tostring(put_insurance_count) + "次)", text_color=color.orange)
-    table.cell(perfTable, 1, 1, "-" + str.tostring(total_insurance_cost, "#.##"), text_color=color.orange)
-    
-    table.cell(perfTable, 0, 2, "真實淨利 (扣除後)", text_color=color.yellow)
-    table.cell(perfTable, 1, 2, str.tostring(real_net_profit, "#.##"), text_color=real_net_profit > 0 ? color.green : color.red)

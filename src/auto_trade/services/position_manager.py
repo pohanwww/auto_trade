@@ -579,18 +579,17 @@ class PositionManager:
             )
             return actions
 
+        # 先更新移停（含 KL / ATR 階段），利潤鎖定可再收緊，最後以最新移停檢查出場
+        self._update_trailing_stops(current_price)
+
+        if self.config.enable_profit_lock:
+            self._apply_profit_lock(current_price, kbar_list)
+
         # 逐 Leg 檢查出場條件
         for leg in self.position.open_legs:
             action = self._check_leg_exit(leg, current_price)
             if action:
                 actions.append(action)
-
-        # 更新移動停損（所有 Legs）
-        self._update_trailing_stops(current_price)
-
-        # 利潤鎖定（覆蓋在 KL trailing 之上，取較嚴格者）
-        if self.config.enable_profit_lock:
-            self._apply_profit_lock(current_price, kbar_list)
 
         return actions
 
@@ -824,6 +823,7 @@ class PositionManager:
             position_metadata["key_level_buffer"] = meta.get("key_level_buffer", 10)
             position_metadata["key_level_trail_mode"] = meta.get("key_level_trail_mode", "previous")
             position_metadata["next_key_level_idx"] = 0
+            position_metadata["kl_atr_trailing_active"] = False
             if "key_level_min_profit" in meta:
                 position_metadata["key_level_min_profit"] = meta["key_level_min_profit"]
             extras = []
@@ -1249,14 +1249,26 @@ class PositionManager:
                     dynamic_ts = int(atr * self.config.kl_exhausted_atr_multiplier)
                 else:
                     dynamic_ts = int(self.position.entry_price * 0.005)
+                self.position.metadata["kl_atr_trailing_active"] = True
+                self.position.metadata["kl_atr_trailing_distance_pts"] = dynamic_ts
+                self.position.metadata["kl_atr_trailing_multiplier"] = (
+                    self.config.kl_exhausted_atr_multiplier
+                )
+                # 須跟「最高／最低價」掛鉤，勿用現價：否則急殺時 new_stop 跟著下修，
+                # 會出現盤中曾創高但移停仍遠低於回檔價、遲遲不觸發的假象。
+                ref = (
+                    self.position.highest_price
+                    if is_long
+                    else self.position.lowest_price
+                )
                 for leg in self.position.open_legs:
                     er = leg.exit_rule
                     if not er.trailing_stop_active:
                         continue
                     new_stop = (
-                        current_price - dynamic_ts
+                        ref - dynamic_ts
                         if is_long
-                        else current_price + dynamic_ts
+                        else ref + dynamic_ts
                     )
                     if (
                         is_long
@@ -1273,7 +1285,8 @@ class PositionManager:
                         er.trailing_stop_price = new_stop
                         print(
                             f"📊 {leg.leg_id} 壓力線後移停更新: "
-                            f"{new_stop} (距離={dynamic_ts}pts, ATR×{self.config.kl_exhausted_atr_multiplier})"
+                            f"{new_stop} (ref={'高' if is_long else '低'}={ref}, "
+                            f"距離={dynamic_ts}pts, ATR×{self.config.kl_exhausted_atr_multiplier})"
                         )
                 return
 
