@@ -519,10 +519,9 @@ class TradingEngine:
         tw = self._instant_tick_volume_window
 
         baseline: float | None = None
-        _BASELINE_SNAPSHOT_INTERVAL = 5.0
 
         suppress_until = 0.0
-        last_baseline_snapshot_mono = 0.0
+        last_baseline_snapshot_signature: tuple[tuple[str, int], ...] | None = None
 
         while datetime.now() < next_time:
             try:
@@ -535,8 +534,6 @@ class TradingEngine:
 
                 ts = quote.timestamp if quote.timestamp else datetime.now()
                 tw.on_tick(ts, int(quote.volume))
-
-                now_mono = _time.monotonic()
 
                 kbar_list = self.market_service.get_futures_kbars_with_timeframe(
                     self.symbol,
@@ -554,15 +551,17 @@ class TradingEngine:
                     exclude_forming=True,
                 )
 
-                if now_mono - last_baseline_snapshot_mono >= _BASELINE_SNAPSHOT_INTERVAL:
-                    last_baseline_snapshot_mono = now_mono
-                    closed_bars = kbar_list.kbars[:-1]
-                    baseline_bars = (
-                        closed_bars[-n_closed:] if len(closed_bars) >= n_closed else []
-                    )
+                closed_bars = kbar_list.kbars[:-1]
+                baseline_bars = (
+                    closed_bars[-n_closed:] if len(closed_bars) >= n_closed else []
+                )
+                baseline_signature = tuple(
+                    (b.time.strftime("%H:%M"), int(b.volume)) for b in baseline_bars
+                )
+                if baseline_signature != last_baseline_snapshot_signature:
+                    last_baseline_snapshot_signature = baseline_signature
                     baseline_snapshot = ", ".join(
-                        f"{b.time.strftime('%H:%M')}:{int(b.volume)}"
-                        for b in baseline_bars
+                        f"{hhmm}:{vol}" for hhmm, vol in baseline_signature
                     )
                     print(
                         "📦 Instant baseline source: "
