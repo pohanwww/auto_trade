@@ -97,6 +97,10 @@ class PositionManagerConfig:
         put_premium_points: float | None = None,
         put_premium_atr_multiplier: float | None = None,
         put_premium_atr_period: int = 14,
+        # Exit trigger mode:
+        # True: before TS turns non-negative, evaluate SL/TS on bar-close only.
+        # False: always tick/intrabar trigger (legacy behavior).
+        protective_close_confirm: bool = False,
     ):
         self.total_quantity = total_quantity
         self.tp_leg_quantity = tp_leg_quantity
@@ -148,6 +152,7 @@ class PositionManagerConfig:
         self.put_premium_points = put_premium_points
         self.put_premium_atr_multiplier = put_premium_atr_multiplier
         self.put_premium_atr_period = put_premium_atr_period
+        self.protective_close_confirm = protective_close_confirm
 
     @classmethod
     def from_dict(
@@ -226,6 +231,7 @@ class PositionManagerConfig:
             put_premium_points=trading.get("put_premium_points"),
             put_premium_atr_multiplier=trading.get("put_premium_atr_multiplier"),
             put_premium_atr_period=trading.get("put_premium_atr_period", 14),
+            protective_close_confirm=trading.get("protective_close_confirm", False),
         )
 
     @property
@@ -268,6 +274,8 @@ class PositionManagerConfig:
             parts += f", force_exit@{self.force_exit_time}"
         if self.wick_hedge_mode != WickHedgeMode.ORIGINAL:
             parts += f", hedge={self.wick_hedge_mode.value}"
+        if self.protective_close_confirm:
+            parts += ", protective_close_confirm=True"
         parts += ")"
         return parts
 
@@ -592,6 +600,32 @@ class PositionManager:
                 actions.append(action)
 
         return actions
+
+    def should_use_tick_exit(self) -> bool:
+        """Whether exits should be checked on every tick/intrabar probe.
+
+        When protective_close_confirm is enabled, exits stay in bar-close-confirm mode
+        until at least one open leg has trailing stop active and its TS price has moved
+        to non-negative territory (>= entry for long, <= entry for short).
+        """
+        if not self.has_position:
+            return True
+        if not self.config.protective_close_confirm:
+            return True
+
+        is_long = self._is_long
+        for leg in self.position.open_legs:
+            rule = leg.exit_rule
+            if not rule.trailing_stop_active or rule.trailing_stop_price is None:
+                continue
+            leg_entry = int(leg.entry_price or self.position.entry_price)
+            ts_price = int(rule.trailing_stop_price)
+            if is_long and ts_price >= leg_entry:
+                return True
+            if (not is_long) and ts_price <= leg_entry:
+                return True
+
+        return False
 
     def on_fill(
         self,

@@ -445,8 +445,10 @@ class BacktestEngine:
                     ts_active_before = ts_active_after
                     ts_tightened_before = ts_tightened_after
 
+                use_tick_exit = pm.should_use_tick_exit()
+
                 # 2. 方向性極端價檢查（僅盤中模式）
-                if not actions:
+                if not actions and use_tick_exit:
                     if is_long:
                         probe_actions = pm.on_price_update(current_low, current_kbars)
                         actions = self._filter_intrabar_actions(

@@ -81,6 +81,7 @@ class TradingEngine:
 
         # 配置檔名（用於 dashboard 辨識程序）
         self.config_file: str | None = None
+        self._last_close_confirm_bucket: tuple[int, int, int, int, int] | None = None
 
     def configure(
         self,
@@ -108,6 +109,28 @@ class TradingEngine:
         print(f"  倉位配置: {self.trading_unit.pm_config}")
         print(f"  商品: {symbol} / {sub_symbol}")
         print("  持倉出場檢查: 每筆 tick")
+
+    def _timeframe_minutes(self) -> int:
+        tf = str(self.trading_unit.pm_config.timeframe or "5m").lower()
+        mapping = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
+        return mapping.get(tf, 5)
+
+    def _can_run_close_confirm_check(self, current_time: datetime) -> bool:
+        tf_min = self._timeframe_minutes()
+        if current_time.minute % tf_min != 0:
+            return False
+
+        bucket = (
+            current_time.year,
+            current_time.month,
+            current_time.day,
+            current_time.hour,
+            current_time.minute,
+        )
+        if self._last_close_confirm_bucket == bucket:
+            return False
+        self._last_close_confirm_bucket = bucket
+        return True
 
     def run(self) -> None:
         """執行交易主循環"""
@@ -162,6 +185,18 @@ class TradingEngine:
                     )
 
                     if not actions:
+                        # Optional protective mode:
+                        # before TS turns non-negative, evaluate exits only once per bar close.
+                        if (
+                            self.position_manager.config.protective_close_confirm
+                            and not self.position_manager.should_use_tick_exit()
+                            and not self._can_run_close_confirm_check(current_time)
+                        ):
+                            self._try_sync_kl_to_position(current_price)
+                            self._sync_position_record(current_price)
+                            self.market_service.wait_for_tick(timeout=None)
+                            continue
+
                         _now_mono = _time.monotonic()
                         if _cached_kbar_list is None or (_now_mono - _last_kbar_fetch) > _KBAR_REFRESH_INTERVAL:
                             _cached_kbar_list = self.market_service.get_futures_kbars_with_timeframe(
