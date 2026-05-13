@@ -94,6 +94,7 @@ class KeyLevelStrategy(BaseStrategy):
         # --- Trend filter ---
         trend_filter: str = "or",  # "or", "ema", "none"
         trend_filter_ema_period: int = 200,
+        or_filter_use_body: bool = True,
         # --- Timeframe ---
         timeframe: str = "5m",
         **kwargs,
@@ -181,6 +182,7 @@ class KeyLevelStrategy(BaseStrategy):
         # Trend filter
         self.trend_filter = trend_filter
         self.trend_filter_ema_period = trend_filter_ema_period
+        self.or_filter_use_body = bool(or_filter_use_body)
 
         _log(
             "=== KeyLevelStrategy initialized ===\n"
@@ -190,6 +192,7 @@ class KeyLevelStrategy(BaseStrategy):
             "  Signal score gate: > %.1f\n"
             "  Signal: brk_buf=%.2f, instant=%.2f, atr_period=%d\n"
             "  Instant 1m vol: enabled=%s lookback=%d rvol>=%.2f max_confirm=%d abs_roll>%d\n"
+            "  OR filter: %s\n"
             "  Direction: long_only=%s, short_only=%s | max_trades=%d"
             " | max_day=%s | max_night=%s\n"
             "  Risk: sl_atr=%.1f, tp_atr=%.1f, kl_buffer=%.2f×ATR, trail_mode=%s\n"
@@ -204,6 +207,7 @@ class KeyLevelStrategy(BaseStrategy):
             self.instant_volume_rvol_min,
             self.instant_volume_max_confirm_bars,
             self.instant_volume_min_rolling,
+            "body" if self.or_filter_use_body else "legacy_price",
             long_only, short_only, max_trades_per_day,
             max_trades_day_session, max_trades_night_session,
             sl_atr_multiplier, tp_atr_multiplier, key_level_buffer, key_level_trail_mode,
@@ -343,6 +347,7 @@ class KeyLevelStrategy(BaseStrategy):
         # === Direction gate (OR / EMA / config) ===
         allow_long, allow_short = self._get_allowed_directions(
             current_price, kbar_list, kbar,
+            bar_close=bar_close,
         )
         if not allow_long and not allow_short:
             return self._hold(symbol, current_price, "no direction allowed")
@@ -588,6 +593,7 @@ class KeyLevelStrategy(BaseStrategy):
         prev_kbar = kbar_list.kbars[-2]
         allow_long, allow_short = self._get_allowed_directions(
             price, kbar_list, kbar,
+            bar_close=False,
         )
         lines.append(
             f"  [KL] dbg allow_long={allow_long} allow_short={allow_short} "
@@ -678,6 +684,16 @@ class KeyLevelStrategy(BaseStrategy):
             return None
         last_closed_1m = kbar_list_1m.kbars[-2]
         next_1m = kbar_list_1m.kbars[-1]
+
+        # Keep 1m instant path consistent with regular evaluate():
+        # respect active session + entry window gates.
+        # Without this, night strategy could still enter during day-session
+        # 08:45+ bars via 1m instant branch.
+        if not self._is_active_session(last_closed_1m.time):
+            return None
+        if not self._is_in_trading_window(last_closed_1m.time):
+            return None
+
         if self._cooldown_until and next_1m.time < self._cooldown_until:
             return None
         if self._iv_last_processed_1m_time == last_closed_1m.time:
@@ -1155,18 +1171,63 @@ class KeyLevelStrategy(BaseStrategy):
         return self.or_start_time <= t < self.session_end_time
 
     def _get_allowed_directions(
-        self, price: float, kbar_list: KBarList, kbar,
+        self,
+        price: float,
+        kbar_list: KBarList,
+        kbar,
+        *,
+        bar_close: bool = True,
     ) -> tuple[bool, bool]:
         """Pre-gate: determine (allow_long, allow_short) from config + trend filter."""
         allow_long = not self.short_only
         allow_short = not self.long_only
 
         if self.trend_filter == "or" and self.use_or and self._or_calculated:
-            p = int(price)
-            if p < (self._or_high or 0):
-                allow_long = False
-            if p > (self._or_low or 999999):
-                allow_short = False
+            if self.or_filter_use_body:
+                # OR filter uses candle body (not wick):
+                # - bar_close: body = [min(open, close), max(open, close)]
+                # - instant:   body = [min(open, current), max(open, current)]
+                o = int(kbar.open)
+                c = int(kbar.close) if bar_close else int(price)
+                body_top = max(o, c)
+                body_bottom = min(o, c)
+
+                if body_top < (self._or_high or 0):
+                    allow_long = False
+                if body_bottom > (self._or_low or 999999):
+                    allow_short = False
+
+                _log(
+                    "  OR body filter [%s]: O=%d Cref=%d body=[%d,%d] OR_H=%s OR_L=%s "
+                    "=> allow_long=%s allow_short=%s",
+                    "bar_close" if bar_close else "instant",
+                    o,
+                    c,
+                    body_bottom,
+                    body_top,
+                    self._or_high,
+                    self._or_low,
+                    allow_long,
+                    allow_short,
+                    verbose=True,
+                )
+            else:
+                p = int(price)
+                if p < (self._or_high or 0):
+                    allow_long = False
+                if p > (self._or_low or 999999):
+                    allow_short = False
+                _log(
+                    "  OR legacy filter [%s]: p=%d OR_H=%s OR_L=%s "
+                    "=> allow_long=%s allow_short=%s",
+                    "bar_close" if bar_close else "instant",
+                    p,
+                    self._or_high,
+                    self._or_low,
+                    allow_long,
+                    allow_short,
+                    verbose=True,
+                )
         elif self.trend_filter == "ema":
             ema_list = self.indicator_service.calculate_ema(
                 kbar_list, self.trend_filter_ema_period,
