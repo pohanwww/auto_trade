@@ -185,13 +185,23 @@ class TradingEngine:
                     )
 
                     if not actions:
-                        # Optional protective mode:
-                        # before TS turns non-negative, evaluate exits only once per bar close.
-                        if (
+                        protective_mode = (
                             self.position_manager.config.protective_close_confirm
                             and not self.position_manager.should_use_tick_exit()
-                            and not self._can_run_close_confirm_check(current_time)
-                        ):
+                        )
+
+                        # In protective mode we still update trailing/profit-lock on every tick.
+                        # This allows immediate switch back to tick-exit once TS turns non-negative.
+                        if protective_mode:
+                            self.position_manager.refresh_protective_state(current_price)
+                            protective_mode = (
+                                self.position_manager.config.protective_close_confirm
+                                and not self.position_manager.should_use_tick_exit()
+                            )
+
+                        # Optional protective mode:
+                        # before TS turns non-negative, evaluate exits only once per bar close.
+                        if protective_mode and not self._can_run_close_confirm_check(current_time):
                             self._try_sync_kl_to_position(current_price)
                             self._sync_position_record(current_price)
                             self.market_service.wait_for_tick(timeout=None)

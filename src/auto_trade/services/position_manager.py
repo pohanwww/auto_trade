@@ -601,6 +601,24 @@ class PositionManager:
 
         return actions
 
+    def refresh_protective_state(
+        self,
+        current_price: int,
+        kbar_list: KBarList | None = None,
+    ) -> None:
+        """Update trailing/profit-lock state without executing any exits.
+
+        Used by protective close-confirm mode: keep TS state fresh on every tick,
+        but defer actual SL/TS exits to bar-close checks until TS turns non-negative.
+        """
+        if not self.has_position:
+            return
+
+        self.position.update_price_tracking(current_price)
+        self._update_trailing_stops(current_price)
+        if self.config.enable_profit_lock:
+            self._apply_profit_lock(current_price, kbar_list)
+
     def should_use_tick_exit(self) -> bool:
         """Whether exits should be checked on every tick/intrabar probe.
 
