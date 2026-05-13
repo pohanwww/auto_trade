@@ -244,6 +244,14 @@ class KeyLevelStrategy(BaseStrategy):
         self._or_low: int | None = None
         self._or_mid: int | None = None
         self._or_range: int | None = None
+        self._or_full_high: int | None = None
+        self._or_full_low: int | None = None
+        self._or_full_mid: int | None = None
+        self._or_full_range: int | None = None
+        self._or_body_high: int | None = None
+        self._or_body_low: int | None = None
+        self._or_body_mid: int | None = None
+        self._or_body_range: int | None = None
         self._or_calculated = False
         self._key_levels: list[KeyLevel] = []
         self._signal_levels: list[KeyLevel] = []
@@ -385,10 +393,28 @@ class KeyLevelStrategy(BaseStrategy):
                 "levels_calculated": True,
             }
             if self.use_or and self._or_calculated:
-                state["or_high"] = self._or_high
-                state["or_low"] = self._or_low
-                state["or_mid"] = self._or_mid
-                state["or_range"] = self._or_range
+                use_body_for_plot = (
+                    self.or_filter_use_body
+                    and self._or_body_high is not None
+                    and self._or_body_low is not None
+                )
+                plot_high = self._or_body_high if use_body_for_plot else self._or_full_high
+                plot_low = self._or_body_low if use_body_for_plot else self._or_full_low
+                plot_mid = self._or_body_mid if use_body_for_plot else self._or_full_mid
+                plot_range = self._or_body_range if use_body_for_plot else self._or_full_range
+                state["or_high"] = plot_high
+                state["or_low"] = plot_low
+                state["or_mid"] = plot_mid
+                state["or_range"] = plot_range
+                state["or_filter_mode"] = "body" if use_body_for_plot else "full"
+                state["or_full_high"] = self._or_full_high
+                state["or_full_low"] = self._or_full_low
+                state["or_full_mid"] = self._or_full_mid
+                state["or_full_range"] = self._or_full_range
+                state["or_body_high"] = self._or_body_high
+                state["or_body_low"] = self._or_body_low
+                state["or_body_mid"] = self._or_body_mid
+                state["or_body_range"] = self._or_body_range
                 state["or_calculated"] = True
             if self._target_long:
                 state["target_long"] = self._target_long.price
@@ -472,14 +498,30 @@ class KeyLevelStrategy(BaseStrategy):
 
         # Restore OR state
         if state.get("or_calculated"):
-            self._or_high = state.get("or_high")
-            self._or_low = state.get("or_low")
-            self._or_mid = state.get("or_mid")
-            self._or_range = state.get("or_range")
+            self._or_full_high = state.get("or_full_high", state.get("or_high"))
+            self._or_full_low = state.get("or_full_low", state.get("or_low"))
+            self._or_full_mid = state.get("or_full_mid", state.get("or_mid"))
+            self._or_full_range = state.get("or_full_range", state.get("or_range"))
+            self._or_body_high = state.get("or_body_high")
+            self._or_body_low = state.get("or_body_low")
+            self._or_body_mid = state.get("or_body_mid")
+            self._or_body_range = state.get("or_body_range")
+            self._or_high = self._or_full_high
+            self._or_low = self._or_full_low
+            self._or_mid = self._or_full_mid
+            self._or_range = self._or_full_range
             self._or_calculated = True
             _log(
-                "Restored OR: high=%s, low=%s, mid=%s, range=%s",
-                self._or_high, self._or_low, self._or_mid, self._or_range,
+                "Restored OR: full=%s/%s (mid=%s,range=%s) body=%s/%s (mid=%s,range=%s) filter=%s",
+                self._or_full_high,
+                self._or_full_low,
+                self._or_full_mid,
+                self._or_full_range,
+                self._or_body_high,
+                self._or_body_low,
+                self._or_body_mid,
+                self._or_body_range,
+                state.get("or_filter_mode", "full"),
             )
 
         cd = state.get("cooldown_until")
@@ -982,18 +1024,30 @@ class KeyLevelStrategy(BaseStrategy):
             return False
 
         or_kbars = eligible[: self.or_bars]
-        self._or_high = int(max(k.high for k in or_kbars))
-        self._or_low = int(min(k.low for k in or_kbars))
-        self._or_mid = (self._or_high + self._or_low) // 2
-        self._or_range = self._or_high - self._or_low
+        self._or_full_high = int(max(k.high for k in or_kbars))
+        self._or_full_low = int(min(k.low for k in or_kbars))
+        self._or_full_mid = (self._or_full_high + self._or_full_low) // 2
+        self._or_full_range = self._or_full_high - self._or_full_low
+        body_tops = [max(int(k.open), int(k.close)) for k in or_kbars]
+        body_bottoms = [min(int(k.open), int(k.close)) for k in or_kbars]
+        self._or_body_high = int(max(body_tops))
+        self._or_body_low = int(min(body_bottoms))
+        self._or_body_mid = (self._or_body_high + self._or_body_low) // 2
+        self._or_body_range = self._or_body_high - self._or_body_low
+        self._or_high = self._or_full_high
+        self._or_low = self._or_full_low
+        self._or_mid = self._or_full_mid
+        self._or_range = self._or_full_range
         self._or_calculated = True
 
         _log(
             "=== Opening Range [%s] ===\n"
             "  OR bars: %d | H=%d L=%d Mid=%d Range=%d\n"
+            "  OR body: H=%d L=%d Mid=%d Range=%d\n"
             "  Filter: Long only above %d | Short only below %d",
             self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
             self.or_bars, self._or_high, self._or_low, self._or_mid, self._or_range,
+            self._or_body_high, self._or_body_low, self._or_body_mid, self._or_body_range,
             self._or_high, self._or_low,
         )
         return True
@@ -1134,6 +1188,14 @@ class KeyLevelStrategy(BaseStrategy):
         self._or_low = None
         self._or_mid = None
         self._or_range = None
+        self._or_full_high = None
+        self._or_full_low = None
+        self._or_full_mid = None
+        self._or_full_range = None
+        self._or_body_high = None
+        self._or_body_low = None
+        self._or_body_mid = None
+        self._or_body_range = None
         self._or_calculated = False
         self._key_levels = []
         self._signal_levels = []
