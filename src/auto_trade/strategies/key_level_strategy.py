@@ -552,7 +552,8 @@ class KeyLevelStrategy(BaseStrategy):
             buf_l = self._atr * self.instant_threshold_long
             tp = self._instant_target_long.price + buf_l
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
-                if self._or_high is not None and tp < self._or_high:
+                or_high, _, _ = self._get_or_filter_bounds()
+                if or_high is not None and tp < or_high:
                     pass
                 else:
                     long_price = tp
@@ -565,7 +566,8 @@ class KeyLevelStrategy(BaseStrategy):
             buf_s = self._atr * self.instant_threshold_short
             tp = self._instant_target_short.price - buf_s
             if self.trend_filter == "or" and self.use_or and self._or_calculated:
-                if self._or_low is not None and tp > self._or_low:
+                _, or_low, _ = self._get_or_filter_bounds()
+                if or_low is not None and tp > or_low:
                     pass
                 else:
                     short_price = tp
@@ -598,10 +600,9 @@ class KeyLevelStrategy(BaseStrategy):
         lines.append(f"  [KL] dbg ATR={atr:.4f}")
 
         if self.use_or and self._or_calculated:
-            oh = self._or_high
-            ol = self._or_low
+            oh, ol, om = self._get_or_filter_bounds()
             lines.append(
-                f"  [KL] dbg OR_H={oh} OR_L={ol} | "
+                f"  [KL] dbg OR({om}) H={oh} L={ol} | "
                 f"long blocked when int(px)<OR_H → {p_int}<{oh} == {p_int < (oh or 0)}"
             )
 
@@ -614,11 +615,11 @@ class KeyLevelStrategy(BaseStrategy):
                 self.trend_filter == "or"
                 and self.use_or
                 and self._or_calculated
-                and self._or_high is not None
+                and oh is not None
             ):
                 lines.append(
-                    f"  [KL] dbg monitor tp_line={tp_line:.2f} vs OR_H={self._or_high} "
-                    f"(tp<OR_H clears engine target): {tp_line < self._or_high}"
+                    f"  [KL] dbg monitor tp_line={tp_line:.2f} vs OR_H={oh} "
+                    f"(tp<OR_H clears engine target): {tp_line < oh}"
                 )
             lines.append(
                 f"  [KL] dbg instant KL={kl.price} ibuf={buf_l:.2f} bbuf={buf_b:.2f} "
@@ -1040,15 +1041,16 @@ class KeyLevelStrategy(BaseStrategy):
         self._or_range = self._or_full_range
         self._or_calculated = True
 
+        or_filter_high, or_filter_low, or_filter_mode = self._get_or_filter_bounds()
         _log(
             "=== Opening Range [%s] ===\n"
-            "  OR bars: %d | H=%d L=%d Mid=%d Range=%d\n"
-            "  OR body: H=%d L=%d Mid=%d Range=%d\n"
-            "  Filter: Long only above %d | Short only below %d",
+            "  OR(wick/full) bars=%d | H=%d L=%d Mid=%d Range=%d\n"
+            "  OR(body)            | H=%d L=%d Mid=%d Range=%d\n"
+            "  Active OR filter mode=%s | Long only above %d | Short only below %d",
             self._current_date.strftime("%Y-%m-%d") if self._current_date else "?",
             self.or_bars, self._or_high, self._or_low, self._or_mid, self._or_range,
             self._or_body_high, self._or_body_low, self._or_body_mid, self._or_body_range,
-            self._or_high, self._or_low,
+            or_filter_mode, or_filter_high, or_filter_low,
         )
         return True
 
@@ -1232,6 +1234,16 @@ class KeyLevelStrategy(BaseStrategy):
             return t >= self.or_start_time or t < self.session_end_time
         return self.or_start_time <= t < self.session_end_time
 
+    def _get_or_filter_bounds(self) -> tuple[int | None, int | None, str]:
+        """Return (or_high, or_low, mode) used by OR trend filter."""
+        if (
+            self.or_filter_use_body
+            and self._or_body_high is not None
+            and self._or_body_low is not None
+        ):
+            return self._or_body_high, self._or_body_low, "body"
+        return self._or_high, self._or_low, "full"
+
     def _get_allowed_directions(
         self,
         price: float,
@@ -1245,6 +1257,7 @@ class KeyLevelStrategy(BaseStrategy):
         allow_short = not self.long_only
 
         if self.trend_filter == "or" and self.use_or and self._or_calculated:
+            or_high, or_low, or_mode = self._get_or_filter_bounds()
             if self.or_filter_use_body:
                 # OR filter uses candle body (not wick):
                 # - bar_close: body = [min(open, close), max(open, close)]
@@ -1254,38 +1267,43 @@ class KeyLevelStrategy(BaseStrategy):
                 body_top = max(o, c)
                 body_bottom = min(o, c)
 
-                if body_top < (self._or_high or 0):
+                if body_top < (or_high or 0):
                     allow_long = False
-                if body_bottom > (self._or_low or 999999):
+                if body_bottom > (or_low or 999999):
                     allow_short = False
 
                 _log(
-                    "  OR body filter [%s]: O=%d Cref=%d body=[%d,%d] OR_H=%s OR_L=%s "
+                    "  OR body filter: source=%s, or_boundary=%s | "
+                    "kbar_open=%d, compare_close=%d, body_low=%d, body_high=%d | "
+                    "OR_H=%s, OR_L=%s "
                     "=> allow_long=%s allow_short=%s",
-                    "bar_close" if bar_close else "instant",
+                    "bar_close" if bar_close else "instant_tick",
+                    or_mode,
                     o,
                     c,
                     body_bottom,
                     body_top,
-                    self._or_high,
-                    self._or_low,
+                    or_high,
+                    or_low,
                     allow_long,
                     allow_short,
                     verbose=True,
                 )
             else:
                 p = int(price)
-                if p < (self._or_high or 0):
+                if p < (or_high or 0):
                     allow_long = False
-                if p > (self._or_low or 999999):
+                if p > (or_low or 999999):
                     allow_short = False
                 _log(
-                    "  OR legacy filter [%s]: p=%d OR_H=%s OR_L=%s "
+                    "  OR legacy filter: source=%s, or_boundary=%s | "
+                    "compare_price=%d, OR_H=%s, OR_L=%s "
                     "=> allow_long=%s allow_short=%s",
-                    "bar_close" if bar_close else "instant",
+                    "bar_close" if bar_close else "instant_tick",
+                    or_mode,
                     p,
-                    self._or_high,
-                    self._or_low,
+                    or_high,
+                    or_low,
                     allow_long,
                     allow_short,
                     verbose=True,
@@ -1349,7 +1367,8 @@ class KeyLevelStrategy(BaseStrategy):
 
         if log_targets:
             _log(
-                "  Targets: long=%s short=%s | instant_long=%s instant_short=%s | bar_ref=%d instant_ref=%d",
+                "  Targets: long=%s short=%s | instant_long=%s instant_short=%s | "
+                "refs: bar_ref(prev_close)=%d instant_ref(cur_open)=%d",
                 self._target_long.price if self._target_long else None,
                 self._target_short.price if self._target_short else None,
                 self._instant_target_long.price if self._instant_target_long else None,
@@ -1543,17 +1562,18 @@ class KeyLevelStrategy(BaseStrategy):
 
         if self.trend_filter == "or":
             if self.use_or and self._or_calculated:
+                or_high, or_low, or_mode = self._get_or_filter_bounds()
                 price = int(current_price) if current_price is not None else int(kbar.close)
-                if is_long and price < (self._or_high or 0):
+                if is_long and price < (or_high or 0):
                     _log(
-                        "  SKIP %s: price=%d < OR_High=%d",
-                        sig.signal_type, price, self._or_high,
+                        "  SKIP %s: price=%d < OR_High=%d (%s)",
+                        sig.signal_type, price, or_high, or_mode,
                     )
                     return False
-                if is_short and price > (self._or_low or 999999):
+                if is_short and price > (or_low or 999999):
                     _log(
-                        "  SKIP %s: price=%d > OR_Low=%d",
-                        sig.signal_type, price, self._or_low,
+                        "  SKIP %s: price=%d > OR_Low=%d (%s)",
+                        sig.signal_type, price, or_low, or_mode,
                     )
                     return False
             return True

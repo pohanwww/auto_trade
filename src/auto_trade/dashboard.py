@@ -80,11 +80,16 @@ class _PosLevel:
         self.first_seen = first_seen
 
 
-def _find_position_data(symbol: str, session: str) -> dict | None:
-    """Scan data/state/*/position.json and return the one matching symbol + session."""
+def _find_position_data(session: str) -> dict | None:
+    """Scan data/state/*/position.json and return the latest one matching session."""
     if not STATE_DIR.exists():
         return None
-    for strategy_dir in STATE_DIR.iterdir():
+    strategy_dirs = [d for d in STATE_DIR.iterdir() if d.is_dir()]
+    strategy_dirs.sort(
+        key=lambda d: (d / "position.json").stat().st_mtime if (d / "position.json").exists() else 0,
+        reverse=True,
+    )
+    for strategy_dir in strategy_dirs:
         if not strategy_dir.is_dir():
             continue
         pos_path = strategy_dir / "position.json"
@@ -96,8 +101,6 @@ def _find_position_data(symbol: str, session: str) -> dict | None:
             continue
         live = data.get("_live")
         if not live or not live.get("strategy_state"):
-            continue
-        if live.get("symbol") != symbol:
             continue
         config_file = live.get("config_file", "")
         strategy_name = live.get("strategy", "")
@@ -111,7 +114,6 @@ def _find_position_data(symbol: str, session: str) -> dict | None:
 
 def _generate_chart(
     timeframe: str,
-    symbol: str = "TXF",
     session: str = "night",
 ) -> dict:
     """Read KL data from position.json, fetch kbars for display, generate PNG.
@@ -127,11 +129,12 @@ def _generate_chart(
     from auto_trade.services.key_level_detector import detect_swing_clusters, split_sessions
 
     # ── 1. Read KL data from position.json ────────────────
-    pos_data = _find_position_data(symbol, session)
+    pos_data = _find_position_data(session)
     if not pos_data:
-        return {"ok": False, "error": f"No position.json found for {symbol}/{session}"}
+        return {"ok": False, "error": f"No position.json found for session={session}"}
 
     live = pos_data["_live"]
+    symbol = live.get("symbol", "TXF")
     ss = live["strategy_state"]
     if not ss.get("levels_calculated"):
         return {"ok": False, "error": "Strategy has not calculated levels yet"}
@@ -789,7 +792,6 @@ _kl_gen_lock = threading.Lock()
 @app.get("/api/kl/generate")
 def api_kl_generate(
     timeframe: str = Query("5m"),
-    symbol: str = Query("TXF"),
     session: str = Query("night", description="day / night"),
     token: str | None = Query(None),
     # legacy params kept for backwards compat (ignored)
@@ -804,7 +806,7 @@ def api_kl_generate(
             {"ok": False, "error": "Another chart is being generated, please wait"}
         )
     try:
-        result = _generate_chart(timeframe=timeframe, symbol=symbol, session=session)
+        result = _generate_chart(timeframe=timeframe, session=session)
         return JSONResponse(result)
     except Exception as e:
         import traceback
@@ -2007,11 +2009,6 @@ def _build_key_levels_html(token_param: str) -> str:
     <option value="day">日盤</option>
     <option value="night">夜盤</option>
   </select>
-  <label>Symbol</label>
-  <select id="inp-sym">
-    <option value="TXF" selected>TXF (大台)</option>
-    <option value="MXF">MXF (小台)</option>
-  </select>
   <button class="btn" id="btn-gen" onclick="generate()">Generate</button>
 </div>
 
@@ -2071,11 +2068,10 @@ async function generate() {{
   const btn = document.getElementById('btn-gen');
   const tf = document.getElementById('inp-tf').value;
   const sess = document.getElementById('inp-session').value;
-  const sym = document.getElementById('inp-sym').value;
   btn.disabled = true; btn.textContent = 'Generating...';
   showToast('Reading position.json & generating chart...');
   try {{
-    const res = await fetch(`/api/kl/generate?timeframe=${{tf}}&session=${{sess}}&symbol=${{sym}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
+    const res = await fetch(`/api/kl/generate?timeframe=${{tf}}&session=${{sess}}&_t=${{Date.now()}}${{TOKEN_PARAM}}`);
     const data = await res.json();
     if (data.ok) {{
       showToast(`Generated: ${{data.filename}} (${{data.bars}} bars, ${{data.levels?.length || 0}} levels)`);
@@ -2106,8 +2102,6 @@ function applyDefaultFilters() {{
   const dayEnd = 15 * 60;
   const preferredSession = (mins >= dayStart && mins < dayEnd) ? 'day' : 'night';
   document.getElementById('inp-session').value = preferredSession;
-  // Symbol default: TXF (大台)
-  document.getElementById('inp-sym').value = 'TXF';
 }}
 
 applyDefaultFilters();
